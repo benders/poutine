@@ -1,0 +1,2 @@
+- [project_overview.md](memory/project_overview.md) - Poutine federated music player project context and architecture decisions
+- [navidrome_test_instance.md](memory/navidrome_test_instance.md) - Test Navidrome server credentials
