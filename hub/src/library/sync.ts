@@ -196,7 +196,7 @@ export async function syncInstance(
             albumDetail.musicBrainzId ?? album.musicBrainzId ?? null,
             // Release Group MBID - Navidrome doesn't always expose this separately
             // but some do via extended tags. We'll use the album's MBID context.
-            (albumDetail as Record<string, unknown>).releaseGroupMbid as string ?? null,
+            (albumDetail as unknown as Record<string, unknown>).releaseGroupMbid as string ?? null,
             albumDetail.songCount ?? album.songCount ?? 0,
             durationMs,
             albumDetail.coverArt ?? album.coverArt ?? null,

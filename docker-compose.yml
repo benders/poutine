@@ -1,0 +1,27 @@
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: hub/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
+      - DATABASE_PATH=/app/data/poutine.db
+    volumes:
+      - hub-data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - hub
+    restart: unless-stopped
+
+volumes:
+  hub-data:

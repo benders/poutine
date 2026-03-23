@@ -25,6 +25,20 @@ Built for small groups (4–12 people) who want to share and listen to each othe
 
 ## Quick Start
 
+### Docker (recommended)
+
+```bash
+# Generate a .env file with a JWT secret
+echo "JWT_SECRET=$(openssl rand -hex 32)" > .env
+
+# Build and start
+docker compose up --build
+```
+
+The frontend is at `http://localhost:8080` and the hub API at `http://localhost:3000`. SQLite data is persisted in a Docker volume (`hub-data`).
+
+### Local development
+
 ```bash
 # Install dependencies
 pnpm install
@@ -36,7 +50,9 @@ pnpm dev
 cd frontend && pnpm dev
 ```
 
-1. Open `http://localhost:5173` and register an account (all users have admin access)
+### Usage
+
+1. Open the frontend and register an account (all users have admin access)
 2. Go to **Instances** in the sidebar and add a Navidrome server (URL, username, password)
 3. Click **Sync** to pull the library
 4. Browse, search, and play music from the **Library** page
