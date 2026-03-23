@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { Readable } from "node:stream";
+import { readFileSync } from "node:fs";
 import { requireAuth } from "../auth/middleware.js";
 import { decrypt } from "../auth/encryption.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
@@ -196,7 +197,7 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
     return reply;
   });
 
-  // GET /api/art/:id - Proxy cover art
+  // GET /api/art/:id - Proxy cover art with on-disk caching
   app.get<{
     Params: { id: string };
     Querystring: { size?: string };
@@ -214,7 +215,24 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "Invalid cover art ID format" });
     }
 
-    // Get instance info
+    // Cache key includes size to handle different resolutions
+    const cacheKey = size ? `${id}:${size}` : id;
+
+    // Check cache first
+    const cached = app.artCache.get(cacheKey);
+    if (cached) {
+      const data = readFileSync(cached.filePath);
+      reply.raw.writeHead(200, {
+        "content-type": cached.contentType,
+        "content-length": String(data.length),
+        "cache-control": "public, max-age=2592000",
+        "x-cache": "HIT",
+      });
+      reply.raw.end(data);
+      return reply;
+    }
+
+    // Cache miss — fetch from upstream
     const instance = app.db
       .prepare(
         `SELECT id, url, status, encrypted_credentials
@@ -258,21 +276,27 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(502).send({ error: "Empty response from upstream" });
     }
 
-    const headers: Record<string, string> = {
-      "content-type":
-        response.headers.get("content-type") || "image/jpeg",
-      "cache-control": "public, max-age=2592000", // 30 days
-    };
-    const contentLength = response.headers.get("content-length");
-    if (contentLength) {
-      headers["content-length"] = contentLength;
+    // Buffer the response so we can cache it
+    const chunks: Uint8Array[] = [];
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
     }
+    const buffer = Buffer.concat(chunks);
+    const contentType = response.headers.get("content-type") || "image/jpeg";
 
-    reply.raw.writeHead(response.status, headers);
-    const nodeStream = Readable.fromWeb(
-      response.body as import("node:stream/web").ReadableStream,
-    );
-    nodeStream.pipe(reply.raw);
+    // Store in cache
+    app.artCache.put(cacheKey, buffer, contentType);
+
+    reply.raw.writeHead(response.status, {
+      "content-type": contentType,
+      "content-length": String(buffer.length),
+      "cache-control": "public, max-age=2592000",
+      "x-cache": "MISS",
+    });
+    reply.raw.end(buffer);
     return reply;
   });
 };

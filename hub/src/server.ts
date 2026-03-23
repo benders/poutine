@@ -8,6 +8,8 @@ import { instanceRoutes } from "./routes/instances.js";
 import { libraryRoutes } from "./routes/library.js";
 import { streamRoutes } from "./routes/stream.js";
 import { queueRoutes } from "./routes/queue.js";
+import { settingsRoutes } from "./routes/settings.js";
+import { ArtCache } from "./services/art-cache.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 
@@ -16,6 +18,7 @@ declare module "fastify" {
   interface FastifyInstance {
     config: Config;
     db: Database.Database;
+    artCache: ArtCache;
   }
 }
 
@@ -33,6 +36,12 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   app.decorate("config", config);
   app.decorate("db", db);
 
+  // Art cache — store cached images alongside the database
+  const { dirname, join } = await import("node:path");
+  const cacheDir = join(dirname(config.databasePath), "cache", "art");
+  const artCache = new ArtCache(db, cacheDir);
+  app.decorate("artCache", artCache);
+
   // Plugins
   await app.register(cors, {
     origin: true,
@@ -46,6 +55,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(libraryRoutes, { prefix: "/api/library" });
   await app.register(streamRoutes, { prefix: "/api" });
   await app.register(queueRoutes, { prefix: "/api/queue" });
+  await app.register(settingsRoutes, { prefix: "/api/settings" });
 
   // Health check
   app.get("/api/health", async () => ({ status: "ok" }));

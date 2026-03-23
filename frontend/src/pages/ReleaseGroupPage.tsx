@@ -1,6 +1,6 @@
 import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getReleaseGroup } from "@/lib/api";
+import { getReleaseGroup, artUrl } from "@/lib/api";
 import type { Track, Release } from "@/lib/api";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
@@ -50,10 +50,18 @@ export function ReleaseGroupPage() {
       {/* Album header */}
       <div className="flex items-start gap-6">
         <div
-          className="w-48 h-48 rounded-lg flex items-center justify-center shrink-0"
+          className="w-48 h-48 rounded-lg flex items-center justify-center shrink-0 overflow-hidden"
           style={{ backgroundColor: hashColor(releaseGroup.name) }}
         >
-          <Disc className="w-16 h-16 text-white/30" />
+          {releaseGroup.imageUrl ? (
+            <img
+              src={artUrl(releaseGroup.imageUrl, 400)}
+              alt={releaseGroup.name}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <Disc className="w-16 h-16 text-white/30" />
+          )}
         </div>
         <div className="min-w-0 pt-2">
           <h1 className="text-3xl font-bold text-text-primary">{releaseGroup.name}</h1>

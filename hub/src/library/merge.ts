@@ -147,6 +147,12 @@ export function mergeLibraries(db: Database.Database): void {
       const name = representative.name as string;
       const unifiedArtistId = instanceArtistToUnified.get(representative.artist_id as string) ?? "unknown";
 
+      // Encode cover art ID as instanceId:coverArtId for the /api/art/:id endpoint
+      const coverArtId = representative.cover_art_id as string | null;
+      const encodedArt = coverArtId
+        ? `${representative.instance_id as string}:${coverArtId}`
+        : null;
+
       insertReleaseGroup.run(
         id,
         name,
@@ -155,7 +161,7 @@ export function mergeLibraries(db: Database.Database): void {
         mbid,
         representative.year as number | null,
         representative.genre as string | null,
-        representative.cover_art_id as string | null,
+        encodedArt,
       );
 
       for (const ia of group) {
@@ -182,6 +188,11 @@ export function mergeLibraries(db: Database.Database): void {
       const name = representative.name as string;
       const unifiedArtistId = instanceArtistToUnified.get(representative.artist_id as string) ?? "unknown";
 
+      const coverArtId2 = representative.cover_art_id as string | null;
+      const encodedArt2 = coverArtId2
+        ? `${representative.instance_id as string}:${coverArtId2}`
+        : null;
+
       insertReleaseGroup.run(
         id,
         name,
@@ -190,7 +201,7 @@ export function mergeLibraries(db: Database.Database): void {
         null,
         representative.year as number | null,
         representative.genre as string | null,
-        representative.cover_art_id as string | null,
+        encodedArt2,
       );
 
       for (const ia of group) {

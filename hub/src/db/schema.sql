@@ -199,3 +199,24 @@ CREATE TABLE IF NOT EXISTS user_queue_state (
   shuffle INTEGER NOT NULL DEFAULT 0,
   repeat_mode TEXT NOT NULL DEFAULT 'none' -- none | one | all
 );
+
+-- ============================================================
+-- Settings (key-value store)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- ============================================================
+-- Art Cache Metadata
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS art_cache (
+  id TEXT PRIMARY KEY,              -- cache key: encodedCoverArtId or encodedCoverArtId:size
+  content_type TEXT NOT NULL,
+  size INTEGER NOT NULL,            -- file size in bytes
+  cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_accessed TEXT NOT NULL DEFAULT (datetime('now'))
+);

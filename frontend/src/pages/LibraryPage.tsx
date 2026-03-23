@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getReleaseGroups } from "@/lib/api";
+import { getReleaseGroups, artUrl } from "@/lib/api";
 import type { ReleaseGroup } from "@/lib/api";
 import { Search, Disc, ChevronDown } from "lucide-react";
 
@@ -113,10 +113,19 @@ function AlbumCard({
       className="group text-left rounded-lg bg-surface p-3 transition-colors hover:bg-surface-hover cursor-pointer"
     >
       <div
-        className="aspect-square rounded-md mb-3 flex items-center justify-center"
+        className="aspect-square rounded-md mb-3 flex items-center justify-center overflow-hidden"
         style={{ backgroundColor: hashColor(releaseGroup.name) }}
       >
-        <Disc className="w-10 h-10 text-white/30" />
+        {releaseGroup.imageUrl ? (
+          <img
+            src={artUrl(releaseGroup.imageUrl, 300)}
+            alt={releaseGroup.name}
+            className="w-full h-full object-cover"
+            loading="lazy"
+          />
+        ) : (
+          <Disc className="w-10 h-10 text-white/30" />
+        )}
       </div>
       <p className="text-sm font-medium text-text-primary truncate">
         {releaseGroup.name}

@@ -315,3 +315,33 @@ export function streamUrl(trackId: string, format = "opus", maxBitRate = 128) {
   const token = getAccessToken();
   return `/api/stream/${trackId}?format=${format}&maxBitRate=${maxBitRate}&token=${token}`;
 }
+
+export function artUrl(imageId: string, size?: number): string {
+  const token = getAccessToken();
+  const encoded = encodeURIComponent(imageId);
+  const params = new URLSearchParams({ token: token ?? "" });
+  if (size) params.set("size", String(size));
+  return `/api/art/${encoded}?${params}`;
+}
+
+// Settings API
+export interface Settings {
+  artCacheMaxBytes: number;
+  artCacheCurrentBytes: number;
+  artCacheFileCount: number;
+}
+
+export function getSettings() {
+  return api<Settings>("/settings");
+}
+
+export function updateSettings(data: { artCacheMaxBytes?: number }) {
+  return api<Settings>("/settings", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function clearArtCache() {
+  return api("/settings/art-cache", { method: "DELETE" });
+}
