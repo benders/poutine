@@ -87,7 +87,7 @@ poutine/
 - `POST /api/auth/login` — Verify credentials, return JWT access + refresh tokens.
 - `POST /api/auth/refresh` — Refresh access token.
 - Auth middleware: validate JWT on protected routes.
-- First registered user becomes admin (can add instances).
+- All registered users have admin privileges (can add instances).
 - Tests: registration, login, token refresh, middleware rejection.
 
 ### Deliverable
@@ -306,7 +306,11 @@ Production-ready system with documentation, tests, and operational tooling.
 - Model Context Protocol server exposing the library for AI assistant integration.
 - Tools: search library, play track, queue management, get recommendations.
 
-### Phase 8: Advanced Features
+### Phase 8: User Roles & Permissions
+- Granular admin controls: configure which users have admin access.
+- Currently all users are granted admin on registration; add ability to restrict instance management to designated admins.
+
+### Phase 9: Advanced Features
 - Collaborative playlists across the federation.
 - Play history and listening statistics.
 - Last.fm / ListenBrainz scrobbling.

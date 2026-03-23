@@ -36,7 +36,7 @@ pnpm dev
 cd frontend && pnpm dev
 ```
 
-1. Open `http://localhost:5173` and register an account (first user becomes admin)
+1. Open `http://localhost:5173` and register an account (all users have admin access)
 2. Go to **Instances** in the sidebar and add a Navidrome server (URL, username, password)
 3. Click **Sync** to pull the library
 4. Browse, search, and play music from the **Library** page

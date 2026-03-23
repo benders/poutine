@@ -149,7 +149,7 @@ describe("Auth routes", () => {
     expect(body.user.isAdmin).toBe(true);
   });
 
-  it("should not make the second user an admin", async () => {
+  it("should make all users admin", async () => {
     await app.inject({
       method: "POST",
       url: "/api/auth/register",
@@ -164,7 +164,7 @@ describe("Auth routes", () => {
 
     expect(response.statusCode).toBe(201);
     const body = response.json();
-    expect(body.user.isAdmin).toBe(false);
+    expect(body.user.isAdmin).toBe(true);
   });
 
   it("should reject duplicate username", async () => {

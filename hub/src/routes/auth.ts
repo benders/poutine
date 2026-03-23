@@ -30,11 +30,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const passwordHash = await hashPassword(password);
     const id = crypto.randomUUID();
 
-    // First user becomes admin
-    const userCount = app.db
-      .prepare("SELECT COUNT(*) as count FROM users")
-      .get() as { count: number };
-    const isAdmin = userCount.count === 0 ? 1 : 0;
+    // All users are admin
+    const isAdmin = 1;
 
     app.db
       .prepare(

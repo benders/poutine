@@ -52,7 +52,7 @@ export function Sidebar() {
           </NavLink>
         ))}
 
-        {user?.isAdmin && (
+        {user && (
           <NavLink
             to="/admin"
             className={({ isActive }) =>
