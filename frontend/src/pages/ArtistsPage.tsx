@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getArtists } from "@/lib/api";
+import { getArtists, artUrl } from "@/lib/api";
 import { Search } from "lucide-react";
 
 function initials(name: string): string {
@@ -68,12 +68,21 @@ export function ArtistsPage() {
               className="group text-left rounded-lg bg-surface p-4 transition-colors hover:bg-surface-hover cursor-pointer"
             >
               <div
-                className="w-full aspect-square rounded-full mb-3 flex items-center justify-center mx-auto"
+                className="w-full aspect-square rounded-full mb-3 flex items-center justify-center mx-auto overflow-hidden"
                 style={{ backgroundColor: hashColor(artist.name) }}
               >
-                <span className="text-xl font-semibold text-white/70">
-                  {initials(artist.name)}
-                </span>
+                {artist.imageUrl ? (
+                  <img
+                    src={artUrl(artist.imageUrl, 300)}
+                    alt={artist.name}
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                ) : (
+                  <span className="text-xl font-semibold text-white/70">
+                    {initials(artist.name)}
+                  </span>
+                )}
               </div>
               <p className="text-sm font-medium text-text-primary truncate text-center">
                 {artist.name}

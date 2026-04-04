@@ -1,6 +1,6 @@
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getArtist } from "@/lib/api";
+import { getArtist, artUrl } from "@/lib/api";
 import type { ReleaseGroup } from "@/lib/api";
 import { ChevronRight, Disc, User } from "lucide-react";
 
@@ -58,7 +58,7 @@ export function ArtistDetailPage() {
         >
           {artist.imageUrl ? (
             <img
-              src={artist.imageUrl}
+              src={artUrl(artist.imageUrl, 300)}
               alt={artist.name}
               className="w-full h-full rounded-full object-cover"
             />

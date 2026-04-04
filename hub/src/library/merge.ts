@@ -62,12 +62,17 @@ export function mergeLibraries(db: Database.Database): void {
       const name = representative.name as string;
       const nameNormalized = normalizeName(name);
 
+      const artistCoverArtId = representative.image_url as string | null;
+      const encodedArtistArt = artistCoverArtId
+        ? `${representative.instance_id as string}:${artistCoverArtId}`
+        : null;
+
       insertUnifiedArtist.run(
         id,
         name,
         nameNormalized,
         mbid,
-        representative.image_url as string | null,
+        encodedArtistArt,
       );
 
       for (const ia of group) {
@@ -91,12 +96,17 @@ export function mergeLibraries(db: Database.Database): void {
       const id = crypto.randomUUID();
       const representative = group[0];
 
+      const artistCoverArtId2 = representative.image_url as string | null;
+      const encodedArtistArt2 = artistCoverArtId2
+        ? `${representative.instance_id as string}:${artistCoverArtId2}`
+        : null;
+
       insertUnifiedArtist.run(
         id,
         representative.name as string,
         norm,
         null,
-        representative.image_url as string | null,
+        encodedArtistArt2,
       );
 
       for (const ia of group) {

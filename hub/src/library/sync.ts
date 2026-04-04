@@ -153,7 +153,7 @@ export async function syncInstance(
             artistDetail.name ?? artist.name,
             artistDetail.musicBrainzId ?? artist.musicBrainzId ?? null,
             artistDetail.albumCount ?? artist.albumCount ?? 0,
-            artistDetail.artistImageUrl ?? artist.artistImageUrl ?? null,
+            artistDetail.coverArt ?? artist.coverArt ?? null,
           );
           result.artistCount++;
 
