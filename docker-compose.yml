@@ -9,8 +9,43 @@ services:
       - NODE_ENV=production
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
       - DATABASE_PATH=/app/data/poutine.db
+      - NAVIDROME_URL=http://navidrome:4533
+      - NAVIDROME_USERNAME=${NAVIDROME_USERNAME:?Set NAVIDROME_USERNAME in .env}
+      - NAVIDROME_PASSWORD=${NAVIDROME_PASSWORD:?Set NAVIDROME_PASSWORD in .env}
+      - POUTINE_INSTANCE_ID=${POUTINE_INSTANCE_ID:?Set POUTINE_INSTANCE_ID in .env}
+      - POUTINE_PRIVATE_KEY_PATH=/app/data/poutine_ed25519.pem
+      - POUTINE_PEERS_CONFIG=/app/config/peers.yaml
+      - POUTINE_OWNER_USERNAME=${POUTINE_OWNER_USERNAME:?Set POUTINE_OWNER_USERNAME in .env}
+      - POUTINE_OWNER_PASSWORD=${POUTINE_OWNER_PASSWORD:?Set POUTINE_OWNER_PASSWORD in .env}
     volumes:
       - hub-data:/app/data
+      - ./peers.yaml:/app/config/peers.yaml:ro
+    depends_on:
+      - navidrome
+    networks:
+      - public
+      - internal
+    restart: unless-stopped
+
+  navidrome:
+    image: deluan/navidrome:latest
+    environment:
+      - ND_LOGLEVEL=info
+      - ND_SCANSCHEDULE=1h
+      - ND_SESSIONTIMEOUT=24h
+      - ND_BASEURL=
+      - ND_ENABLEEXTERNALSERVICES=false
+      # Auto-create the "admin" user on first boot using the same credential
+      # the hub uses to connect. Username is always "admin" with this method.
+      - ND_INITIALADMINPASSWORD=${NAVIDROME_PASSWORD:?Set NAVIDROME_PASSWORD in .env}
+    volumes:
+      - navidrome-data:/data
+      - ${NAVIDROME_MUSIC_PATH:-./music}:/music:ro
+    # No ports published — Navidrome is only reachable from the hub over the
+    # internal Docker network. Admin access to Navidrome should be done via
+    # `docker compose exec` or by temporarily publishing a port locally.
+    networks:
+      - internal
     restart: unless-stopped
 
   frontend:
@@ -21,7 +56,18 @@ services:
       - "8080:80"
     depends_on:
       - hub
+    networks:
+      - public
     restart: unless-stopped
 
 volumes:
   hub-data:
+  navidrome-data:
+
+networks:
+  # Exposed to the host (and, via the operator's reverse proxy / tunnel, to the
+  # internet). Only hub and frontend live here.
+  public:
+  # Private network for hub <-> navidrome. Navidrome is never directly exposed.
+  internal:
+    internal: true

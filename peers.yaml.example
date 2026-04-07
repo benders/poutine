@@ -1,0 +1,26 @@
+# -----------------------------------------------------------------------------
+# Poutine peers configuration
+# -----------------------------------------------------------------------------
+# Copy this file to peers.yaml before running `docker compose up`. The hub
+# mounts ./peers.yaml read-only at /app/config/peers.yaml.
+# See example.env for the matching environment variable reference.
+#
+# Each peer entry is another Poutine instance that this instance trusts. The
+# public_key is pinned: if a peer ever presents a different key, signed
+# requests will be rejected. Exchange keys out-of-band (email, chat, etc).
+#
+# Generate this instance's keypair by starting Poutine once — it will create
+# POUTINE_PRIVATE_KEY_PATH if missing and log the matching public key.
+
+# Short, stable identifier for THIS instance. Must match POUTINE_INSTANCE_ID
+# in .env.
+instance_id: "poutine-example"
+
+peers: []
+#   - id: "poutine-bob"
+#     url: "https://music.bob.example"
+#     public_key: "ed25519:BASE64PUBLICKEY=="
+#
+#   - id: "poutine-carol"
+#     url: "https://music.carol.example"
+#     public_key: "ed25519:BASE64PUBLICKEY=="

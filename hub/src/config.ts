@@ -12,6 +12,22 @@ export interface Config {
   healthCheckIntervalMs: number;
   instanceTimeoutMs: number;
   instanceConcurrency: number;
+  // Phase 1: bundled Navidrome + peer federation config.
+  navidromeUrl: string;
+  navidromeUsername: string;
+  navidromePassword: string;
+  poutineInstanceId: string;
+  poutinePrivateKeyPath: string;
+  poutinePeersConfig: string;
+  poutineOwnerUsername: string;
+  poutineOwnerPassword: string;
+}
+
+function requireInProd(name: string, value: string | undefined): string {
+  if (!value && process.env.NODE_ENV === "production") {
+    throw new Error(`${name} environment variable is required in production`);
+  }
+  return value || "";
 }
 
 export function loadConfig(): Config {
@@ -45,6 +61,31 @@ export function loadConfig(): Config {
     instanceConcurrency: parseInt(
       process.env.INSTANCE_CONCURRENCY || "3",
       10
+    ),
+    navidromeUrl: process.env.NAVIDROME_URL || "http://navidrome:4533",
+    navidromeUsername: requireInProd(
+      "NAVIDROME_USERNAME",
+      process.env.NAVIDROME_USERNAME
+    ),
+    navidromePassword: requireInProd(
+      "NAVIDROME_PASSWORD",
+      process.env.NAVIDROME_PASSWORD
+    ),
+    poutineInstanceId: requireInProd(
+      "POUTINE_INSTANCE_ID",
+      process.env.POUTINE_INSTANCE_ID
+    ),
+    poutinePrivateKeyPath:
+      process.env.POUTINE_PRIVATE_KEY_PATH || "./data/poutine_ed25519.pem",
+    poutinePeersConfig:
+      process.env.POUTINE_PEERS_CONFIG || "./config/peers.yaml",
+    poutineOwnerUsername: requireInProd(
+      "POUTINE_OWNER_USERNAME",
+      process.env.POUTINE_OWNER_USERNAME
+    ),
+    poutineOwnerPassword: requireInProd(
+      "POUTINE_OWNER_PASSWORD",
+      process.env.POUTINE_OWNER_PASSWORD
     ),
   };
 }
