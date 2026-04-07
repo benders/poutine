@@ -10,9 +10,17 @@ import { streamRoutes } from "./routes/stream.js";
 import { queueRoutes } from "./routes/queue.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
+import { federationRoutes } from "./routes/federation.js";
 import { ArtCache } from "./services/art-cache.js";
+import { loadOrCreatePrivateKey } from "./federation/signing.js";
+import { loadPeerRegistry } from "./federation/peers.js";
+import { createRequirePeerAuth } from "./federation/peer-auth.js";
+import { createFederationFetcher } from "./federation/sign-request.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
+import type { KeyObject } from "node:crypto";
+import type { PeerRegistry } from "./federation/peers.js";
+import type { createFederationFetcher as FetcherFactory } from "./federation/sign-request.js";
 
 // Extend Fastify instance type
 declare module "fastify" {
@@ -20,6 +28,9 @@ declare module "fastify" {
     config: Config;
     db: Database.Database;
     artCache: ArtCache;
+    peerRegistry: PeerRegistry;
+    privateKey: KeyObject;
+    federatedFetch: ReturnType<typeof FetcherFactory>;
   }
 }
 
@@ -43,6 +54,44 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const artCache = new ArtCache(db, cacheDir);
   app.decorate("artCache", artCache);
 
+  // Federation keys and peer registry
+  const { privateKey, publicKeyBase64 } = loadOrCreatePrivateKey(
+    config.poutinePrivateKeyPath,
+  );
+  app.log.info(
+    { publicKey: `ed25519:${publicKeyBase64}` },
+    "Poutine instance public key — share with peers",
+  );
+
+  const peerRegistry = loadPeerRegistry(
+    config.poutinePeersConfig,
+    config.poutineInstanceId,
+  );
+  app.log.info(
+    { instanceId: peerRegistry.instanceId, peerCount: peerRegistry.peers.size },
+    "Loaded peer registry",
+  );
+
+  app.decorate("peerRegistry", peerRegistry);
+  app.decorate("privateKey", privateKey);
+  app.decorate(
+    "federatedFetch",
+    createFederationFetcher({
+      privateKey,
+      instanceId: peerRegistry.instanceId,
+    }),
+  );
+
+  // SIGHUP handler to reload peer registry without restart
+  const sighupHandler = () => {
+    peerRegistry.reload();
+    app.log.info(
+      { peerCount: peerRegistry.peers.size },
+      "Peer registry reloaded via SIGHUP",
+    );
+  };
+  process.on("SIGHUP", sighupHandler);
+
   // Plugins
   await app.register(cors, {
     origin: true,
@@ -59,11 +108,18 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(settingsRoutes, { prefix: "/api/settings" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
 
+  const requirePeerAuth = createRequirePeerAuth({ registry: peerRegistry });
+  await app.register(federationRoutes, {
+    prefix: "/federation",
+    requirePeerAuth,
+  });
+
   // Health check
   app.get("/api/health", async () => ({ status: "ok" }));
 
   // Cleanup on close
   app.addHook("onClose", () => {
+    process.off("SIGHUP", sighupHandler);
     db.close();
   });
 
