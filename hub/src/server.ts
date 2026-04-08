@@ -3,7 +3,7 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
-import { settingsRoutes } from "./routes/settings.js";
+import { adminRoutes } from "./routes/admin.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
 import { federationRoutes } from "./routes/federation.js";
 import { ArtCache } from "./services/art-cache.js";
@@ -127,7 +127,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(cookie);
 
   // Routes
-  await app.register(settingsRoutes, { prefix: "/api/settings" });
+  await app.register(adminRoutes, { prefix: "/admin" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
 
   const requirePeerAuth = createRequirePeerAuth({ registry: peerRegistry });

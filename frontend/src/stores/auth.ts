@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getMe, clearTokens, getAccessToken } from "@/lib/api";
+import { getMe, logout as apiLogout, clearTokens, getAccessToken } from "@/lib/api";
 
 interface User {
   id: string;
@@ -33,7 +33,7 @@ export const useAuth = create<AuthState>((set) => ({
   },
   setUser: (user) => set({ user, loading: false }),
   logout: () => {
-    clearTokens();
+    apiLogout();
     set({ user: null });
   },
 }));

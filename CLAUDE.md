@@ -34,7 +34,7 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 
 ## Environment variables (hub)
 
-- `JWT_SECRET` — required in production (used for `settings` admin endpoint until Phase 6)
+- `JWT_SECRET` — required in production (signs admin session tokens)
 - `DATABASE_PATH` — defaults to `./data/poutine.db`
 - `PORT` / `HOST` — defaults to `3000` / `0.0.0.0`
 - `NAVIDROME_URL` — defaults to `http://navidrome:4533`
@@ -50,15 +50,15 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - Album art is served via the Subsonic endpoint `GET /rest/getCoverArt?id={encodedId}` and cached to disk on first fetch
 - Cache metadata lives in the `art_cache` SQLite table; files live at `{dataDir}/cache/art/`
 - LRU eviction runs automatically when cache exceeds the configured max size (stored in `settings` table, default 10 MB)
-- Cache size is configurable via `GET/PUT /api/settings` and `DELETE /api/settings/art-cache`
+- Cache size is configurable via `GET/PUT /admin/cache`; clear via `DELETE /admin/cache`
 - The `image_url` field in `unified_release_groups` stores encoded IDs in `{instanceId}:{coverArtId}` format — this encoding is required for the art endpoint to resolve the correct upstream instance
 - Encoding/decoding helpers live in `hub/src/library/cover-art.ts`
 
-## API surface (Phase 2–5)
+## API surface (Phase 2–6)
 
 - **Subsonic API** (`/rest/*`) is the primary client-facing API — browse library, stream, cover art, playlists. Auth via Subsonic `u`+`p` (cleartext) or `u`+`t`+`s` (token+salt MD5) query params.
 - **Federation API** (`/federation/*`) is peer-to-peer only — requires Ed25519 signature. Routes: `/federation/library/export`, `/federation/stream/:trackId`, `/federation/art/:encodedId`
-- **Settings API** (`/api/settings`) — art cache stats/config, admin only (JWT bearer until Phase 6 replaces it with `/admin/*`)
+- **Admin API** (`/admin/*`) — owner-only management: login, users CRUD, peer list, sync trigger, cache stats/control. Auth via JWT cookie set by `POST /admin/login`.
 - **Health** (`/api/health`) — unauthenticated, returns `{ status: "ok" }`
 
 ## Federation architecture
@@ -79,11 +79,12 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - **Runtime settings live in the `settings` table** — use this key-value table (not env vars) for settings that admins should be able to change without restarting the server. The `hub/src/services/art-cache.ts` pattern shows how to read from it with a fallback default.
 - **`federatedFetch` paths need the full route prefix** — federation routes are under `/federation`, so all `federatedFetch` calls must use `/federation/...` paths, not just the route suffix.
 - **Owner seeding is async** — argon2 hashing requires an async call, so owner seeding must happen in `buildApp()` (not in the synchronous `createDatabase()`). Pattern established in `hub/src/server.ts::seedOwner()`.
+- **Admin login sets a JWT cookie AND returns the token** — the cookie enables future admin API calls; returning the token in the response body lets the SPA store it in localStorage for the Authorization header (Phase 7 will clean this up when Subsonic auth replaces the JWT flow).
 
 ## Docker architecture
 
 - `hub/Dockerfile` — multi-stage: deps → build (tsc + copy sql) → slim runtime with prod deps
 - `frontend/Dockerfile` — multi-stage: deps → vite build → nginx serving static files
-- `frontend/nginx.conf` — proxies `/api/` and `/rest/` to the `hub` service, SPA fallback via `try_files`
+- `frontend/nginx.conf` — proxies `/api/`, `/admin/`, `/rest/`, and `/federation/` to the `hub` service, SPA fallback via `try_files`
 - `docker-compose.yml` — hub (port 3000) + navidrome (internal-only, no published ports) + frontend (port 8080), persistent volume for SQLite
 - Navidrome is on an internal Docker network; only the hub can reach it. No credentials are stored for it in the DB — they live in env vars.

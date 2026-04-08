@@ -1,52 +1,20 @@
-const API_BASE = "/api";
-
 let accessToken: string | null = localStorage.getItem("accessToken");
-let refreshToken: string | null = localStorage.getItem("refreshToken");
 
-export function setTokens(access: string, refresh: string) {
-  accessToken = access;
-  refreshToken = refresh;
-  localStorage.setItem("accessToken", access);
-  localStorage.setItem("refreshToken", refresh);
+export function setToken(token: string) {
+  accessToken = token;
+  localStorage.setItem("accessToken", token);
 }
 
 export function clearTokens() {
   accessToken = null;
-  refreshToken = null;
   localStorage.removeItem("accessToken");
-  localStorage.removeItem("refreshToken");
 }
 
 export function getAccessToken() {
   return accessToken;
 }
 
-async function refreshAccessToken(): Promise<boolean> {
-  if (!refreshToken) return false;
-
-  try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken }),
-    });
-
-    if (!res.ok) {
-      clearTokens();
-      return false;
-    }
-
-    const data = await res.json();
-    accessToken = data.accessToken;
-    localStorage.setItem("accessToken", data.accessToken);
-    return true;
-  } catch {
-    clearTokens();
-    return false;
-  }
-}
-
-export async function api<T = unknown>(
+async function apiFetch<T = unknown>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
@@ -60,16 +28,7 @@ export async function api<T = unknown>(
     headers.set("Content-Type", "application/json");
   }
 
-  let res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-
-  // Try refresh on 401
-  if (res.status === 401 && refreshToken) {
-    const refreshed = await refreshAccessToken();
-    if (refreshed) {
-      headers.set("Authorization", `Bearer ${accessToken}`);
-      res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-    }
-  }
+  const res = await fetch(path, { ...options, headers });
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -90,43 +49,107 @@ export class ApiError extends Error {
   }
 }
 
-// Auth API
+// Admin auth
+
 export async function login(username: string, password: string) {
-  const data = await api<{
+  const data = await apiFetch<{
     user: { id: string; username: string; isAdmin: boolean };
     accessToken: string;
-    refreshToken: string;
-  }>("/auth/login", {
+  }>("/admin/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
-  setTokens(data.accessToken, data.refreshToken);
+  setToken(data.accessToken);
   return data.user;
 }
 
-export async function register(username: string, password: string) {
-  const data = await api<{
-    user: { id: string; username: string; isAdmin: boolean };
-    accessToken: string;
-    refreshToken: string;
-  }>("/auth/register", {
-    method: "POST",
-    body: JSON.stringify({ username, password }),
-  });
-  setTokens(data.accessToken, data.refreshToken);
-  return data.user;
+export async function logout() {
+  await apiFetch("/admin/logout", { method: "POST" }).catch(() => undefined);
+  clearTokens();
 }
 
 export async function getMe() {
-  return api<{
+  return apiFetch<{
     id: string;
     username: string;
     isAdmin: boolean;
     createdAt: string;
-  }>("/auth/me");
+  }>("/admin/me");
 }
 
-// Library API
+// Admin API
+
+export interface User {
+  id: string;
+  username: string;
+  isAdmin: boolean;
+  createdAt: string;
+}
+
+export interface Peer {
+  id: string;
+  url: string;
+  publicKey: string;
+  status: string;
+  lastSeen: string | null;
+}
+
+export interface CacheStats {
+  artCacheMaxBytes: number;
+  artCacheCurrentBytes: number;
+  artCacheFileCount: number;
+}
+
+export interface SyncResult {
+  instanceId: string;
+  artistCount: number;
+  albumCount: number;
+  trackCount: number;
+  errors: string[];
+}
+
+export function getUsers() {
+  return apiFetch<User[]>("/admin/users");
+}
+
+export function createUser(username: string, password: string) {
+  return apiFetch<User>("/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function deleteUser(id: string) {
+  return apiFetch(`/admin/users/${id}`, { method: "DELETE" });
+}
+
+export function getPeers() {
+  return apiFetch<Peer[]>("/admin/peers");
+}
+
+export function triggerSync() {
+  return apiFetch<{ local: SyncResult; peers: SyncResult[] }>("/admin/sync", {
+    method: "POST",
+  });
+}
+
+export function getCacheStats() {
+  return apiFetch<CacheStats>("/admin/cache");
+}
+
+export function updateCacheSettings(data: { artCacheMaxBytes?: number }) {
+  return apiFetch<CacheStats>("/admin/cache", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function clearArtCache() {
+  return apiFetch("/admin/cache", { method: "DELETE" });
+}
+
+// Legacy library types — to be replaced in Phase 7 with Subsonic client
+
 export interface Artist {
   id: string;
   name: string;
@@ -147,16 +170,6 @@ export interface ReleaseGroup {
   artistName: string;
 }
 
-export interface TrackSource {
-  instanceId: string;
-  instanceName: string;
-  instanceStatus: string;
-  remoteId: string;
-  format: string;
-  bitrate: number;
-  size: number;
-}
-
 export interface Track {
   id: string;
   title: string;
@@ -169,7 +182,6 @@ export interface Track {
   artistName: string;
   releaseId: string;
   releaseName: string;
-  sources?: TrackSource[];
 }
 
 export interface Release {
@@ -199,149 +211,57 @@ export interface SearchResults {
   tracks: Track[];
 }
 
-export interface Instance {
-  id: string;
-  name: string;
-  url: string;
-  adapterType: string;
-  ownerId: string;
-  status: string;
-  lastSeen: string | null;
-  lastSyncedAt: string | null;
-  trackCount: number;
-  serverVersion: string | null;
-}
-
-export function getArtists(params?: {
-  search?: string;
-  sort?: string;
-  order?: string;
-  limit?: number;
-  offset?: number;
-}) {
-  const searchParams = new URLSearchParams();
-  if (params?.search) searchParams.set("search", params.search);
-  if (params?.sort) searchParams.set("sort", params.sort);
-  if (params?.order) searchParams.set("order", params.order);
-  if (params?.limit) searchParams.set("limit", String(params.limit));
-  if (params?.offset) searchParams.set("offset", String(params.offset));
-  const qs = searchParams.toString();
-  return api<Artist[]>(`/library/artists${qs ? `?${qs}` : ""}`);
+// These library calls target /api/library/* which was removed in Phase 5.
+// They will be replaced by Subsonic calls in Phase 7.
+export function getArtists() {
+  return apiFetch<Artist[]>("/api/library/artists");
 }
 
 export function getArtist(id: string) {
-  return api<ArtistDetail>(`/library/artists/${id}`);
+  return apiFetch<ArtistDetail>(`/api/library/artists/${id}`);
 }
 
-export function getReleaseGroups(params?: {
-  artistId?: string;
-  genre?: string;
-  yearFrom?: number;
-  yearTo?: number;
-  search?: string;
-  sort?: string;
-  order?: string;
-  limit?: number;
-  offset?: number;
-}) {
-  const searchParams = new URLSearchParams();
-  if (params?.artistId) searchParams.set("artistId", params.artistId);
-  if (params?.genre) searchParams.set("genre", params.genre);
-  if (params?.yearFrom) searchParams.set("yearFrom", String(params.yearFrom));
-  if (params?.yearTo) searchParams.set("yearTo", String(params.yearTo));
-  if (params?.search) searchParams.set("search", params.search);
-  if (params?.sort) searchParams.set("sort", params.sort);
-  if (params?.order) searchParams.set("order", params.order);
-  if (params?.limit) searchParams.set("limit", String(params.limit));
-  if (params?.offset) searchParams.set("offset", String(params.offset));
-  const qs = searchParams.toString();
-  return api<ReleaseGroup[]>(`/library/release-groups${qs ? `?${qs}` : ""}`);
+export function getReleaseGroups(params?: { artistId?: string }) {
+  const qs = params?.artistId ? `?artistId=${params.artistId}` : "";
+  return apiFetch<ReleaseGroup[]>(`/api/library/release-groups${qs}`);
 }
 
 export function getReleaseGroup(id: string) {
-  return api<ReleaseGroupDetail>(`/library/release-groups/${id}`);
-}
-
-export function getTracks(params?: {
-  search?: string;
-  releaseId?: string;
-  artistId?: string;
-  limit?: number;
-  offset?: number;
-}) {
-  const searchParams = new URLSearchParams();
-  if (params?.search) searchParams.set("search", params.search);
-  if (params?.releaseId) searchParams.set("releaseId", params.releaseId);
-  if (params?.artistId) searchParams.set("artistId", params.artistId);
-  if (params?.limit) searchParams.set("limit", String(params.limit));
-  if (params?.offset) searchParams.set("offset", String(params.offset));
-  const qs = searchParams.toString();
-  return api<Track[]>(`/library/tracks${qs ? `?${qs}` : ""}`);
+  return apiFetch<ReleaseGroupDetail>(`/api/library/release-groups/${id}`);
 }
 
 export function searchLibrary(q: string) {
-  return api<SearchResults>(`/library/search?q=${encodeURIComponent(q)}`);
+  return apiFetch<SearchResults>(`/api/library/search?q=${encodeURIComponent(q)}`);
 }
 
-export function getInstances() {
-  return api<Instance[]>("/instances");
-}
-
-export function addInstance(data: {
-  name: string;
-  url: string;
-  username: string;
-  password: string;
-}) {
-  return api<Instance>("/instances", {
-    method: "POST",
-    body: JSON.stringify(data),
+// Subsonic media URLs (auth via query params)
+export function streamUrl(
+  trackId: string,
+  username: string,
+  password: string,
+  format = "opus",
+  maxBitRate = 128,
+) {
+  const params = new URLSearchParams({
+    u: username,
+    p: password,
+    v: "1.16.1",
+    c: "poutine",
+    id: trackId,
+    format,
+    maxBitRate: String(maxBitRate),
   });
+  return `/rest/stream?${params}`;
 }
 
-export function removeInstance(id: string) {
-  return api(`/instances/${id}`, { method: "DELETE" });
-}
-
-export function syncInstance(id: string) {
-  return api(`/instances/${id}/sync`, { method: "POST" });
-}
-
-export function syncAll() {
-  return api("/instances/sync-all", { method: "POST" });
-}
-
-export function streamUrl(trackId: string, format = "opus", maxBitRate = 128) {
-  const token = getAccessToken();
-  return `/api/stream/${trackId}?format=${format}&maxBitRate=${maxBitRate}&token=${token}`;
-}
-
-export function artUrl(imageId: string, size?: number): string {
-  const token = getAccessToken();
-  const encoded = encodeURIComponent(imageId);
-  const params = new URLSearchParams({ token: token ?? "" });
+export function artUrl(encodedId: string, size?: number): string {
+  const params = new URLSearchParams({
+    u: "guest",
+    p: "guest",
+    v: "1.16.1",
+    c: "poutine",
+    id: encodedId,
+  });
   if (size) params.set("size", String(size));
-  return `/api/art/${encoded}?${params}`;
-}
-
-// Settings API
-export interface Settings {
-  artCacheMaxBytes: number;
-  artCacheCurrentBytes: number;
-  artCacheFileCount: number;
-}
-
-export function getSettings() {
-  return api<Settings>("/settings");
-}
-
-export function updateSettings(data: { artCacheMaxBytes?: number }) {
-  return api<Settings>("/settings", {
-    method: "PUT",
-    body: JSON.stringify(data),
-  });
-}
-
-export function clearArtCache() {
-  return api("/settings/art-cache", { method: "DELETE" });
+  return `/rest/getCoverArt?${params}`;
 }
