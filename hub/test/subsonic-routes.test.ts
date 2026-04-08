@@ -100,6 +100,17 @@ describe("Subsonic routes — auth", () => {
     expect(body["subsonic-response"].status).toBe("failed");
     expect(body["subsonic-response"].error.code).toBe(10);
   });
+
+  it("ping with unknown username → error code 40", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/ping?u=nobody&p=secret&f=json",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("failed");
+    expect(body["subsonic-response"].error.code).toBe(40);
+  });
 });
 
 describe("Subsonic routes — endpoints", () => {
