@@ -1,9 +1,9 @@
 import { create } from "zustand";
-import type { Track } from "@/lib/api";
-import { getAccessToken } from "@/lib/api";
+import type { SubsonicSong } from "@/lib/subsonic";
+import { streamUrl } from "@/lib/subsonic";
 
 interface PlayerState {
-  queue: Track[];
+  queue: SubsonicSong[];
   currentIndex: number;
   isPlaying: boolean;
   volume: number;
@@ -13,12 +13,12 @@ interface PlayerState {
   repeat: "none" | "one" | "all";
 
   // Computed
-  currentTrack: Track | null;
+  currentTrack: SubsonicSong | null;
 
   // Actions
-  playTrack: (track: Track) => void;
-  playTracks: (tracks: Track[], startIndex?: number) => void;
-  addToQueue: (track: Track) => void;
+  playTrack: (track: SubsonicSong) => void;
+  playTracks: (tracks: SubsonicSong[], startIndex?: number) => void;
+  addToQueue: (track: SubsonicSong) => void;
   removeFromQueue: (index: number) => void;
   clearQueue: () => void;
   next: () => void;
@@ -117,8 +117,5 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       return { repeat: modes[(idx + 1) % modes.length] };
     }),
 
-  getStreamUrl: (trackId: string) => {
-    const token = getAccessToken();
-    return `/api/stream/${trackId}?format=opus&maxBitRate=128&token=${token}`;
-  },
+  getStreamUrl: (trackId: string) => streamUrl(trackId),
 }));

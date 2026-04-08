@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getMe, logout as apiLogout, clearTokens, getAccessToken } from "@/lib/api";
+import { clearCredentials } from "@/lib/subsonic";
 
 interface User {
   id: string;
@@ -28,6 +29,7 @@ export const useAuth = create<AuthState>((set) => ({
       set({ user, loading: false });
     } catch {
       clearTokens();
+      clearCredentials();
       set({ user: null, loading: false });
     }
   },

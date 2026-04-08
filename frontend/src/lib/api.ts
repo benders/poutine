@@ -1,3 +1,5 @@
+import { setCredentials, clearCredentials } from "./subsonic.js";
+
 let accessToken: string | null = localStorage.getItem("accessToken");
 
 export function setToken(token: string) {
@@ -60,12 +62,14 @@ export async function login(username: string, password: string) {
     body: JSON.stringify({ username, password }),
   });
   setToken(data.accessToken);
+  setCredentials(username, password);
   return data.user;
 }
 
 export async function logout() {
   await apiFetch("/admin/logout", { method: "POST" }).catch(() => undefined);
   clearTokens();
+  clearCredentials();
 }
 
 export async function getMe() {
@@ -148,120 +152,3 @@ export function clearArtCache() {
   return apiFetch("/admin/cache", { method: "DELETE" });
 }
 
-// Legacy library types — to be replaced in Phase 7 with Subsonic client
-
-export interface Artist {
-  id: string;
-  name: string;
-  musicbrainzId?: string;
-  imageUrl?: string;
-  trackCount: number;
-  releaseGroupCount: number;
-}
-
-export interface ReleaseGroup {
-  id: string;
-  name: string;
-  musicbrainzId?: string;
-  year?: number;
-  genre?: string;
-  imageUrl?: string;
-  artistId: string;
-  artistName: string;
-}
-
-export interface Track {
-  id: string;
-  title: string;
-  musicbrainzId?: string;
-  trackNumber: number;
-  discNumber: number;
-  durationMs: number;
-  genre?: string;
-  artistId: string;
-  artistName: string;
-  releaseId: string;
-  releaseName: string;
-}
-
-export interface Release {
-  id: string;
-  name: string;
-  musicbrainzId?: string;
-  edition?: string;
-  trackCount: number;
-  tracks: Track[];
-}
-
-export interface ReleaseGroupDetail extends ReleaseGroup {
-  releases: Release[];
-}
-
-export interface ArtistDetail {
-  id: string;
-  name: string;
-  musicbrainzId?: string;
-  imageUrl?: string;
-  releaseGroups: ReleaseGroup[];
-}
-
-export interface SearchResults {
-  artists: Artist[];
-  releaseGroups: ReleaseGroup[];
-  tracks: Track[];
-}
-
-// These library calls target /api/library/* which was removed in Phase 5.
-// They will be replaced by Subsonic calls in Phase 7.
-export function getArtists() {
-  return apiFetch<Artist[]>("/api/library/artists");
-}
-
-export function getArtist(id: string) {
-  return apiFetch<ArtistDetail>(`/api/library/artists/${id}`);
-}
-
-export function getReleaseGroups(params?: { artistId?: string }) {
-  const qs = params?.artistId ? `?artistId=${params.artistId}` : "";
-  return apiFetch<ReleaseGroup[]>(`/api/library/release-groups${qs}`);
-}
-
-export function getReleaseGroup(id: string) {
-  return apiFetch<ReleaseGroupDetail>(`/api/library/release-groups/${id}`);
-}
-
-export function searchLibrary(q: string) {
-  return apiFetch<SearchResults>(`/api/library/search?q=${encodeURIComponent(q)}`);
-}
-
-// Subsonic media URLs (auth via query params)
-export function streamUrl(
-  trackId: string,
-  username: string,
-  password: string,
-  format = "opus",
-  maxBitRate = 128,
-) {
-  const params = new URLSearchParams({
-    u: username,
-    p: password,
-    v: "1.16.1",
-    c: "poutine",
-    id: trackId,
-    format,
-    maxBitRate: String(maxBitRate),
-  });
-  return `/rest/stream?${params}`;
-}
-
-export function artUrl(encodedId: string, size?: number): string {
-  const params = new URLSearchParams({
-    u: "guest",
-    p: "guest",
-    v: "1.16.1",
-    c: "poutine",
-    id: encodedId,
-  });
-  if (size) params.set("size", String(size));
-  return `/rest/getCoverArt?${params}`;
-}

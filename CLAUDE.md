@@ -54,7 +54,16 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - The `image_url` field in `unified_release_groups` stores encoded IDs in `{instanceId}:{coverArtId}` format — this encoding is required for the art endpoint to resolve the correct upstream instance
 - Encoding/decoding helpers live in `hub/src/library/cover-art.ts`
 
-## API surface (Phase 2–6)
+## Frontend Subsonic client (`frontend/src/lib/subsonic.ts`)
+
+- All library browsing and search calls go through the native Subsonic API — `getAlbumList2`, `getArtists`, `getArtist`, `getAlbum`, `search3`
+- Subsonic credentials (username + password) are stored in `localStorage` under `subsonicUser`/`subsonicPass` and loaded at module init — no re-login needed after page refresh
+- `artUrl(coverArtId, size?)` and `streamUrl(songId, format, maxBitRate)` build authenticated Subsonic URLs using the stored credentials — safe to use in `<img src>` and `<audio src>` since Subsonic auth is query-param-based
+- `setCredentials()` is called by `login()` in `api.ts`; `clearCredentials()` is called by both `logout()` and `checkAuth()` on JWT expiry
+- Subsonic song IDs are prefixed (`t<uuid>`), album IDs are `al<uuid>`, artist IDs are `ar<uuid>` — these prefixed IDs appear in URL routes (e.g. `/albums/al<uuid>`) and are passed directly to `getAlbum(id)` / `getArtist(id)`
+- `SubsonicSong.durationMs` is computed from the Subsonic `duration` field (seconds × 1000) — the rest of the frontend uses milliseconds
+
+## API surface (Phase 2–7)
 
 - **Subsonic API** (`/rest/*`) is the primary client-facing API — browse library, stream, cover art, playlists. Auth via Subsonic `u`+`p` (cleartext) or `u`+`t`+`s` (token+salt MD5) query params.
 - **Federation API** (`/federation/*`) is peer-to-peer only — requires Ed25519 signature. Routes: `/federation/library/export`, `/federation/stream/:trackId`, `/federation/art/:encodedId`
@@ -79,7 +88,9 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - **Runtime settings live in the `settings` table** — use this key-value table (not env vars) for settings that admins should be able to change without restarting the server. The `hub/src/services/art-cache.ts` pattern shows how to read from it with a fallback default.
 - **`federatedFetch` paths need the full route prefix** — federation routes are under `/federation`, so all `federatedFetch` calls must use `/federation/...` paths, not just the route suffix.
 - **Owner seeding is async** — argon2 hashing requires an async call, so owner seeding must happen in `buildApp()` (not in the synchronous `createDatabase()`). Pattern established in `hub/src/server.ts::seedOwner()`.
-- **Admin login sets a JWT cookie AND returns the token** — the cookie enables future admin API calls; returning the token in the response body lets the SPA store it in localStorage for the Authorization header (Phase 7 will clean this up when Subsonic auth replaces the JWT flow).
+- **Admin login sets a JWT cookie AND returns the token** — the cookie enables future admin API calls; the token in the response body is stored in localStorage for the Authorization header on admin endpoints. Subsonic credentials (username + password) are also stored in localStorage by `login()` so `artUrl`/`streamUrl` helpers can build authenticated URLs without extra state.
+- **Subsonic `coverArt` field IS the encoded art ID** — in the hub's `buildAlbum`/`buildSong`, `coverArt` is set to `row.image_url` which already holds the `{instanceId}:{coverArtId}` encoded form. Pass it directly to `artUrl()` on the frontend; no further encoding needed.
+- **`getAlbumList2` replaces the old release-group list** — Subsonic has no "release group" concept; albums are flat. The frontend's Library page now fetches 500 albums client-side and sorts/filters locally, same as before.
 
 ## Docker architecture
 
