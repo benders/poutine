@@ -2,7 +2,7 @@ import type { FastifyPluginAsync, FastifyPluginOptions, FastifyRequest, FastifyR
 import { Readable } from "node:stream";
 import { readFileSync } from "node:fs";
 import { SubsonicClient } from "../adapters/subsonic.js";
-import { decodeCoverArtId } from "./stream.js";
+import { decodeCoverArtId } from "../library/cover-art.js";
 
 // ── Plugin options ────────────────────────────────────────────────────────────
 

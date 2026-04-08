@@ -7,6 +7,15 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Drop tables removed in Phase 5 (server-side queue moved client-side).
+ * Safe to call on fresh databases — DROP IF EXISTS is a no-op when absent.
+ */
+function dropLegacyTables(db: Database.Database): void {
+  db.exec("DROP TABLE IF EXISTS user_queue_state");
+  db.exec("DROP TABLE IF EXISTS user_queue");
+}
+
+/**
  * Apply additive column migrations for existing databases.
  * SQLite supports ADD COLUMN idempotently via PRAGMA table_info check.
  */
@@ -41,6 +50,9 @@ export function createDatabase(dbPath: string): Database.Database {
 
   // Execute each statement separately (better-sqlite3 exec handles multiple)
   db.exec(schema);
+
+  // Drop tables removed in Phase 5
+  dropLegacyTables(db);
 
   // Apply additive column migrations for existing DBs
   ensureColumns(db);

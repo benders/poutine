@@ -7,9 +7,7 @@ export interface Config {
   jwtSecret: string;
   jwtAccessExpiresIn: string;
   jwtRefreshExpiresIn: string;
-  encryptionKey: string;
   syncIntervalMs: number;
-  healthCheckIntervalMs: number;
   instanceTimeoutMs: number;
   instanceConcurrency: number;
   // Phase 1: bundled Navidrome + peer federation config.
@@ -45,13 +43,8 @@ export function loadConfig(): Config {
     jwtSecret,
     jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
     jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d",
-    encryptionKey: process.env.ENCRYPTION_KEY || jwtSecret,
     syncIntervalMs: parseInt(
       process.env.SYNC_INTERVAL_MS || String(6 * 60 * 60 * 1000),
-      10
-    ),
-    healthCheckIntervalMs: parseInt(
-      process.env.HEALTH_CHECK_INTERVAL_MS || "60000",
       10
     ),
     instanceTimeoutMs: parseInt(

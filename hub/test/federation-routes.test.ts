@@ -85,7 +85,6 @@ describe("federation routes — auth middleware", () => {
     const testConfig: Partial<Config> = {
       databasePath: ":memory:",
       jwtSecret: "test-secret",
-      encryptionKey: "test-encryption-key",
       poutinePrivateKeyPath: keyPathB,
       poutinePeersConfig: peersYamlB,
       poutineInstanceId: "poutine-b",

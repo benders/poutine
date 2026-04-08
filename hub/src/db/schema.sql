@@ -184,25 +184,6 @@ CREATE TABLE IF NOT EXISTS track_sources (
 CREATE INDEX IF NOT EXISTS idx_track_sources_track ON track_sources(unified_track_id);
 
 -- ============================================================
--- Playback Queue
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS user_queue (
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  position INTEGER NOT NULL,
-  track_id TEXT NOT NULL REFERENCES unified_tracks(id) ON DELETE CASCADE,
-  added_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (user_id, position)
-);
-
-CREATE TABLE IF NOT EXISTS user_queue_state (
-  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  current_position INTEGER NOT NULL DEFAULT 0,
-  shuffle INTEGER NOT NULL DEFAULT 0,
-  repeat_mode TEXT NOT NULL DEFAULT 'none' -- none | one | all
-);
-
--- ============================================================
 -- Settings (key-value store)
 -- ============================================================
 

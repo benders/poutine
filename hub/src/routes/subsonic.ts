@@ -8,7 +8,7 @@ import {
   encodeId,
   decodeId,
 } from "./subsonic-response.js";
-import { decodeCoverArtId } from "./stream.js";
+import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { selectBestSource } from "../library/source-selection.js";
 

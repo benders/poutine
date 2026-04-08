@@ -2,8 +2,7 @@ import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { syncInstance } from "./sync.js";
-import type { SyncResult } from "./sync.js";
-import type { Instance } from "../federation/registry.js";
+import type { SyncResult, Instance } from "./sync.js";
 
 export async function syncLocal(
   db: Database.Database,

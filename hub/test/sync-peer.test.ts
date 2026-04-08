@@ -57,7 +57,6 @@ describe("sync-peer", () => {
     const configB: Partial<Config> = {
       databasePath: ":memory:",
       jwtSecret: "test-b",
-      encryptionKey: "test-b-enc",
       poutinePrivateKeyPath: keyPathB,
       poutinePeersConfig: peersYamlB,
       poutineInstanceId: "poutine-b",
@@ -82,7 +81,6 @@ describe("sync-peer", () => {
     const configA: Partial<Config> = {
       databasePath: ":memory:",
       jwtSecret: "test-a",
-      encryptionKey: "test-a-enc",
       poutinePrivateKeyPath: keyPathA,
       poutinePeersConfig: peersYamlA,
       poutineInstanceId: "poutine-a",

@@ -7,7 +7,6 @@ import type { Config } from "../src/config.js";
 const testConfig: Partial<Config> = {
   databasePath: ":memory:",
   jwtSecret: "test-secret-key-for-testing-purposes",
-  encryptionKey: "test-encryption-key",
 };
 
 async function seedUser(

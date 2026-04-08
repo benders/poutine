@@ -3,11 +3,6 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
-import { authRoutes } from "./routes/auth.js";
-import { instanceRoutes } from "./routes/instances.js";
-import { libraryRoutes } from "./routes/library.js";
-import { streamRoutes } from "./routes/stream.js";
-import { queueRoutes } from "./routes/queue.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
 import { federationRoutes } from "./routes/federation.js";
@@ -17,6 +12,7 @@ import { loadPeerRegistry } from "./federation/peers.js";
 import { createRequirePeerAuth } from "./federation/peer-auth.js";
 import { createFederationFetcher } from "./federation/sign-request.js";
 import { seedSyntheticInstances } from "./library/seed-instances.js";
+import { hashPassword } from "./auth/passwords.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -33,6 +29,30 @@ declare module "fastify" {
     privateKey: KeyObject;
     federatedFetch: ReturnType<typeof FetcherFactory>;
   }
+}
+
+/**
+ * Seed the owner user on first boot.
+ * If the users table is empty and POUTINE_OWNER_USERNAME / POUTINE_OWNER_PASSWORD
+ * are configured, creates the owner with is_admin=1. Idempotent: no-op if any
+ * user already exists.
+ */
+async function seedOwner(
+  db: Database.Database,
+  config: Config,
+): Promise<void> {
+  if (!config.poutineOwnerUsername || !config.poutineOwnerPassword) return;
+
+  const existing = db
+    .prepare("SELECT COUNT(*) as count FROM users")
+    .get() as { count: number };
+  if (existing.count > 0) return;
+
+  const passwordHash = await hashPassword(config.poutineOwnerPassword);
+  const id = crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, 1)",
+  ).run(id, config.poutineOwnerUsername, passwordHash);
 }
 
 export async function buildApp(configOverrides?: Partial<Config>) {
@@ -83,6 +103,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     }),
   );
 
+  // Seed owner user on first boot if configured
+  await seedOwner(db, config);
+
   // Seed synthetic instance rows (local Navidrome + known peers) — idempotent
   seedSyntheticInstances(db, config, peerRegistry);
 
@@ -104,11 +127,6 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(cookie);
 
   // Routes
-  await app.register(authRoutes, { prefix: "/api/auth" });
-  await app.register(instanceRoutes, { prefix: "/api/instances" });
-  await app.register(libraryRoutes, { prefix: "/api/library" });
-  await app.register(streamRoutes, { prefix: "/api" });
-  await app.register(queueRoutes, { prefix: "/api/queue" });
   await app.register(settingsRoutes, { prefix: "/api/settings" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
 
