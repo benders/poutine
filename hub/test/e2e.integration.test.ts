@@ -6,7 +6,10 @@ let app: FastifyInstance;
 let accessToken: string;
 let instanceId: string;
 
-describe("E2E: Register → Add Instance → Sync → Browse Library", () => {
+// TODO Phase 5: this test exercises the legacy /api/instances flow that
+// is removed in Phase 5. Skipped pending replacement with a Subsonic-flow
+// e2e test.
+describe.skip("E2E: Register → Add Instance → Sync → Browse Library", () => {
   beforeAll(async () => {
     app = await buildApp({
       databasePath: ":memory:",

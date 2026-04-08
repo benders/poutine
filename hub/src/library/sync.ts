@@ -7,6 +7,12 @@ import {
 } from "../federation/registry.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import type { SubsonicAlbum, SubsonicSong } from "../adapters/subsonic.js";
+import type { PeerRegistry } from "../federation/peers.js";
+import { syncLocal } from "./sync-local.js";
+import { syncPeer } from "./sync-peer.js";
+import type { FederationFetcher } from "./sync-peer.js";
+import { mergeLibraries } from "./merge.js";
+import { seedSyntheticInstances } from "./seed-instances.js";
 
 export interface SyncResult {
   instanceId: string;
@@ -247,7 +253,46 @@ export async function syncInstance(
 }
 
 /**
+ * Sync the local Navidrome and all known peers, then merge.
+ * This is the main entry point for Phase 4+ sync.
+ */
+export async function syncAll(
+  db: Database.Database,
+  config: Config,
+  peerRegistry: PeerRegistry,
+  federatedFetch: FederationFetcher,
+  ownerUsername: string,
+): Promise<{ local: SyncResult; peers: SyncResult[] }> {
+  // Ensure synthetic instance rows exist (idempotent)
+  seedSyntheticInstances(db, config, peerRegistry);
+
+  const local = await syncLocal(db, config);
+
+  const peers: SyncResult[] = [];
+  for (const peer of peerRegistry.peers.values()) {
+    try {
+      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername);
+      peers.push(peerResult);
+    } catch (err) {
+      peers.push({
+        instanceId: peer.id,
+        artistCount: 0,
+        albumCount: 0,
+        trackCount: 0,
+        errors: [`Peer sync failed: ${String(err)}`],
+      });
+    }
+  }
+
+  mergeLibraries(db);
+
+  return { local, peers };
+}
+
+/**
  * Sync all online instances.
+ * @deprecated Use syncAll() for Phase 4+ behavior. Retained for the legacy
+ * /api/instances routes until Phase 5 removes them.
  */
 export async function syncAllInstances(
   db: Database.Database,

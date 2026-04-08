@@ -29,7 +29,7 @@ interface ReleaseGroupExportRow {
   musicbrainz_id: string | null;
   year: number | null;
   genre: string | null;
-  image_url: string | null;
+  cover_art_id: string | null; // raw cover art id from instance_albums (no peer prefix)
 }
 
 interface ReleaseExportRow {
@@ -127,12 +127,20 @@ export const federationRoutes: FastifyPluginAsync<FederationPluginOptions> =
       const rgIds = [...new Set(releases.map((r) => r.release_group_id))];
 
       // Get release groups
+      // Fetch raw cover_art_id from a local instance_album rather than the
+      // encoded image_url, to avoid double-encoding when peers re-import this data.
       const releaseGroups = rgIds.length
         ? (app.db
             .prepare(
-              `SELECT id, name, artist_id, musicbrainz_id, year, genre, image_url
-              FROM unified_release_groups
-              WHERE id IN (${placeholders(rgIds.length)})`,
+              `SELECT urg.id, urg.name, urg.artist_id, urg.musicbrainz_id, urg.year, urg.genre,
+                (SELECT ia.cover_art_id
+                 FROM unified_releases ur
+                 JOIN unified_release_sources urs ON urs.unified_release_id = ur.id
+                 JOIN instance_albums ia ON ia.id = urs.instance_album_id
+                 WHERE ur.release_group_id = urg.id AND ia.instance_id = 'local'
+                 LIMIT 1) AS cover_art_id
+              FROM unified_release_groups urg
+              WHERE urg.id IN (${placeholders(rgIds.length)})`,
             )
             .all(...rgIds) as ReleaseGroupExportRow[])
         : [];
@@ -191,7 +199,7 @@ export const federationRoutes: FastifyPluginAsync<FederationPluginOptions> =
           musicbrainzId: rg.musicbrainz_id,
           year: rg.year,
           genre: rg.genre,
-          imageUrl: rg.image_url,
+          coverArtId: rg.cover_art_id, // raw id; importing peers encode as peerId:coverArtId
         })),
         releases: releases.map((r) => ({
           id: r.id,

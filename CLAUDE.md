@@ -48,12 +48,23 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - The `image_url` field in `unified_release_groups` stores encoded IDs in `{instanceId}:{coverArtId}` format — this encoding is required for the `/api/art/:id` endpoint to resolve the correct upstream instance
 - Frontend uses `artUrl()` helper from `lib/api.ts` to construct authenticated image URLs (token passed as query param, same pattern as `streamUrl()`)
 
+## Federation architecture (Phase 3–4)
+
+- Federation routes are registered at the `/federation` prefix (e.g. `/federation/library/export`, `/federation/stream/:trackId`, `/federation/art/:encodedId`)
+- When calling `federatedFetch(peer, path, opts)`, the path must include the `/federation` prefix — the fetcher just concatenates `peer.url + path`
+- `track_sources` has `source_kind` (`'local'` | `'peer'`) and `peer_id` columns; streaming/art routes check `source_kind` to choose local Navidrome vs. federated peer
+- `selectBestSource()` scores sources by format quality → bitrate → local tie-break; it is the single decision point for which source a stream request uses
+- The federation library export (`/federation/library/export`) emits raw `coverArtId` (no peer prefix); importing peers encode it as `{peerId}:{coverArtId}` during `merge.ts`
+- `seedSyntheticInstances()` is idempotent — called at server startup and before every `syncAll()` to ensure instance rows exist for the local Navidrome and each peer
+- `syncAll()` in `sync.ts` is the Phase 4+ entry point; the old `syncAllInstances()` is deprecated and retained only for legacy `/api/instances` routes until Phase 5 removes them
+
 ## Lessons learned
 
 - **Frontend `<img>` tags can't set Authorization headers** — the hub supports `?token=` query params for this reason. Any new endpoint serving binary content to `<img>`, `<audio>`, or `<video>` tags must accept token via query param (already handled by `requireAuth` middleware).
 - **Cover art IDs must be encoded with instance context** — Subsonic cover art IDs are instance-local. The merge process must encode them as `{instanceId}:{coverArtId}` so the hub knows which upstream to query. Bare cover art IDs are not usable.
 - **After a schema or merge logic change, a resync is required** — changes to how data is stored in unified tables only take effect after `sync-all` + merge runs.
 - **Runtime settings live in the `settings` table** — use this key-value table (not env vars) for settings that admins should be able to change without restarting the server. The `hub/src/services/art-cache.ts` pattern shows how to read from it with a fallback default.
+- **`federatedFetch` paths need the full route prefix** — federation routes are under `/federation`, so all `federatedFetch` calls must use `/federation/...` paths, not just the route suffix.
 
 ## Docker architecture
 

@@ -10,6 +10,7 @@ import {
 } from "./subsonic-response.js";
 import { decodeCoverArtId } from "./stream.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
+import { selectBestSource } from "../library/source-selection.js";
 
 // ── Content-type helpers ──────────────────────────────────────────────────────
 
@@ -75,6 +76,8 @@ interface TrackSourceRow {
   remote_id: string;
   format: string | null;
   bitrate: number | null;
+  source_kind: "local" | "peer";
+  peer_id: string | null;
 }
 
 // ── Song shape builder ────────────────────────────────────────────────────────
@@ -629,15 +632,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    // TODO Phase 4: add peer art routing for non-local instances
-    if (instanceId !== "local") {
-      sendSubsonicError(reply, 70, "Not found", q);
-      return;
-    }
-
     const cacheKey = size ? `${id}:${size}` : id;
 
-    // Check cache first
+    // Check cache first (covers both local and peer art)
     const cached = app.artCache.get(cacheKey);
     if (cached) {
       const data = readFileSync(cached.filePath);
@@ -651,20 +648,41 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    // Cache miss — fetch from upstream Navidrome
-    const client = new SubsonicClient({
-      url: app.config.navidromeUrl,
-      username: app.config.navidromeUsername,
-      password: app.config.navidromePassword,
-    });
-
     let response: Response;
-    try {
-      const sizeNum = size ? parseInt(size, 10) : undefined;
-      response = await client.getCoverArt(coverArtId, sizeNum);
-    } catch {
-      sendSubsonicError(reply, 70, "Not found", q);
-      return;
+
+    if (instanceId !== "local") {
+      // Peer art routing
+      const peer = app.peerRegistry.peers.get(instanceId);
+      if (!peer) {
+        sendSubsonicError(reply, 70, "Not found", q);
+        return;
+      }
+      // Peers serve their own art as local:<coverArtId>
+      const peerEncoded = `local:${coverArtId}`;
+      try {
+        response = await app.federatedFetch(
+          peer,
+          `/federation/art/${encodeURIComponent(peerEncoded)}`,
+          { asUser: request.subsonicUser.username },
+        );
+      } catch {
+        sendSubsonicError(reply, 70, "Not found", q);
+        return;
+      }
+    } else {
+      // Local Navidrome
+      const client = new SubsonicClient({
+        url: app.config.navidromeUrl,
+        username: app.config.navidromeUsername,
+        password: app.config.navidromePassword,
+      });
+      try {
+        const sizeNum = size ? parseInt(size, 10) : undefined;
+        response = await client.getCoverArt(coverArtId, sizeNum);
+      } catch {
+        sendSubsonicError(reply, 70, "Not found", q);
+        return;
+      }
     }
 
     if (!response.body) {
@@ -706,37 +724,64 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    // TODO Phase 4: use selectBestSource() with local/peer routing
-    const source = app.db
+    const rawSources = app.db
       .prepare(
-        `SELECT ts.remote_id, ts.format, ts.bitrate
+        `SELECT ts.remote_id, ts.format, ts.bitrate, ts.source_kind, ts.peer_id
         FROM track_sources ts
-        WHERE ts.unified_track_id = ?
-        ORDER BY COALESCE(ts.bitrate, 0) DESC
-        LIMIT 1`,
+        WHERE ts.unified_track_id = ?`,
       )
-      .get(trackId) as TrackSourceRow | undefined;
+      .all(trackId) as TrackSourceRow[];
 
-    if (!source) {
+    const best = selectBestSource(
+      rawSources.map((s) => ({
+        remoteId: s.remote_id,
+        format: s.format,
+        bitrate: s.bitrate,
+        sourceKind: s.source_kind,
+        peerId: s.peer_id,
+      })),
+      q.format,
+    );
+
+    if (!best) {
       sendSubsonicError(reply, 70, "Song not found", q);
       return;
     }
 
-    const client = new SubsonicClient({
-      url: app.config.navidromeUrl,
-      username: app.config.navidromeUsername,
-      password: app.config.navidromePassword,
-    });
-
     let response: Response;
-    try {
-      const streamParams: { format?: string; maxBitRate?: number } = {};
-      if (q.format) streamParams.format = q.format;
-      if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
-      response = await client.stream(source.remote_id, streamParams);
-    } catch {
-      sendSubsonicError(reply, 0, "Stream error", q);
-      return;
+
+    if (best.sourceKind === "local") {
+      const client = new SubsonicClient({
+        url: app.config.navidromeUrl,
+        username: app.config.navidromeUsername,
+        password: app.config.navidromePassword,
+      });
+      try {
+        const streamParams: { format?: string; maxBitRate?: number } = {};
+        if (q.format) streamParams.format = q.format;
+        if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
+        response = await client.stream(best.remoteId, streamParams);
+      } catch {
+        sendSubsonicError(reply, 0, "Stream error", q);
+        return;
+      }
+    } else {
+      // Peer routing
+      const peer = app.peerRegistry.peers.get(best.peerId!);
+      if (!peer) {
+        sendSubsonicError(reply, 70, "Peer not available", q);
+        return;
+      }
+      try {
+        response = await app.federatedFetch(
+          peer,
+          `/federation/stream/${encodeURIComponent(best.remoteId)}`,
+          { asUser: request.subsonicUser.username },
+        );
+      } catch {
+        sendSubsonicError(reply, 0, "Peer stream error", q);
+        return;
+      }
     }
 
     if (!response.body) {

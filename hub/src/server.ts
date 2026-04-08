@@ -16,6 +16,7 @@ import { loadOrCreatePrivateKey } from "./federation/signing.js";
 import { loadPeerRegistry } from "./federation/peers.js";
 import { createRequirePeerAuth } from "./federation/peer-auth.js";
 import { createFederationFetcher } from "./federation/sign-request.js";
+import { seedSyntheticInstances } from "./library/seed-instances.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -81,6 +82,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
       instanceId: peerRegistry.instanceId,
     }),
   );
+
+  // Seed synthetic instance rows (local Navidrome + known peers) — idempotent
+  seedSyntheticInstances(db, config, peerRegistry);
 
   // SIGHUP handler to reload peer registry without restart
   const sighupHandler = () => {
