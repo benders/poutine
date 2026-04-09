@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: hub/Dockerfile
     ports:
-      - "3000:3000"
+      - "${HUB_HOST_PORT:-3000}:3000"
     environment:
       - NODE_ENV=production
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
@@ -19,7 +19,7 @@ services:
       - POUTINE_OWNER_PASSWORD=${POUTINE_OWNER_PASSWORD:?Set POUTINE_OWNER_PASSWORD in .env}
     volumes:
       - hub-data:/app/data
-      - ./peers.yaml:/app/config/peers.yaml:ro
+      - ${PEERS_CONFIG_HOST_PATH:-./peers.yaml}:/app/config/peers.yaml:ro
     depends_on:
       - navidrome
     networks:

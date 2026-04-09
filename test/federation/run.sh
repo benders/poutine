@@ -1,27 +1,24 @@
 #!/usr/bin/env bash
 # Federation regression test
 #
-# Starts two complete Poutine stacks (hub + Navidrome each), federated together.
+# Starts two complete Poutine stacks (hub + Navidrome each), federated together,
+# using the same docker-compose.yml with separate project names and env files.
 # Verifies metadata sync and federated audio streaming end-to-end.
 #
 # Usage:
-#   pnpm test:federation
-#
-#   # With real music (local only):
-#   FED_MUSIC_A="/Volumes/BigWolf/Music/Other" \
-#   FED_MUSIC_B="/Volumes/BigWolf/Music/Digital Purchases" \
 #   pnpm test:federation
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Music paths: default to committed fixtures
-export FED_MUSIC_A="${FED_MUSIC_A:-$SCRIPT_DIR/fixtures/music-a}"
-export FED_MUSIC_B="${FED_MUSIC_B:-$SCRIPT_DIR/fixtures/music-b}"
+COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
+PROJECT_A="poutine-fed-a"
+PROJECT_B="poutine-fed-b"
+FED_NETWORK="poutine-federation-test"
 
-COMPOSE_FILE="$REPO_ROOT/docker-compose.federation.yml"
-COMPOSE="docker compose -f $COMPOSE_FILE"
+COMPOSE_A="docker compose -f $COMPOSE_FILE -p $PROJECT_A --env-file $SCRIPT_DIR/a.env"
+COMPOSE_B="docker compose -f $COMPOSE_FILE -p $PROJECT_B --env-file $SCRIPT_DIR/b.env"
 
 SUB_USER="owner"
 SUB_PASS="federation-test-password"
@@ -33,23 +30,51 @@ cleanup() {
   if [ "$PASSED" -eq 0 ]; then
     echo "" >&2
     echo "=== FAILURE: hub-a logs ===" >&2
-    $COMPOSE logs --no-color hub-a 2>/dev/null | tail -40 >&2
+    $COMPOSE_A logs --no-color hub 2>/dev/null | tail -40 >&2
     echo "=== FAILURE: hub-b logs ===" >&2
-    $COMPOSE logs --no-color hub-b 2>/dev/null | tail -40 >&2
+    $COMPOSE_B logs --no-color hub 2>/dev/null | tail -40 >&2
   fi
   echo ""
-  echo "==> Tearing down federation stack..."
-  $COMPOSE down -v 2>/dev/null || true
+  echo "==> Tearing down federation stacks..."
+  $COMPOSE_A down -v 2>/dev/null || true
+  $COMPOSE_B down -v 2>/dev/null || true
+  docker network rm "$FED_NETWORK" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
 
-echo "==> Tearing down any previous federation stack..."
-$COMPOSE down -v 2>/dev/null || true
+echo "==> Tearing down any previous federation stacks..."
+$COMPOSE_A down -v 2>/dev/null || true
+$COMPOSE_B down -v 2>/dev/null || true
+docker network rm "$FED_NETWORK" 2>/dev/null || true
 
-echo "==> Building and starting federation stack..."
-$COMPOSE up -d --build
+echo "==> Creating shared federation network..."
+docker network create "$FED_NETWORK"
+
+# Pre-populate hub data volumes with the committed test keypairs so each hub
+# boots with a known identity (matching the public keys in peers-{a,b}.yaml).
+echo "==> Pre-populating hub data volumes with test keys..."
+docker volume create "${PROJECT_A}_hub-data"
+docker volume create "${PROJECT_B}_hub-data"
+docker run --rm \
+  -v "${PROJECT_A}_hub-data:/data" \
+  -v "$SCRIPT_DIR/keys:/keys:ro" \
+  alpine cp /keys/poutine-a_ed25519.pem /data/poutine_ed25519.pem
+docker run --rm \
+  -v "${PROJECT_B}_hub-data:/data" \
+  -v "$SCRIPT_DIR/keys:/keys:ro" \
+  alpine cp /keys/poutine-b_ed25519.pem /data/poutine_ed25519.pem
+
+echo "==> Building and starting federation stacks (hub + navidrome only)..."
+$COMPOSE_A up -d --build hub navidrome
+$COMPOSE_B up -d --build hub navidrome
+
+# Connect hub containers to the shared network with stable DNS aliases so that
+# peers-a.yaml (http://hub-a:3000) and peers-b.yaml (http://hub-b:3000) resolve.
+echo "==> Connecting hubs to shared federation network..."
+docker network connect --alias hub-a "$FED_NETWORK" "${PROJECT_A}-hub-1"
+docker network connect --alias hub-b "$FED_NETWORK" "${PROJECT_B}-hub-1"
 
 # ── Wait helpers ──────────────────────────────────────────────────────────────
 
@@ -89,7 +114,7 @@ login_and_sync() {
   while true; do
     local sync_resp local_count
     sync_resp=$(curl -sf -X POST "http://localhost:${port}/admin/sync" \
-      -H "Authorization: Bearer $jwt" 2>/dev/null || echo '{"local":{"tracks":0}}')
+      -H "Authorization: Bearer $jwt" 2>/dev/null || echo '{"local":{"trackCount":0}}')
     local_count=$(echo "$sync_resp" | python3 -c \
       "import sys,json; d=json.load(sys.stdin); print(d.get('local',{}).get('trackCount',0))" 2>/dev/null || echo "0")
 
