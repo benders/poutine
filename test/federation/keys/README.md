@@ -6,8 +6,9 @@ of local test environments.
 
 | File | Instance | Public key |
 |------|----------|------------|
-| `poutine-a_ed25519.pem` | `poutine-a` | see `peers-b.yaml` |
-| `poutine-b_ed25519.pem` | `poutine-b` | see `peers-a.yaml` |
+| `poutine-a_ed25519.pem` | `poutine-a` | see `peers-b.yaml`, `peers-c.yaml` |
+| `poutine-b_ed25519.pem` | `poutine-b` | see `peers-a.yaml`, `peers-c.yaml` |
+| `poutine-c_ed25519.pem` | `poutine-c` | see `peers-a.yaml`, `peers-b.yaml` |
 
 To regenerate (if needed):
 ```bash
@@ -22,6 +23,7 @@ function gen(path) {
 }
 gen('poutine-a_ed25519.pem');
 gen('poutine-b_ed25519.pem');
+gen('poutine-c_ed25519.pem');
 "
 ```
-Then update `peers-a.yaml` and `peers-b.yaml` with the new public keys.
+Then update all `peers-{a,b,c}.yaml` files with the new public keys.

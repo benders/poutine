@@ -3,3 +3,6 @@ peers:
   - id: poutine-a
     url: http://hub-a:3000
     public_key: "ed25519:y4CFHolvi2SRWWMwS1jD+Scp2G6ZGKtPnce4DgZMnEI="
+  - id: poutine-c
+    url: http://hub-c:3000
+    public_key: "ed25519:m1WeDHVD71kocaOV9mLO6Bo+VSj4mK637XCY6OAgR78="

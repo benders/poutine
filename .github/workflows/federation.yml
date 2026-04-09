@@ -26,5 +26,4 @@ jobs:
 
       - name: Run federation regression test
         run: pnpm test:federation
-        # Uses committed fixture music in test/federation/fixtures/
-        # FED_MUSIC_A / FED_MUSIC_B are not set → defaults to fixtures
+        # Uses committed fixture music in test/federation/fixtures/music-{a,b,c}/
