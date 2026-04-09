@@ -1,0 +1,30 @@
+name: Federation regression test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  federation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run federation regression test
+        run: pnpm test:federation
+        # Uses committed fixture music in test/federation/fixtures/
+        # FED_MUSIC_A / FED_MUSIC_B are not set → defaults to fixtures
