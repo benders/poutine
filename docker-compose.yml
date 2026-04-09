@@ -37,7 +37,10 @@ services:
       - ND_ENABLEEXTERNALSERVICES=false
       # Auto-create the "admin" user on first boot using the same credential
       # the hub uses to connect. Username is always "admin" with this method.
-      - ND_INITIALADMINPASSWORD=${NAVIDROME_PASSWORD:?Set NAVIDROME_PASSWORD in .env}
+      # In Navidrome 0.52+, the internal config key is DevAutoCreateAdminPassword
+      # (env var ND_DEVAUTOCREATEADMINPASSWORD). ND_INITIALADMINPASSWORD is a no-op.
+      - ND_DEVAUTOCREATEADMINPASSWORD=${NAVIDROME_PASSWORD:?Set NAVIDROME_PASSWORD in .env}
+      - ND_ENCRYPTIONKEY=${JWT_SECRET:?Set JWT_SECRET in .env}
     volumes:
       - navidrome-data:/data
       - ${NAVIDROME_MUSIC_PATH:-./music}:/music:ro

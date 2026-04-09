@@ -97,6 +97,7 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - **`streamUrl` is the correct subsonic export, not `currentStreamUrl`** — `frontend/src/lib/subsonic.ts` exports `streamUrl(id, format, maxBitRate)`. Naming a local variable `currentStreamUrl` and calling `currentStreamUrl(...)` causes a self-reference error; use a distinct local variable name.
 - **Owner seeding only runs on first boot (empty `users` table)** — `seedOwner()` is a no-op if any user exists. If the `.env` credentials change after first boot, reset the password directly in the DB using `hashPassword` from `hub/dist/auth/passwords.js` via `docker exec`.
 - **Rebuild Docker images after source changes** — the running containers use the compiled image, not live source. After code changes, run `docker compose build <service> && docker compose up -d <service>` or stale routes/assets will be served.
+- **Navidrome admin bootstrap: use `ND_DEVAUTOCREATEADMINPASSWORD`, not `ND_INITIALADMINPASSWORD`** — `ND_INITIALADMINPASSWORD` is a silent no-op in Navidrome 0.52+. The internal config key changed to `DevAutoCreateAdminPassword`, so the correct env var is `ND_DEVAUTOCREATEADMINPASSWORD`. Also set `ND_ENCRYPTIONKEY` or password storage fails silently. Both are required on a fresh volume — if the navidrome-data volume already has an `InitialSetup` property row, the auto-create won't re-run; wipe the volume and restart. Use `clean-wipe.sh` for a full clean start.
 
 ## Docker architecture
 
