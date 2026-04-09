@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
-import { currentStreamUrl } from "@/lib/subsonic";
+import { streamUrl } from "@/lib/subsonic";
 import {
   Play,
   Pause,
@@ -44,7 +44,7 @@ export function PlayerBar() {
       : null;
 
   const currentStreamUrl = currentTrack
-    ? currentStreamUrl(currentTrack.id, "opus", 192)
+    ? streamUrl(currentTrack.id, "opus", 192)
     : null;
 
   // Update audio element when track changes
