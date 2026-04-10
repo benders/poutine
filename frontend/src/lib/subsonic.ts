@@ -1,24 +1,12 @@
+import { getAccessToken } from "./api.js";
+
 const SUBSONIC_VERSION = "1.16.1";
 const CLIENT = "poutine";
 
-// ── Credential storage ────────────────────────────────────────────────────────
-
-let _username: string | null = localStorage.getItem("subsonicUser");
-let _password: string | null = localStorage.getItem("subsonicPass");
-
-export function setCredentials(username: string, password: string): void {
-  _username = username;
-  _password = password;
-  localStorage.setItem("subsonicUser", username);
-  localStorage.setItem("subsonicPass", password);
-}
-
-export function clearCredentials(): void {
-  _username = null;
-  _password = null;
-  localStorage.removeItem("subsonicUser");
-  localStorage.removeItem("subsonicPass");
-}
+// ── Legacy credential cleanup ─────────────────────────────────────────────────
+// Remove plaintext passwords stored by older versions
+localStorage.removeItem("subsonicUser");
+localStorage.removeItem("subsonicPass");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -151,13 +139,10 @@ async function subsonicFetch<T>(
   endpoint: string,
   extra?: Record<string, string>,
 ): Promise<T> {
-  const u = _username;
-  const p = _password;
-  if (!u || !p) throw new SubsonicError("Not authenticated", 10);
+  const token = getAccessToken();
+  if (!token) throw new SubsonicError("Not authenticated", 10);
 
   const params = new URLSearchParams({
-    u,
-    p,
     v: SUBSONIC_VERSION,
     c: CLIENT,
     f: "json",
@@ -168,7 +153,9 @@ async function subsonicFetch<T>(
     }
   }
 
-  const res = await fetch(`/rest/${endpoint}?${params}`);
+  const res = await fetch(`/rest/${endpoint}?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (!res.ok) throw new SubsonicError(res.statusText);
 
   const data = await res.json();
@@ -267,24 +254,22 @@ export function streamUrl(
   maxBitRate = 128,
 ): string {
   const params = new URLSearchParams({
-    u: _username ?? "",
-    p: _password ?? "",
     v: SUBSONIC_VERSION,
     c: CLIENT,
     id: songId,
     format,
     maxBitRate: String(maxBitRate),
+    token: getAccessToken() ?? "",
   });
   return `/rest/stream?${params}`;
 }
 
 export function artUrl(coverArtId: string, size?: number): string {
   const params = new URLSearchParams({
-    u: _username ?? "",
-    p: _password ?? "",
     v: SUBSONIC_VERSION,
     c: CLIENT,
     id: coverArtId,
+    token: getAccessToken() ?? "",
   });
   if (size) params.set("size", String(size));
   return `/rest/getCoverArt?${params}`;

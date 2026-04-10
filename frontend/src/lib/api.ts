@@ -1,4 +1,3 @@
-import { setCredentials, clearCredentials } from "./subsonic.js";
 
 let accessToken: string | null = localStorage.getItem("accessToken");
 
@@ -62,14 +61,12 @@ export async function login(username: string, password: string) {
     body: JSON.stringify({ username, password }),
   });
   setToken(data.accessToken);
-  setCredentials(username, password);
   return data.user;
 }
 
 export async function logout() {
   await apiFetch("/admin/logout", { method: "POST" }).catch(() => undefined);
   clearTokens();
-  clearCredentials();
 }
 
 export async function getMe() {

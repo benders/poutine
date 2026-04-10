@@ -57,15 +57,14 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 ## Frontend Subsonic client (`frontend/src/lib/subsonic.ts`)
 
 - All library browsing and search calls go through the native Subsonic API — `getAlbumList2`, `getArtists`, `getArtist`, `getAlbum`, `search3`
-- Subsonic credentials (username + password) are stored in `localStorage` under `subsonicUser`/`subsonicPass` and loaded at module init — no re-login needed after page refresh
-- `artUrl(coverArtId, size?)` and `streamUrl(songId, format, maxBitRate)` build authenticated Subsonic URLs using the stored credentials — safe to use in `<img src>` and `<audio src>` since Subsonic auth is query-param-based
-- `setCredentials()` is called by `login()` in `api.ts`; `clearCredentials()` is called by both `logout()` and `checkAuth()` on JWT expiry
+- Auth uses the JWT from `getAccessToken()` (shared with the admin API) — no separate Subsonic credentials are stored
+- `subsonicFetch()` sends JWT via `Authorization: Bearer` header; `artUrl()` and `streamUrl()` pass JWT as a `token` query param (for `<img>`/`<audio>` elements that can't set headers)
 - Subsonic song IDs are prefixed (`t<uuid>`), album IDs are `al<uuid>`, artist IDs are `ar<uuid>` — these prefixed IDs appear in URL routes (e.g. `/albums/al<uuid>`) and are passed directly to `getAlbum(id)` / `getArtist(id)`
 - `SubsonicSong.durationMs` is computed from the Subsonic `duration` field (seconds × 1000) — the rest of the frontend uses milliseconds
 
 ## API surface (Phase 2–7)
 
-- **Subsonic API** (`/rest/*`) is the primary client-facing API — browse library, stream, cover art, playlists. Auth via Subsonic `u`+`p` (cleartext) or `u`+`t`+`s` (token+salt MD5) query params.
+- **Subsonic API** (`/rest/*`) is the primary client-facing API — browse library, stream, cover art, playlists. Auth via JWT (header, cookie, or `token` query param) or legacy Subsonic `u`+`p` query params for third-party clients.
 - **Federation API** (`/federation/*`) is peer-to-peer only — requires Ed25519 signature. Routes: `/federation/library/export`, `/federation/stream/:trackId`, `/federation/art/:encodedId`
 - **Admin API** (`/admin/*`) — owner-only management: login, users CRUD, peer list, sync trigger, cache stats/control, instance identity + Navidrome status (`GET /admin/instance`), Navidrome scan trigger (`POST /admin/instance/scan`). Auth via JWT cookie set by `POST /admin/login`.
 - **Health** (`/api/health`) — unauthenticated, returns `{ status: "ok" }`
@@ -82,13 +81,13 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 
 ## Lessons learned
 
-- **Subsonic auth uses query params** — `<audio>`, `<img>`, and `<video>` tags can't set headers. Subsonic auth naturally fits: `u`, `t`, `s` (or `p`) are passed as query params, so media elements work without special handling.
+- **Subsonic routes accept JWT or traditional Subsonic auth** — The hub's `/rest/*` routes accept JWT (via `Authorization: Bearer` header, `access_token` cookie, or `token` query param) as the primary auth method. Traditional Subsonic `u`+`p` query-param auth is still supported for third-party Subsonic clients. The frontend uses JWT exclusively — `subsonicFetch()` sends the Bearer header, while `streamUrl()`/`artUrl()` use the `token` query param (since `<audio>`/`<img>` elements can't set headers).
 - **Cover art IDs must be encoded with instance context** — Subsonic cover art IDs are instance-local. The merge process must encode them as `{instanceId}:{coverArtId}` so the hub knows which upstream to query. Bare cover art IDs are not usable. Helpers in `hub/src/library/cover-art.ts`.
 - **After a schema or merge logic change, a resync is required** — changes to how data is stored in unified tables only take effect after `syncAll()` + merge runs.
 - **Runtime settings live in the `settings` table** — use this key-value table (not env vars) for settings that admins should be able to change without restarting the server. The `hub/src/services/art-cache.ts` pattern shows how to read from it with a fallback default.
 - **`federatedFetch` paths need the full route prefix** — federation routes are under `/federation`, so all `federatedFetch` calls must use `/federation/...` paths, not just the route suffix.
 - **Owner seeding is async** — argon2 hashing requires an async call, so owner seeding must happen in `buildApp()` (not in the synchronous `createDatabase()`). Pattern established in `hub/src/server.ts::seedOwner()`.
-- **Admin login sets a JWT cookie AND returns the token** — the cookie enables future admin API calls; the token in the response body is stored in localStorage for the Authorization header on admin endpoints. Subsonic credentials (username + password) are also stored in localStorage by `login()` so `artUrl`/`streamUrl` helpers can build authenticated URLs without extra state.
+- **Admin login sets a JWT cookie AND returns the token** — the cookie enables future admin API calls; the token in the response body is stored in localStorage for the Authorization header on admin endpoints. The same JWT is used for Subsonic API auth — no separate credentials are stored.
 - **Subsonic `coverArt` field IS the encoded art ID** — in the hub's `buildAlbum`/`buildSong`, `coverArt` is set to `row.image_url` which already holds the `{instanceId}:{coverArtId}` encoded form. Pass it directly to `artUrl()` on the frontend; no further encoding needed.
 - **`getAlbumList2` replaces the old release-group list** — Subsonic has no "release group" concept; albums are flat. The frontend's Library page now fetches 500 albums client-side and sorts/filters locally, same as before.
 - **Peer `track_sources.remote_id` is the peer's `unified_track_id`, not its Navidrome ID** — When A syncs B, `instance_tracks.remote_id` is set to B's `unified_track_id`. After `mergeLibraries`, A's `track_sources.remote_id` (for peer sources) holds B's unified ID. A calls `/federation/stream/<B-unified-id>`; B then looks that up in its own `track_sources` to get the real Navidrome `remote_id`. This two-hop indirection is intentional.
