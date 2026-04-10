@@ -17,7 +17,6 @@ export interface PeerRegistry {
 }
 
 interface PeersYaml {
-  instance_id?: string;
   peers?: Array<{
     id?: string;
     url?: string;
@@ -27,12 +26,12 @@ interface PeersYaml {
 
 function parseYamlFile(
   configPath: string,
-  fallbackInstanceId: string,
+  instanceId: string,
   warnFn: (msg: string) => void,
 ): { instanceId: string; peers: Map<string, Peer> } {
   if (!existsSync(configPath)) {
     warnFn(`Peers config not found at ${configPath} — running without federation peers`);
-    return { instanceId: fallbackInstanceId, peers: new Map() };
+    return { instanceId, peers: new Map() };
   }
 
   let raw: PeersYaml;
@@ -41,18 +40,13 @@ function parseYamlFile(
     raw = yamlParse(text) as PeersYaml;
   } catch (err) {
     warnFn(`Failed to parse peers config at ${configPath}: ${String(err)}`);
-    return { instanceId: fallbackInstanceId, peers: new Map() };
+    return { instanceId, peers: new Map() };
   }
 
   if (!raw || typeof raw !== "object") {
     warnFn(`Peers config at ${configPath} is not a valid YAML object`);
-    return { instanceId: fallbackInstanceId, peers: new Map() };
+    return { instanceId, peers: new Map() };
   }
-
-  const instanceId =
-    typeof raw.instance_id === "string" && raw.instance_id.trim()
-      ? raw.instance_id.trim()
-      : fallbackInstanceId;
 
   const peers = new Map<string, Peer>();
 
@@ -62,12 +56,17 @@ function parseYamlFile(
         warnFn(`Skipping peer entry with missing id: ${JSON.stringify(entry)}`);
         continue;
       }
+      const peerId = entry.id.trim();
+      if (peerId === instanceId) {
+        // Same file can be shared across all nodes — skip our own entry
+        continue;
+      }
       if (typeof entry.url !== "string" || !entry.url.trim()) {
-        warnFn(`Skipping peer "${entry.id}": missing url`);
+        warnFn(`Skipping peer "${peerId}": missing url`);
         continue;
       }
       if (typeof entry.public_key !== "string") {
-        warnFn(`Skipping peer "${entry.id}": missing public_key`);
+        warnFn(`Skipping peer "${peerId}": missing public_key`);
         continue;
       }
 
@@ -75,12 +74,12 @@ function parseYamlFile(
       try {
         publicKey = parsePeerPublicKey(entry.public_key);
       } catch (err) {
-        warnFn(`Skipping peer "${entry.id}": invalid public_key — ${String(err)}`);
+        warnFn(`Skipping peer "${peerId}": invalid public_key — ${String(err)}`);
         continue;
       }
 
-      peers.set(entry.id.trim(), {
-        id: entry.id.trim(),
+      peers.set(peerId, {
+        id: peerId,
         url: entry.url.trim().replace(/\/+$/, ""),
         publicKey,
         publicKeySpec: entry.public_key,

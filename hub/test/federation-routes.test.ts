@@ -74,7 +74,6 @@ describe("federation routes — auth middleware", () => {
     writeYaml(
       peersYamlB,
       [
-        `instance_id: "poutine-b"`,
         `peers:`,
         `  - id: "poutine-a"`,
         `    url: "http://localhost"`,

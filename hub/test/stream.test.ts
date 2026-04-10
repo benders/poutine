@@ -241,7 +241,6 @@ describe("stream — peer source", () => {
     writeYaml(
       peersYamlB,
       [
-        `instance_id: "poutine-b"`,
         `peers:`,
         `  - id: "poutine-a"`,
         `    url: "http://localhost"`,
@@ -269,7 +268,6 @@ describe("stream — peer source", () => {
     writeYaml(
       peersYamlA,
       [
-        `instance_id: "poutine-a"`,
         `peers:`,
         `  - id: "poutine-b"`,
         `    url: "http://127.0.0.1:${portB}"`,
@@ -415,7 +413,6 @@ async function buildSharedTrackSetup(opts: {
   const { publicKeyBase64: pubB } = loadOrCreatePrivateKey(keyPathB);
 
   writeYaml(peersYamlB, [
-    `instance_id: "poutine-b"`,
     `peers:`,
     `  - id: "poutine-a"`,
     `    url: "http://localhost"`,
@@ -438,7 +435,6 @@ async function buildSharedTrackSetup(opts: {
   const portB = (appB.server.address() as AddressInfo).port;
 
   writeYaml(peersYamlA, [
-    `instance_id: "poutine-a"`,
     `peers:`,
     `  - id: "poutine-b"`,
     `    url: "http://127.0.0.1:${portB}"`,

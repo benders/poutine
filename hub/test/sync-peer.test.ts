@@ -45,7 +45,6 @@ describe("sync-peer", () => {
     writeYaml(
       peersYamlB,
       [
-        `instance_id: "poutine-b"`,
         `peers:`,
         `  - id: "poutine-a"`,
         `    url: "http://localhost"`,
@@ -70,7 +69,6 @@ describe("sync-peer", () => {
     writeYaml(
       peersYamlA,
       [
-        `instance_id: "poutine-a"`,
         `peers:`,
         `  - id: "poutine-b"`,
         `    url: "http://127.0.0.1:${portB}"`,

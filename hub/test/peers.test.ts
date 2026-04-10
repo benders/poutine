@@ -24,17 +24,17 @@ describe("loadPeerRegistry", () => {
     expect(registry.peers.size).toBe(0);
   });
 
-  it("parses instance_id and a valid peer", () => {
+  it("parses a valid peer and uses the fallback instance ID", () => {
     const keyPath = tmpPath("peer-pub.pem");
     const yamlPath = tmpPath("peers.yaml");
     try {
       const { publicKeyBase64 } = loadOrCreatePrivateKey(keyPath);
       writeYaml(
         yamlPath,
-        `instance_id: "test-alice"\npeers:\n  - id: "test-bob"\n    url: "https://bob.example"\n    public_key: "ed25519:${publicKeyBase64}"\n`,
+        `peers:\n  - id: "test-bob"\n    url: "https://bob.example"\n    public_key: "ed25519:${publicKeyBase64}"\n`,
       );
 
-      const registry = loadPeerRegistry(yamlPath, "fallback");
+      const registry = loadPeerRegistry(yamlPath, "test-alice");
       expect(registry.instanceId).toBe("test-alice");
       expect(registry.peers.size).toBe(1);
 
@@ -49,6 +49,34 @@ describe("loadPeerRegistry", () => {
     }
   });
 
+  it("skips a peer whose id matches the local instance ID", () => {
+    const keyPath = tmpPath("self.pem");
+    const yamlPath = tmpPath("self-peers.yaml");
+    try {
+      const { publicKeyBase64 } = loadOrCreatePrivateKey(keyPath);
+      writeYaml(
+        yamlPath,
+        [
+          "peers:",
+          "  - id: alice",
+          "    url: https://alice.example",
+          `    public_key: "ed25519:${publicKeyBase64}"`,
+          "  - id: bob",
+          "    url: https://bob.example",
+          `    public_key: "ed25519:${publicKeyBase64}"`,
+        ].join("\n"),
+      );
+
+      const registry = loadPeerRegistry(yamlPath, "alice");
+      expect(registry.peers.has("alice")).toBe(false);
+      expect(registry.peers.has("bob")).toBe(true);
+      expect(registry.peers.size).toBe(1);
+    } finally {
+      if (fs.existsSync(keyPath)) fs.unlinkSync(keyPath);
+      if (fs.existsSync(yamlPath)) fs.unlinkSync(yamlPath);
+    }
+  });
+
   it("strips trailing slashes from peer URLs", () => {
     const keyPath = tmpPath("trailing-slash.pem");
     const yamlPath = tmpPath("trailing-slash-peers.yaml");
@@ -56,10 +84,10 @@ describe("loadPeerRegistry", () => {
       const { publicKeyBase64 } = loadOrCreatePrivateKey(keyPath);
       writeYaml(
         yamlPath,
-        `instance_id: "alice"\npeers:\n  - id: "bob"\n    url: "https://bob.example///"\n    public_key: "ed25519:${publicKeyBase64}"\n`,
+        `peers:\n  - id: "bob"\n    url: "https://bob.example///"\n    public_key: "ed25519:${publicKeyBase64}"\n`,
       );
 
-      const registry = loadPeerRegistry(yamlPath, "fallback");
+      const registry = loadPeerRegistry(yamlPath, "alice");
       const bob = registry.peers.get("bob");
       expect(bob!.url).toBe("https://bob.example");
     } finally {
@@ -76,7 +104,6 @@ describe("loadPeerRegistry", () => {
       writeYaml(
         yamlPath,
         [
-          "instance_id: alice",
           "peers:",
           "  - id: bad-peer",
           "    url: https://bad.example",
@@ -102,15 +129,15 @@ describe("loadPeerRegistry", () => {
     try {
       const { publicKeyBase64 } = loadOrCreatePrivateKey(keyPath);
       // Start with no peers
-      writeYaml(yamlPath, `instance_id: alice\npeers: []\n`);
+      writeYaml(yamlPath, `peers: []\n`);
 
-      const registry = loadPeerRegistry(yamlPath, "fallback");
+      const registry = loadPeerRegistry(yamlPath, "alice");
       expect(registry.peers.size).toBe(0);
 
       // Add a peer to the file
       writeYaml(
         yamlPath,
-        `instance_id: alice\npeers:\n  - id: newpeer\n    url: https://new.example\n    public_key: "ed25519:${publicKeyBase64}"\n`,
+        `peers:\n  - id: newpeer\n    url: https://new.example\n    public_key: "ed25519:${publicKeyBase64}"\n`,
       );
 
       registry.reload();
@@ -118,17 +145,6 @@ describe("loadPeerRegistry", () => {
       expect(registry.peers.has("newpeer")).toBe(true);
     } finally {
       if (fs.existsSync(keyPath)) fs.unlinkSync(keyPath);
-      if (fs.existsSync(yamlPath)) fs.unlinkSync(yamlPath);
-    }
-  });
-
-  it("falls back to fallbackInstanceId when instance_id is missing", () => {
-    const yamlPath = tmpPath("no-id.yaml");
-    try {
-      writeYaml(yamlPath, `peers: []\n`);
-      const registry = loadPeerRegistry(yamlPath, "my-fallback");
-      expect(registry.instanceId).toBe("my-fallback");
-    } finally {
       if (fs.existsSync(yamlPath)) fs.unlinkSync(yamlPath);
     }
   });

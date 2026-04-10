@@ -1,8 +1,0 @@
-instance_id: poutine-c
-peers:
-  - id: poutine-a
-    url: http://hub-a:3000
-    public_key: "ed25519:y4CFHolvi2SRWWMwS1jD+Scp2G6ZGKtPnce4DgZMnEI="
-  - id: poutine-b
-    url: http://hub-b:3000
-    public_key: "ed25519:x58TjcQFRnFurndolsoYpUxnMAu4XReBuoJpNeaWk80="
