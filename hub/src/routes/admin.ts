@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { verifyPassword, hashPassword } from "../auth/passwords.js";
 import { createAccessToken, verifyToken } from "../auth/jwt.js";
 import { syncAll } from "../library/sync.js";
+import { SubsonicClient } from "../adapters/subsonic.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -195,6 +196,60 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(204).send();
     },
   );
+
+  // GET /admin/instance — returns identity and local Navidrome status
+  app.get("/instance", { preHandler: requireOwner }, async () => {
+    const local = app.db
+      .prepare(`SELECT status, track_count,
+          strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_at) as last_synced_at,
+          strftime('%Y-%m-%dT%H:%M:%SZ', last_seen) as last_seen
+        FROM instances WHERE id = 'local'`)
+      .get() as { status: string; track_count: number; last_synced_at: string | null; last_seen: string | null } | undefined;
+
+    const naviClient = new SubsonicClient({
+      url: app.config.navidromeUrl,
+      username: app.config.navidromeUsername,
+      password: app.config.navidromePassword,
+    });
+
+    let scanStatus: { scanning: boolean; count: number; folderCount: number; lastScan: string | null } | null = null;
+    try {
+      scanStatus = await naviClient.getScanStatus();
+    } catch {
+      // Navidrome unreachable — leave as null
+    }
+
+    return {
+      instanceId: app.config.poutineInstanceId,
+      publicKey: app.publicKeySpec,
+      navidrome: {
+        reachable: scanStatus !== null,
+        scanning: scanStatus?.scanning ?? false,
+        folderCount: scanStatus?.folderCount ?? null,
+        lastScan: scanStatus?.lastScan ?? null,
+        status: local?.status ?? "unknown",
+        trackCount: local?.track_count ?? 0,
+        lastSynced: local?.last_synced_at ?? null,
+        lastSeen: local?.last_seen ?? null,
+      },
+    };
+  });
+
+  // POST /admin/instance/scan — trigger a Navidrome library scan
+  app.post("/instance/scan", { preHandler: requireOwner }, async (request, reply) => {
+    const naviClient = new SubsonicClient({
+      url: app.config.navidromeUrl,
+      username: app.config.navidromeUsername,
+      password: app.config.navidromePassword,
+    });
+
+    try {
+      const status = await naviClient.startScan();
+      return { scanning: status.scanning, count: status.count, folderCount: status.folderCount, lastScan: status.lastScan };
+    } catch (err) {
+      return reply.code(502).send({ error: `Navidrome unreachable: ${String(err)}` });
+    }
+  });
 
   // GET /admin/peers
   app.get("/peers", { preHandler: requireOwner }, async () => {

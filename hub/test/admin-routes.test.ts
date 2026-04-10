@@ -4,7 +4,7 @@
  * Covers: login, me, users CRUD, peers list, sync trigger, cache stats/control.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/server.js";
 import { hashPassword } from "../src/auth/passwords.js";
@@ -330,6 +330,129 @@ describe("admin — sync", () => {
     expect(body).toHaveProperty("peers");
     expect(Array.isArray(body.peers)).toBe(true);
     expect(body.local).toHaveProperty("errors");
+  });
+});
+
+// ── /admin/instance ───────────────────────────────────────────────────────────
+
+/** Wrap a value in a Subsonic JSON envelope. */
+function subsonicEnvelope(payload: Record<string, unknown>) {
+  return JSON.stringify({
+    "subsonic-response": { status: "ok", version: "1.16.1", ...payload },
+  });
+}
+
+describe("admin — instance", () => {
+  let app: FastifyInstance;
+  let token: string;
+  let fetchMock: Mock;
+
+  beforeEach(async () => {
+    app = await buildApp(testConfig);
+    await app.ready();
+    await seedAdmin(app);
+    token = await loginAs(app, "owner", "adminpass");
+
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await app.close();
+  });
+
+  it("GET /admin/instance → returns instanceId, publicKey, and navidrome fields", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        subsonicEnvelope({
+          scanStatus: { scanning: false, count: 0, folderCount: 2, lastScan: "2024-06-01T10:00:00Z" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/admin/instance",
+      headers: authHeader(token),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(typeof body.instanceId).toBe("string");
+    expect(body.publicKey).toMatch(/^ed25519:/);
+    expect(body.navidrome.reachable).toBe(true);
+    expect(body.navidrome.scanning).toBe(false);
+    expect(body.navidrome.folderCount).toBe(2);
+    expect(body.navidrome.lastScan).toBe("2024-06-01T10:00:00Z");
+    expect(typeof body.navidrome.trackCount).toBe("number");
+    expect(body.navidrome.status).toBe("online"); // seeded as online by seedSyntheticInstances
+  });
+
+  it("GET /admin/instance → reachable=false when Navidrome is down", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/admin/instance",
+      headers: authHeader(token),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.navidrome.reachable).toBe(false);
+    expect(body.navidrome.scanning).toBe(false);
+    expect(body.navidrome.lastScan).toBeNull();
+    expect(body.navidrome.folderCount).toBeNull();
+  });
+
+  it("GET /admin/instance → 401 without auth", async () => {
+    const res = await app.inject({ method: "GET", url: "/admin/instance" });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("POST /admin/instance/scan → triggers scan and returns status", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        subsonicEnvelope({
+          scanStatus: { scanning: true, count: 0, folderCount: 2, lastScan: "2024-06-01T10:00:00Z" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/admin/instance/scan",
+      headers: authHeader(token),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.scanning).toBe(true);
+    expect(body.folderCount).toBe(2);
+
+    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(calledUrl.pathname).toBe("/rest/startScan");
+  });
+
+  it("POST /admin/instance/scan → 502 when Navidrome is unreachable", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/admin/instance/scan",
+      headers: authHeader(token),
+    });
+
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toMatch(/unreachable/i);
+  });
+
+  it("POST /admin/instance/scan → 401 without auth", async () => {
+    const res = await app.inject({ method: "POST", url: "/admin/instance/scan" });
+    expect(res.statusCode).toBe(401);
   });
 });
 

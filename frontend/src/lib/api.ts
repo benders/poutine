@@ -98,6 +98,21 @@ export interface Peer {
   lastSeen: string | null;
 }
 
+export interface InstanceInfo {
+  instanceId: string;
+  publicKey: string;
+  navidrome: {
+    reachable: boolean;
+    scanning: boolean;
+    folderCount: number | null;
+    lastScan: string | null;
+    status: string;
+    trackCount: number;
+    lastSynced: string | null;
+    lastSeen: string | null;
+  };
+}
+
 export interface CacheStats {
   artCacheMaxBytes: number;
   artCacheCurrentBytes: number;
@@ -110,6 +125,17 @@ export interface SyncResult {
   albumCount: number;
   trackCount: number;
   errors: string[];
+}
+
+export function getInstanceInfo() {
+  return apiFetch<InstanceInfo>("/admin/instance");
+}
+
+export function triggerNavidromeScan() {
+  return apiFetch<{ scanning: boolean; count: number; folderCount: number; lastScan: string | null }>(
+    "/admin/instance/scan",
+    { method: "POST" },
+  );
 }
 
 export function getUsers() {

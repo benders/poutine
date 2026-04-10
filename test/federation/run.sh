@@ -153,26 +153,26 @@ login_and_sync() {
 
 echo ""
 echo "==> Checking hub health..."
-wait_http "http://localhost:3001/api/health" "hub-a" 120
-wait_http "http://localhost:3002/api/health" "hub-b" 120
-wait_http "http://localhost:3003/api/health" "hub-c" 120
+wait_http "http://localhost:3011/api/health" "hub-a" 120
+wait_http "http://localhost:3012/api/health" "hub-b" 120
+wait_http "http://localhost:3013/api/health" "hub-c" 120
 
 echo ""
 echo "==> Syncing hub-b local library (navidrome-b must scan first)..."
-login_and_sync 3002 "hub-b" 180 > /dev/null  # only care that it succeeds
+login_and_sync 3012 "hub-b" 180 > /dev/null  # only care that it succeeds
 
 echo ""
 echo "==> Syncing hub-c local library (navidrome-c must scan first)..."
-login_and_sync 3003 "hub-c" 180 > /dev/null  # only care that it succeeds
+login_and_sync 3013 "hub-c" 180 > /dev/null  # only care that it succeeds
 
 echo ""
 echo "==> Syncing hub-a (local + federated from hub-b and hub-c)..."
-JWT_A=$(login_and_sync 3001 "hub-a" 180)
+JWT_A=$(login_and_sync 3011 "hub-a" 180)
 
 echo ""
 echo "==> Verifying federated metadata on hub-a..."
 ALBUM_LIST=$(curl -sf \
-  "http://localhost:3001/rest/getAlbumList2?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&type=alphabeticalByName&size=500")
+  "http://localhost:3011/rest/getAlbumList2?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&type=alphabeticalByName&size=500")
 
 if ! echo "$ALBUM_LIST" | python3 -c "
 import sys, json
@@ -199,7 +199,7 @@ print(match[0]['id'])
 echo "  Other Album ID on hub-a: $OTHER_ALBUM_ID"
 
 ALBUM_DETAIL=$(curl -sf \
-  "http://localhost:3001/rest/getAlbum?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&id=${OTHER_ALBUM_ID}")
+  "http://localhost:3011/rest/getAlbum?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&id=${OTHER_ALBUM_ID}")
 TRACK_ID_B=$(echo "$ALBUM_DETAIL" | python3 -c "
 import sys, json
 songs = json.load(sys.stdin)['subsonic-response']['album']['song']
@@ -210,7 +210,7 @@ echo "  First track ID from Other Album: $TRACK_ID_B"
 echo ""
 echo "==> Testing federated stream from hub-b (hub-a proxies to hub-b's navidrome)..."
 HTTP_CODE=$(curl -s -o /tmp/fed-test-stream-b.bin -w "%{http_code}" \
-  "http://localhost:3001/rest/stream?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&id=${TRACK_ID_B}")
+  "http://localhost:3011/rest/stream?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&id=${TRACK_ID_B}")
 STREAM_SIZE=$(wc -c < /tmp/fed-test-stream-b.bin | tr -d ' ')
 
 echo "  HTTP status   : $HTTP_CODE"
@@ -236,7 +236,7 @@ print(match[0]['id'])
 echo "  Third Album ID on hub-a: $THIRD_ALBUM_ID"
 
 ALBUM_DETAIL_C=$(curl -sf \
-  "http://localhost:3001/rest/getAlbum?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&id=${THIRD_ALBUM_ID}")
+  "http://localhost:3011/rest/getAlbum?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&id=${THIRD_ALBUM_ID}")
 TRACK_ID_C=$(echo "$ALBUM_DETAIL_C" | python3 -c "
 import sys, json
 songs = json.load(sys.stdin)['subsonic-response']['album']['song']
@@ -247,7 +247,7 @@ echo "  First track ID from Third Album: $TRACK_ID_C"
 echo ""
 echo "==> Testing federated stream from hub-c (hub-a proxies to hub-c's navidrome)..."
 HTTP_CODE=$(curl -s -o /tmp/fed-test-stream-c.bin -w "%{http_code}" \
-  "http://localhost:3001/rest/stream?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&id=${TRACK_ID_C}")
+  "http://localhost:3011/rest/stream?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&id=${TRACK_ID_C}")
 STREAM_SIZE=$(wc -c < /tmp/fed-test-stream-c.bin | tr -d ' ')
 
 echo "  HTTP status   : $HTTP_CODE"

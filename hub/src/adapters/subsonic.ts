@@ -97,6 +97,15 @@ export interface SubsonicAlbumInfo {
   largeImageUrl?: string;
 }
 
+export interface SubsonicScanStatus {
+  scanning: boolean;
+  count: number;
+  /** Number of music folders (Navidrome extension). */
+  folderCount: number;
+  /** ISO timestamp of the last completed scan (Navidrome extension). Null when never scanned. */
+  lastScan: string | null;
+}
+
 export interface SubsonicPingResponse {
   status: string;
   version: string;
@@ -323,5 +332,29 @@ export class SubsonicClient {
   async getAlbumInfo(id: string): Promise<SubsonicAlbumInfo> {
     const data = await this.request("/rest/getAlbumInfo2", { id });
     return (data.albumInfo as SubsonicAlbumInfo) ?? {};
+  }
+
+  async getScanStatus(): Promise<SubsonicScanStatus> {
+    const data = await this.request("/rest/getScanStatus");
+    const s = data.scanStatus as Record<string, unknown> | undefined;
+    return {
+      scanning: Boolean(s?.scanning),
+      count: (s?.count as number) ?? 0,
+      folderCount: (s?.folderCount as number) ?? 0,
+      lastScan: (s?.lastScan as string) ?? null,
+    };
+  }
+
+  async startScan(fullScan = false): Promise<SubsonicScanStatus> {
+    const extra: Record<string, string> = {};
+    if (fullScan) extra.fullScan = "true";
+    const data = await this.request("/rest/startScan", extra);
+    const s = data.scanStatus as Record<string, unknown> | undefined;
+    return {
+      scanning: Boolean(s?.scanning),
+      count: (s?.count as number) ?? 0,
+      folderCount: (s?.folderCount as number) ?? 0,
+      lastScan: (s?.lastScan as string) ?? null,
+    };
   }
 }

@@ -27,6 +27,7 @@ declare module "fastify" {
     artCache: ArtCache;
     peerRegistry: PeerRegistry;
     privateKey: KeyObject;
+    publicKeySpec: string;
     federatedFetch: ReturnType<typeof FetcherFactory>;
   }
 }
@@ -95,6 +96,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
   app.decorate("peerRegistry", peerRegistry);
   app.decorate("privateKey", privateKey);
+  app.decorate("publicKeySpec", `ed25519:${publicKeyBase64}`);
   app.decorate(
     "federatedFetch",
     createFederationFetcher({
