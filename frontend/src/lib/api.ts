@@ -1,5 +1,25 @@
 
 let accessToken: string | null = localStorage.getItem("accessToken");
+let refreshPromise: Promise<string | null> | null = null;
+
+export async function attemptRefresh(): Promise<string | null> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const res = await fetch("/admin/refresh", { method: "POST" });
+        if (!res.ok) return null;
+        const data = await res.json();
+        setToken(data.accessToken);
+        return data.accessToken as string;
+      } catch {
+        return null;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+  return refreshPromise;
+}
 
 export function setToken(token: string) {
   accessToken = token;
@@ -18,6 +38,7 @@ export function getAccessToken() {
 async function apiFetch<T = unknown>(
   path: string,
   options: RequestInit = {},
+  _retry = true,
 ): Promise<T> {
   const headers = new Headers(options.headers);
 
@@ -32,6 +53,15 @@ async function apiFetch<T = unknown>(
   const res = await fetch(path, { ...options, headers });
 
   if (!res.ok) {
+    if (res.status === 401) {
+      if (_retry) {
+        const newToken = await attemptRefresh();
+        if (newToken) return apiFetch<T>(path, options, false);
+      }
+      clearTokens();
+      window.location.replace("/login");
+      return undefined as T;
+    }
     const body = await res.json().catch(() => ({}));
     throw new ApiError(res.status, body.error || res.statusText);
   }

@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { verifyPassword, hashPassword } from "../auth/passwords.js";
-import { createAccessToken, verifyToken } from "../auth/jwt.js";
+import { createAccessToken, createRefreshToken, verifyRefreshToken, verifyToken } from "../auth/jwt.js";
 import { syncAll } from "../library/sync.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 
@@ -77,12 +77,19 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const accessToken = await createAccessToken(user.id, app.config);
+      const refreshToken = await createRefreshToken(user.id, app.config);
 
       reply.setCookie("access_token", accessToken, {
         httpOnly: true,
         sameSite: "lax",
         path: "/",
-        maxAge: 8 * 60 * 60,
+        maxAge: 15 * 60,
+      });
+      reply.setCookie("refresh_token", refreshToken, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/admin/refresh",
+        maxAge: 7 * 24 * 60 * 60,
       });
 
       return {
@@ -92,9 +99,45 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // POST /admin/refresh
+  app.post("/refresh", async (request, reply) => {
+    const refreshToken = request.cookies?.refresh_token;
+    if (!refreshToken) {
+      return reply.code(401).send({ error: "No refresh token" });
+    }
+    try {
+      const { userId } = await verifyRefreshToken(refreshToken, app.config);
+      const user = app.db
+        .prepare("SELECT id, is_admin FROM users WHERE id = ?")
+        .get(userId) as { id: string; is_admin: number } | undefined;
+      if (!user || user.is_admin !== 1) {
+        return reply.code(401).send({ error: "User not found" });
+      }
+      const accessToken = await createAccessToken(userId, app.config);
+      const newRefreshToken = await createRefreshToken(userId, app.config);
+      reply.setCookie("access_token", accessToken, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        maxAge: 15 * 60,
+      });
+      reply.setCookie("refresh_token", newRefreshToken, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/admin/refresh",
+        maxAge: 7 * 24 * 60 * 60,
+      });
+      return { accessToken };
+    } catch {
+      reply.clearCookie("refresh_token", { path: "/admin/refresh" });
+      return reply.code(401).send({ error: "Invalid or expired refresh token" });
+    }
+  });
+
   // POST /admin/logout
   app.post("/logout", async (_request, reply) => {
     reply.clearCookie("access_token", { path: "/" });
+    reply.clearCookie("refresh_token", { path: "/admin/refresh" });
     return reply.code(204).send();
   });
 

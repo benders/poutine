@@ -112,6 +112,8 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - **Frontend sync mutations must invalidate library queries** — after `POST /admin/sync` succeeds, invalidate `["albumList2"]` and `["artists"]` in addition to `["admin-instance"]` and `["admin-peers"]`. Without this, the library page shows stale data until React Query's 60s `staleTime` expires.
 - **Shared `peers.yaml` works across all cluster nodes** — `peers.ts` skips any entry whose `id` matches `POUTINE_INSTANCE_ID`, so all instances can use the same file. The local-cluster setup (`local-cluster/local-peers.yaml`) and federation test (`test/federation/peers.yaml`) both rely on this — the same file is mounted into every hub container.
 - **Local cluster setup mirrors federation test pattern** — `local-cluster/local-run.sh` starts three Compose projects (`cd-rips`, `digital-purchases`, `other`) from the same `docker-compose.yml`, creates a shared Docker network `poutine-local-cluster`, and connects hubs with DNS aliases `hub-a/hub-b/hub-c`. The test keypairs from `test/federation/keys/` are reused. If containers are started manually without the script, the shared network must be created and containers connected manually: `docker network create poutine-local-cluster && docker network connect --alias hub-a poutine-local-cluster cd-rips-hub-1` etc.
+- **JWT refresh flow: access token 15m, refresh token 7d** — `POST /admin/login` issues both an `access_token` cookie (httpOnly, 15m) and a `refresh_token` cookie (httpOnly, path `/admin/refresh`, 7d). `POST /admin/refresh` verifies the refresh token (checks `type: "refresh"` claim), rotates both tokens, and returns the new `accessToken` in the body. `hub/src/auth/jwt.ts::verifyRefreshToken` enforces the type claim separately from `verifyToken`. On the frontend, `apiFetch` and `subsonicFetch` both silently attempt refresh on 401 (via `attemptRefresh()` in `api.ts`) and retry the original request before redirecting to `/login`. A module-level `refreshPromise` deduplicate concurrent refresh attempts.
+- **`POST /admin/refresh` has no auth requirement** — it reads only the `refresh_token` cookie. The cookie's `path: "/admin/refresh"` means browsers only send it to that exact endpoint, limiting exposure. No `requireOwner` preHandler on this route.
 
 ## Docker architecture
 
@@ -120,3 +122,13 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - `frontend/nginx.conf` — proxies `/api/`, `/admin/`, `/rest/`, and `/federation/` to the `hub` service, SPA fallback via `try_files`
 - `docker-compose.yml` — hub (port `${HUB_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports) + frontend (port 8080), persistent volume for SQLite. `PEERS_CONFIG_HOST_PATH` overrides the peers.yaml bind-mount source (default `./peers.yaml`).
 - Navidrome is on an internal Docker network; only the hub can reach it. No credentials are stored for it in the DB — they live in env vars.
+
+## Task tracking
+
+This project uses Yaks. The Yaks skill has the full workflow.
+
+1. Never start coding without a shaving yak. No exceptions.
+2. Shorn immediately after committing, before anything else.
+3. Check existing yaks before creating new ones.
+4. Append progress notes to yak descriptions as you work.
+5. When unsure what's next, run `/yaks:next` — don't freelance.

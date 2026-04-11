@@ -1,4 +1,4 @@
-import { getAccessToken } from "./api.js";
+import { getAccessToken, clearTokens, attemptRefresh } from "./api.js";
 
 const SUBSONIC_VERSION = "1.16.1";
 const CLIENT = "poutine";
@@ -138,6 +138,7 @@ function parseSong(raw: RawSong): SubsonicSong {
 async function subsonicFetch<T>(
   endpoint: string,
   extra?: Record<string, string>,
+  _retry = true,
 ): Promise<T> {
   const token = getAccessToken();
   if (!token) throw new SubsonicError("Not authenticated", 10);
@@ -156,7 +157,17 @@ async function subsonicFetch<T>(
   const res = await fetch(`/rest/${endpoint}?${params}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new SubsonicError(res.statusText);
+  if (!res.ok) {
+    if (res.status === 401) {
+      if (_retry) {
+        const newToken = await attemptRefresh();
+        if (newToken) return subsonicFetch<T>(endpoint, extra, false);
+      }
+      clearTokens();
+      window.location.replace("/login");
+    }
+    throw new SubsonicError(res.statusText);
+  }
 
   const data = await res.json();
   const sr = data["subsonic-response"];
