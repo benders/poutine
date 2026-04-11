@@ -48,3 +48,19 @@ export async function verifyToken(
   }
   return { userId: userId as string };
 }
+
+export async function verifyRefreshToken(
+  token: string,
+  config: Config
+): Promise<{ userId: string }> {
+  const secret = getSecretKey(config);
+  const { payload } = await jwtVerify(token, secret);
+  if ((payload as Record<string, unknown>).type !== "refresh") {
+    throw new Error("Not a refresh token");
+  }
+  const userId = payload.sub || (payload as Record<string, unknown>).userId;
+  if (typeof userId !== "string") {
+    throw new Error("Invalid token: missing userId");
+  }
+  return { userId };
+}

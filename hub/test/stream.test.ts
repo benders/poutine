@@ -1,791 +1,611 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { buildApp } from "../src/server.js";
+/**
+ * Integration tests for /rest/stream (and /rest/download alias).
+ *
+ * Covers:
+ *   - Bad / missing ID → Subsonic error 70
+ *   - Valid ID with no track sources → Subsonic error 70
+ *   - Local source path: Poutine proxies to a fake Navidrome HTTP server
+ *   - Peer source path: Poutine-A routes through Poutine-B → fake Navidrome
+ *   - Source selection: identical quality on local and peer → local preferred
+ *   - Source selection: peer has higher-quality recording → peer preferred
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import type { AddressInfo } from "node:net";
 import type { FastifyInstance } from "fastify";
+import { buildApp } from "../src/server.js";
+import { hashPassword } from "../src/auth/passwords.js";
+import { loadOrCreatePrivateKey } from "../src/federation/signing.js";
+import { syncPeer } from "../src/library/sync-peer.js";
+import { mergeLibraries } from "../src/library/merge.js";
 import type { Config } from "../src/config.js";
-import {
-  selectBestSource,
-  encodeCoverArtId,
-  decodeCoverArtId,
-} from "../src/routes/stream.js";
-import { encrypt } from "../src/auth/encryption.js";
 
-const testConfig: Partial<Config> = {
-  databasePath: ":memory:",
-  jwtSecret: "test-secret-key-for-testing-purposes",
-  jwtAccessExpiresIn: "15m",
-  jwtRefreshExpiresIn: "7d",
-  encryptionKey: "test-encryption-key",
-};
+// ── Fake Navidrome ────────────────────────────────────────────────────────────
 
-// ── Helper: register user and get token ──────────────────────────────────────
+/** Minimal valid MP3 frame header bytes — recognisable as audio/mpeg. */
+const FAKE_AUDIO = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-async function registerAndGetToken(
+/**
+ * Distinct audio payloads for local vs peer fake Navidromes.
+ * The differing trailing bytes let tests assert which source was actually used.
+ */
+const FAKE_AUDIO_LOCAL = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0xaa, 0xbb, 0xcc, 0xdd]);
+const FAKE_AUDIO_PEER  = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x11, 0x22, 0x33, 0x44]);
+
+function startFakeNavidrome(): Promise<{ server: http.Server; port: number }> {
+  return new Promise((resolve) => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-type": "audio/mpeg",
+        "content-length": String(FAKE_AUDIO.length),
+      });
+      res.end(FAKE_AUDIO);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      resolve({ server, port: (server.address() as AddressInfo).port });
+    });
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function tmpPath(suffix = "") {
+  return path.join(
+    os.tmpdir(),
+    `poutine-stream-${Date.now()}-${Math.random().toString(36).slice(2)}-${suffix}`,
+  );
+}
+
+function writeYaml(filePath: string, content: string) {
+  fs.writeFileSync(filePath, content, "utf8");
+}
+
+async function seedUser(
   app: FastifyInstance,
-  username = "testuser",
-): Promise<string> {
-  const res = await app.inject({
-    method: "POST",
-    url: "/api/auth/register",
-    payload: { username, password: "password123" },
-  });
-  return res.json().accessToken;
+  username = "tester",
+  password = "secret",
+) {
+  const hash = await hashPassword(password);
+  app.db
+    .prepare(
+      "INSERT INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, 1)",
+    )
+    .run("user-1", username, hash);
 }
 
-// ── Helper: seed test data into the database ─────────────────────────────────
-
-function seedLibraryData(app: FastifyInstance, userId: string) {
-  const db = app.db;
-  const encryptionKey = app.config.encryptionKey;
-
-  const credentials = JSON.stringify({
-    username: "navidrome",
-    password: "password",
-  });
-
-  // Create instances
-  db.prepare(
-    `INSERT INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "inst-1",
-    "Instance 1",
-    "https://music1.example.com",
-    "subsonic",
-    encrypt(credentials, encryptionKey),
-    userId,
-    "online",
-  );
-
-  db.prepare(
-    `INSERT INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "inst-2",
-    "Instance 2",
-    "https://music2.example.com",
-    "subsonic",
-    encrypt(credentials, encryptionKey),
-    userId,
-    "online",
-  );
-
-  db.prepare(
-    `INSERT INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "inst-3",
-    "Instance 3",
-    "https://music3.example.com",
-    "subsonic",
-    encrypt(credentials, encryptionKey),
-    userId,
-    "offline",
-  );
-
-  // Create unified artist
-  db.prepare(
-    `INSERT INTO unified_artists (id, name, name_normalized)
-     VALUES (?, ?, ?)`,
-  ).run("artist-1", "Radiohead", "radiohead");
-
-  // Create unified release group
-  db.prepare(
-    `INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, year)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run("rg-1", "OK Computer", "ok computer", "artist-1", 1997);
-
-  // Create unified release
-  db.prepare(
-    `INSERT INTO unified_releases (id, release_group_id, name, track_count)
-     VALUES (?, ?, ?, ?)`,
-  ).run("release-1", "rg-1", "OK Computer", 12);
-
-  // Create unified tracks
-  db.prepare(
-    `INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, track_number, duration_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "track-1",
-    "Paranoid Android",
-    "paranoid android",
-    "release-1",
-    "artist-1",
-    2,
-    384000,
-  );
-
-  db.prepare(
-    `INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, track_number, duration_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "track-2",
-    "Karma Police",
-    "karma police",
-    "release-1",
-    "artist-1",
-    6,
-    263000,
-  );
-
-  db.prepare(
-    `INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, track_number, duration_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "track-3",
-    "No Surprises",
-    "no surprises",
-    "release-1",
-    "artist-1",
-    10,
-    228000,
-  );
-
-  // Create instance_tracks (needed for foreign key)
-  db.prepare(
-    `INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, format, bitrate)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "inst-1:remote-t1",
-    "inst-1",
-    "remote-t1",
-    "inst-1:album-1",
-    "Paranoid Android",
-    "Radiohead",
-    "flac",
-    null,
-  );
-
-  db.prepare(
-    `INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, format, bitrate)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "inst-2:remote-t1",
-    "inst-2",
-    "remote-t1b",
-    "inst-2:album-1",
-    "Paranoid Android",
-    "Radiohead",
-    "mp3",
-    320,
-  );
-
-  db.prepare(
-    `INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, format, bitrate)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "inst-3:remote-t1",
-    "inst-3",
-    "remote-t1c",
-    "inst-3:album-1",
-    "Paranoid Android",
-    "Radiohead",
-    "flac",
-    null,
-  );
-
-  // We need instance_albums for the foreign key on instance_tracks.album_id
-  // But the schema uses TEXT references, so let's insert placeholder albums
-  db.prepare(
-    `INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run("inst-1:album-1", "inst-1", "album-1", "OK Computer", "inst-1:artist-1", "Radiohead");
-
-  db.prepare(
-    `INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run("inst-2:album-1", "inst-2", "album-1", "OK Computer", "inst-2:artist-1", "Radiohead");
-
-  db.prepare(
-    `INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run("inst-3:album-1", "inst-3", "album-1", "OK Computer", "inst-3:artist-1", "Radiohead");
-
-  // Create track_sources
-  db.prepare(
-    `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, remote_id, format, bitrate)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run("ts-1", "track-1", "inst-1", "inst-1:remote-t1", "remote-t1", "flac", null);
-
-  db.prepare(
-    `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, remote_id, format, bitrate)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run("ts-2", "track-1", "inst-2", "inst-2:remote-t1", "remote-t1b", "mp3", 320);
-
-  db.prepare(
-    `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, remote_id, format, bitrate)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run("ts-3", "track-1", "inst-3", "inst-3:remote-t1", "remote-t1c", "flac", null);
+function seedLocalTrack(app: FastifyInstance) {
+  app.db
+    .prepare(
+      `INSERT OR IGNORE INTO instance_artists
+       (id, instance_id, remote_id, name, album_count)
+       VALUES ('local:art-1', 'local', 'art-1', 'Test Artist', 1)`,
+    )
+    .run();
+  app.db
+    .prepare(
+      `INSERT OR IGNORE INTO instance_albums
+       (id, instance_id, remote_id, name, artist_id, artist_name, track_count, cover_art_id)
+       VALUES ('local:alb-1', 'local', 'alb-1', 'Test Album', 'local:art-1', 'Test Artist', 1, NULL)`,
+    )
+    .run();
+  app.db
+    .prepare(
+      `INSERT OR IGNORE INTO instance_tracks
+       (id, instance_id, remote_id, album_id, title, artist_name, track_number, duration_ms, format, bitrate)
+       VALUES ('local:trk-1', 'local', 'trk-1', 'local:alb-1', 'Test Track', 'Test Artist', 1, 180000, 'mp3', 320)`,
+    )
+    .run();
+  mergeLibraries(app.db);
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Source Selection Tests
-// ═════════════════════════════════════════════════════════════════════════════
+// ── Error cases ───────────────────────────────────────────────────────────────
 
-describe("Source selection", () => {
-  const makeSource = (
-    overrides: Partial<{
-      source_id: string;
-      remote_id: string;
-      format: string | null;
-      bitrate: number | null;
-      instance_id: string;
-      instance_url: string;
-      instance_status: string;
-      encrypted_credentials: string;
-    }>,
-  ) => ({
-    source_id: "ts-1",
-    remote_id: "remote-1",
-    format: "mp3",
-    bitrate: 320,
-    instance_id: "inst-1",
-    instance_url: "https://example.com",
-    instance_status: "online",
-    encrypted_credentials: "",
-    ...overrides,
-  });
-
-  it("should return null when no sources exist", () => {
-    expect(selectBestSource([])).toBeNull();
-  });
-
-  it("should return null when all instances are offline", () => {
-    const sources = [
-      makeSource({ instance_status: "offline" }),
-      makeSource({
-        source_id: "ts-2",
-        instance_id: "inst-2",
-        instance_status: "offline",
-      }),
-    ];
-    expect(selectBestSource(sources)).toBeNull();
-  });
-
-  it("should filter to online instances only", () => {
-    const sources = [
-      makeSource({
-        source_id: "ts-1",
-        instance_id: "inst-1",
-        instance_status: "offline",
-        format: "flac",
-      }),
-      makeSource({
-        source_id: "ts-2",
-        instance_id: "inst-2",
-        instance_status: "online",
-        format: "mp3",
-        bitrate: 128,
-      }),
-    ];
-    const result = selectBestSource(sources);
-    expect(result).not.toBeNull();
-    expect(result!.instance_id).toBe("inst-2");
-  });
-
-  it("should prefer matching format when requested", () => {
-    const sources = [
-      makeSource({
-        source_id: "ts-1",
-        instance_id: "inst-1",
-        format: "flac",
-        bitrate: null,
-      }),
-      makeSource({
-        source_id: "ts-2",
-        instance_id: "inst-2",
-        format: "mp3",
-        bitrate: 320,
-      }),
-    ];
-    const result = selectBestSource(sources, "mp3");
-    expect(result).not.toBeNull();
-    expect(result!.source_id).toBe("ts-2");
-  });
-
-  it("should prefer higher quality format when no format requested", () => {
-    const sources = [
-      makeSource({
-        source_id: "ts-1",
-        instance_id: "inst-1",
-        format: "mp3",
-        bitrate: 128,
-      }),
-      makeSource({
-        source_id: "ts-2",
-        instance_id: "inst-2",
-        format: "flac",
-        bitrate: null,
-      }),
-    ];
-    const result = selectBestSource(sources);
-    expect(result).not.toBeNull();
-    expect(result!.source_id).toBe("ts-2");
-  });
-
-  it("should prefer higher bitrate among same format", () => {
-    const sources = [
-      makeSource({
-        source_id: "ts-1",
-        instance_id: "inst-1",
-        format: "mp3",
-        bitrate: 128,
-      }),
-      makeSource({
-        source_id: "ts-2",
-        instance_id: "inst-2",
-        format: "mp3",
-        bitrate: 320,
-      }),
-    ];
-    const result = selectBestSource(sources);
-    expect(result).not.toBeNull();
-    expect(result!.source_id).toBe("ts-2");
-  });
-
-  it("should prefer FLAC over high bitrate MP3", () => {
-    const sources = [
-      makeSource({
-        source_id: "ts-1",
-        instance_id: "inst-1",
-        format: "mp3",
-        bitrate: 320,
-      }),
-      makeSource({
-        source_id: "ts-2",
-        instance_id: "inst-2",
-        format: "flac",
-        bitrate: 0,
-      }),
-    ];
-    const result = selectBestSource(sources);
-    expect(result).not.toBeNull();
-    expect(result!.source_id).toBe("ts-2");
-  });
-
-  it("should handle matching format preference overriding quality", () => {
-    // If mp3 is requested, prefer mp3 320 over flac even though flac is higher quality
-    const sources = [
-      makeSource({
-        source_id: "ts-1",
-        instance_id: "inst-1",
-        format: "flac",
-        bitrate: 0,
-      }),
-      makeSource({
-        source_id: "ts-2",
-        instance_id: "inst-2",
-        format: "mp3",
-        bitrate: 320,
-      }),
-    ];
-    const result = selectBestSource(sources, "mp3");
-    expect(result).not.toBeNull();
-    expect(result!.source_id).toBe("ts-2");
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Cover Art ID Encoding/Decoding
-// ═════════════════════════════════════════════════════════════════════════════
-
-describe("Cover art ID encoding/decoding", () => {
-  it("should encode and decode correctly", () => {
-    const encoded = encodeCoverArtId("inst-123", "al-456");
-    expect(encoded).toBe("inst-123:al-456");
-
-    const decoded = decodeCoverArtId(encoded);
-    expect(decoded.instanceId).toBe("inst-123");
-    expect(decoded.coverArtId).toBe("al-456");
-  });
-
-  it("should handle cover art IDs that contain colons", () => {
-    const encoded = encodeCoverArtId("inst-1", "al:art:789");
-    const decoded = decodeCoverArtId(encoded);
-    expect(decoded.instanceId).toBe("inst-1");
-    expect(decoded.coverArtId).toBe("al:art:789");
-  });
-
-  it("should throw on invalid format", () => {
-    expect(() => decodeCoverArtId("nocolon")).toThrow("Invalid cover art ID format");
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Queue API Tests
-// ═════════════════════════════════════════════════════════════════════════════
-
-describe("Queue API", () => {
+describe("stream — error cases", () => {
   let app: FastifyInstance;
-  let token: string;
-  let userId: string;
 
   beforeEach(async () => {
-    app = await buildApp(testConfig);
+    app = await buildApp({ databasePath: ":memory:", jwtSecret: "test-secret" });
     await app.ready();
-
-    // Register user
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/auth/register",
-      payload: { username: "queueuser", password: "password123" },
-    });
-    const body = res.json();
-    token = body.accessToken;
-    userId = body.user.id;
-
-    // Seed library data
-    seedLibraryData(app, userId);
+    await seedUser(app);
   });
 
   afterEach(async () => {
     await app.close();
   });
 
-  it("should return empty queue initially", async () => {
+  it("missing id parameter → 400", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-    });
-
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.tracks).toEqual([]);
-  });
-
-  it("should replace queue with POST", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { trackIds: ["track-1", "track-2", "track-3"] },
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.json().count).toBe(3);
-
-    // Verify queue contents
-    const getRes = await app.inject({
-      method: "GET",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-    });
-
-    const body = getRes.json();
-    expect(body.tracks).toHaveLength(3);
-    expect(body.tracks[0].trackId).toBe("track-1");
-    expect(body.tracks[0].title).toBe("Paranoid Android");
-    expect(body.tracks[0].artistName).toBe("Radiohead");
-    expect(body.tracks[0].albumName).toBe("OK Computer");
-    expect(body.tracks[1].trackId).toBe("track-2");
-    expect(body.tracks[2].trackId).toBe("track-3");
-  });
-
-  it("should replace existing queue with new one", async () => {
-    // Set initial queue
-    await app.inject({
-      method: "POST",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { trackIds: ["track-1", "track-2", "track-3"] },
-    });
-
-    // Replace with new queue
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { trackIds: ["track-2"] },
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.json().count).toBe(1);
-
-    const getRes = await app.inject({
-      method: "GET",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-    });
-
-    expect(getRes.json().tracks).toHaveLength(1);
-    expect(getRes.json().tracks[0].trackId).toBe("track-2");
-  });
-
-  it("should add a track to queue", async () => {
-    const res = await app.inject({
-      method: "PATCH",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { action: "add", trackId: "track-1" },
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.json().position).toBe(0);
-
-    // Add another
-    const res2 = await app.inject({
-      method: "PATCH",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { action: "add", trackId: "track-2" },
-    });
-
-    expect(res2.json().position).toBe(1);
-
-    // Verify
-    const getRes = await app.inject({
-      method: "GET",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-    });
-
-    expect(getRes.json().tracks).toHaveLength(2);
-  });
-
-  it("should remove a track from queue and reorder", async () => {
-    // Set queue
-    await app.inject({
-      method: "POST",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { trackIds: ["track-1", "track-2", "track-3"] },
-    });
-
-    // Remove middle track
-    const res = await app.inject({
-      method: "PATCH",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { action: "remove", position: 1 },
-    });
-
-    expect(res.statusCode).toBe(200);
-
-    // Verify reordering
-    const getRes = await app.inject({
-      method: "GET",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-    });
-
-    const tracks = getRes.json().tracks;
-    expect(tracks).toHaveLength(2);
-    expect(tracks[0].trackId).toBe("track-1");
-    expect(tracks[0].position).toBe(0);
-    expect(tracks[1].trackId).toBe("track-3");
-    expect(tracks[1].position).toBe(1);
-  });
-
-  it("should clear queue", async () => {
-    // Set queue
-    await app.inject({
-      method: "POST",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { trackIds: ["track-1", "track-2"] },
-    });
-
-    // Clear
-    const res = await app.inject({
-      method: "PATCH",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { action: "clear" },
-    });
-
-    expect(res.statusCode).toBe(200);
-
-    // Verify
-    const getRes = await app.inject({
-      method: "GET",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-    });
-
-    expect(getRes.json().tracks).toHaveLength(0);
-  });
-
-  it("should require auth for queue endpoints", async () => {
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/queue",
-    });
-    expect(res.statusCode).toBe(401);
-  });
-
-  it("should return current track info", async () => {
-    // Set queue and state
-    await app.inject({
-      method: "POST",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { trackIds: ["track-1", "track-2"] },
-    });
-
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/queue/current",
-      headers: { authorization: `Bearer ${token}` },
-    });
-
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.currentTrack).not.toBeNull();
-    expect(body.currentTrack.trackId).toBe("track-1");
-    expect(body.currentTrack.title).toBe("Paranoid Android");
-    expect(body.currentTrack.streamUrl).toBe("/api/stream/track-1");
-    expect(body.state.shuffle).toBe(false);
-    expect(body.state.repeatMode).toBe("none");
-  });
-
-  it("should return null current track when queue is empty", async () => {
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/queue/current",
-      headers: { authorization: `Bearer ${token}` },
-    });
-
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.currentTrack).toBeNull();
-  });
-
-  it("should update queue state", async () => {
-    // Set queue first
-    await app.inject({
-      method: "POST",
-      url: "/api/queue",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { trackIds: ["track-1", "track-2", "track-3"] },
-    });
-
-    // Update state
-    const res = await app.inject({
-      method: "PATCH",
-      url: "/api/queue/state",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { currentPosition: 2, shuffle: true, repeatMode: "all" },
-    });
-
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.currentPosition).toBe(2);
-    expect(body.shuffle).toBe(true);
-    expect(body.repeatMode).toBe("all");
-
-    // Verify current reflects the update
-    const currentRes = await app.inject({
-      method: "GET",
-      url: "/api/queue/current",
-      headers: { authorization: `Bearer ${token}` },
-    });
-
-    const current = currentRes.json();
-    expect(current.currentTrack.trackId).toBe("track-3");
-    expect(current.state.shuffle).toBe(true);
-    expect(current.state.repeatMode).toBe("all");
-  });
-
-  it("should partially update queue state", async () => {
-    // Update only shuffle
-    const res = await app.inject({
-      method: "PATCH",
-      url: "/api/queue/state",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { shuffle: true },
-    });
-
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.shuffle).toBe(true);
-    expect(body.currentPosition).toBe(0);
-    expect(body.repeatMode).toBe("none");
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Stream Proxy Route Tests (with mocked SubsonicClient)
-// ═════════════════════════════════════════════════════════════════════════════
-
-describe("Stream route", () => {
-  let app: FastifyInstance;
-  let token: string;
-  let userId: string;
-
-  beforeEach(async () => {
-    app = await buildApp(testConfig);
-    await app.ready();
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/auth/register",
-      payload: { username: "streamuser", password: "password123" },
-    });
-    const body = res.json();
-    token = body.accessToken;
-    userId = body.user.id;
-
-    seedLibraryData(app, userId);
-  });
-
-  afterEach(async () => {
-    await app.close();
-  });
-
-  it("should require auth for stream endpoint", async () => {
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/stream/track-1",
-    });
-    expect(res.statusCode).toBe(401);
-  });
-
-  it("should return 404 for nonexistent track", async () => {
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/stream/nonexistent-track",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(res.statusCode).toBe(404);
-  });
-
-  it("should return 503 when all instances are offline", async () => {
-    // Set all instances to offline
-    app.db
-      .prepare("UPDATE instances SET status = 'offline'")
-      .run();
-
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/stream/track-1",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(res.statusCode).toBe(503);
-  });
-
-  it("should require auth for cover art endpoint", async () => {
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/art/inst-1:cover-1",
-    });
-    expect(res.statusCode).toBe(401);
-  });
-
-  it("should return 400 for invalid cover art ID", async () => {
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/art/nocolon",
-      headers: { authorization: `Bearer ${token}` },
+      url: "/rest/stream?u=tester&p=secret&f=json",
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it("should return 404 for cover art from nonexistent instance", async () => {
+  it("id with wrong prefix → 400", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/api/art/nonexistent:cover-1",
-      headers: { authorization: `Bearer ${token}` },
+      url: "/rest/stream?u=tester&p=secret&f=json&id=xyz999",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("valid prefixed id with no matching track sources → 404", async () => {
+    // "t" prefix but UUID that doesn't exist in the DB
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/stream?u=tester&p=secret&f=json&id=t00000000-0000-0000-0000-000000000000",
     });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+// ── Local source ──────────────────────────────────────────────────────────────
+
+describe("stream — local source", () => {
+  let app: FastifyInstance;
+  let navidrome: http.Server;
+  let navidromePort: number;
+
+  beforeEach(async () => {
+    ({ server: navidrome, port: navidromePort } = await startFakeNavidrome());
+
+    app = await buildApp({
+      databasePath: ":memory:",
+      jwtSecret: "test-secret",
+      navidromeUrl: `http://127.0.0.1:${navidromePort}`,
+      navidromeUsername: "admin",
+      navidromePassword: "admin",
+    });
+    await app.ready();
+
+    await seedUser(app);
+    seedLocalTrack(app);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise<void>((resolve) => navidrome.close(() => resolve()));
+  });
+
+  it("streams audio bytes from local Navidrome with correct content-type", async () => {
+    const track = app.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+    expect(track).toBeDefined();
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${track.id}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/audio\/mpeg/);
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
+  });
+
+  it("/rest/download alias behaves identically to /rest/stream", async () => {
+    const track = app.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/download?u=tester&p=secret&f=json&id=t${track.id}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/audio\/mpeg/);
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
+  });
+});
+
+// ── Peer source ───────────────────────────────────────────────────────────────
+
+describe("stream — peer source", () => {
+  let appA: FastifyInstance;
+  let appB: FastifyInstance;
+  let portB: number;
+  let navidrome: http.Server;
+  let navidromePort: number;
+  let keyPathA: string;
+  let keyPathB: string;
+  let peersYamlA: string;
+  let peersYamlB: string;
+
+  beforeEach(async () => {
+    // Start fake Navidrome (serves B's audio)
+    ({ server: navidrome, port: navidromePort } = await startFakeNavidrome());
+
+    keyPathA = tmpPath("key-a.pem");
+    keyPathB = tmpPath("key-b.pem");
+    peersYamlA = tmpPath("peers-a.yaml");
+    peersYamlB = tmpPath("peers-b.yaml");
+
+    const { publicKeyBase64: pubA } = loadOrCreatePrivateKey(keyPathA);
+    const { publicKeyBase64: pubB } = loadOrCreatePrivateKey(keyPathB);
+
+    // B trusts A
+    writeYaml(
+      peersYamlB,
+      [
+        `peers:`,
+        `  - id: "poutine-a"`,
+        `    url: "http://localhost"`,
+        `    public_key: "ed25519:${pubA}"`,
+      ].join("\n"),
+    );
+
+    // Build B with fake Navidrome, then start listening
+    const configB: Partial<Config> = {
+      databasePath: ":memory:",
+      jwtSecret: "test-b",
+      poutinePrivateKeyPath: keyPathB,
+      poutinePeersConfig: peersYamlB,
+      poutineInstanceId: "poutine-b",
+      navidromeUrl: `http://127.0.0.1:${navidromePort}`,
+      navidromeUsername: "admin",
+      navidromePassword: "admin",
+    };
+    appB = await buildApp(configB);
+    await appB.ready();
+    await appB.listen({ port: 0, host: "127.0.0.1" });
+    portB = (appB.server.address() as AddressInfo).port;
+
+    // A knows B's URL (now that B is listening)
+    writeYaml(
+      peersYamlA,
+      [
+        `peers:`,
+        `  - id: "poutine-b"`,
+        `    url: "http://127.0.0.1:${portB}"`,
+        `    public_key: "ed25519:${pubB}"`,
+      ].join("\n"),
+    );
+
+    // Build A (no listening needed — we use inject)
+    const configA: Partial<Config> = {
+      databasePath: ":memory:",
+      jwtSecret: "test-a",
+      poutinePrivateKeyPath: keyPathA,
+      poutinePeersConfig: peersYamlA,
+      poutineInstanceId: "poutine-a",
+    };
+    appA = await buildApp(configA);
+    await appA.ready();
+
+    // Seed B's library and merge it so B has a real unified track + local source
+    appB.db
+      .prepare(
+        `INSERT OR IGNORE INTO instance_artists
+         (id, instance_id, remote_id, name, album_count)
+         VALUES ('local:art-1', 'local', 'art-1', 'Remote Artist', 1)`,
+      )
+      .run();
+    appB.db
+      .prepare(
+        `INSERT OR IGNORE INTO instance_albums
+         (id, instance_id, remote_id, name, artist_id, artist_name, track_count, cover_art_id)
+         VALUES ('local:alb-1', 'local', 'alb-1', 'Remote Album', 'local:art-1', 'Remote Artist', 1, NULL)`,
+      )
+      .run();
+    appB.db
+      .prepare(
+        `INSERT OR IGNORE INTO instance_tracks
+         (id, instance_id, remote_id, album_id, title, artist_name, track_number, duration_ms, format, bitrate)
+         VALUES ('local:trk-1', 'local', 'trk-1', 'local:alb-1', 'Remote Track', 'Remote Artist', 1, 200000, 'flac', 1000)`,
+      )
+      .run();
+    mergeLibraries(appB.db);
+
+    // A syncs B, then merges — this gives A a peer track_source pointing to B
+    const peerB = appA.peerRegistry.peers.get("poutine-b");
+    await syncPeer(appA.db, peerB!, appA.federatedFetch, "tester");
+    mergeLibraries(appA.db);
+
+    // Seed A's user so Subsonic auth passes
+    await seedUser(appA);
+  });
+
+  afterEach(async () => {
+    await appA.close();
+    await appB.close();
+    await new Promise<void>((resolve) => navidrome.close(() => resolve()));
+    for (const f of [keyPathA, keyPathB, peersYamlA, peersYamlB]) {
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  it("routes audio through federation to the peer's Navidrome", async () => {
+    // Get A's unified_track_id for the peer-sourced track
+    const track = appA.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+    expect(track).toBeDefined();
+
+    // Confirm A sees it as a peer source
+    const source = appA.db
+      .prepare(
+        "SELECT source_kind, peer_id FROM track_sources WHERE unified_track_id = ?",
+      )
+      .get(track.id) as { source_kind: string; peer_id: string } | undefined;
+    expect(source?.source_kind).toBe("peer");
+    expect(source?.peer_id).toBe("poutine-b");
+
+    const res = await appA.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${track.id}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/audio\/mpeg/);
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
+  });
+});
+
+// ── Source selection: shared track helpers ────────────────────────────────────
+
+/**
+ * Build a two-hub test setup where both A and B have the same track
+ * (same artist / album / title / track-number / duration) but potentially
+ * different quality, then have A sync B so it holds both a local source and
+ * a peer source for that unified track.
+ *
+ * Returns the two apps and servers so the caller can make assertions and
+ * then tear everything down.
+ */
+async function buildSharedTrackSetup(opts: {
+  /** format/bitrate for hub-b's copy of the track */
+  bFormat: string;
+  bBitrate: number;
+  /** content-type that hub-b's fake Navidrome reports when streaming */
+  bContentType: string;
+}): Promise<{
+  appA: FastifyInstance;
+  appB: FastifyInstance;
+  navA: http.Server;
+  navB: http.Server;
+  keyPathA: string;
+  keyPathB: string;
+  peersYamlA: string;
+  peersYamlB: string;
+}> {
+  // Fake Navidrome A — always serves local audio as audio/mpeg
+  const navA = http.createServer((_req, res) => {
+    res.writeHead(200, {
+      "content-type": "audio/mpeg",
+      "content-length": String(FAKE_AUDIO_LOCAL.length),
+    });
+    res.end(FAKE_AUDIO_LOCAL);
+  });
+  await new Promise<void>((resolve) => navA.listen(0, "127.0.0.1", () => resolve()));
+  const navAPort = (navA.address() as AddressInfo).port;
+
+  // Fake Navidrome B — serves peer audio with the caller-specified content-type
+  const navB = http.createServer((_req, res) => {
+    res.writeHead(200, {
+      "content-type": opts.bContentType,
+      "content-length": String(FAKE_AUDIO_PEER.length),
+    });
+    res.end(FAKE_AUDIO_PEER);
+  });
+  await new Promise<void>((resolve) => navB.listen(0, "127.0.0.1", () => resolve()));
+  const navBPort = (navB.address() as AddressInfo).port;
+
+  const keyPathA = tmpPath("key-a.pem");
+  const keyPathB = tmpPath("key-b.pem");
+  const peersYamlA = tmpPath("peers-a.yaml");
+  const peersYamlB = tmpPath("peers-b.yaml");
+
+  const { publicKeyBase64: pubA } = loadOrCreatePrivateKey(keyPathA);
+  const { publicKeyBase64: pubB } = loadOrCreatePrivateKey(keyPathB);
+
+  writeYaml(peersYamlB, [
+    `peers:`,
+    `  - id: "poutine-a"`,
+    `    url: "http://localhost"`,
+    `    public_key: "ed25519:${pubA}"`,
+  ].join("\n"));
+
+  const configB: Partial<Config> = {
+    databasePath: ":memory:",
+    jwtSecret: "test-b",
+    poutinePrivateKeyPath: keyPathB,
+    poutinePeersConfig: peersYamlB,
+    poutineInstanceId: "poutine-b",
+    navidromeUrl: `http://127.0.0.1:${navBPort}`,
+    navidromeUsername: "admin",
+    navidromePassword: "admin",
+  };
+  const appB = await buildApp(configB);
+  await appB.ready();
+  await appB.listen({ port: 0, host: "127.0.0.1" });
+  const portB = (appB.server.address() as AddressInfo).port;
+
+  writeYaml(peersYamlA, [
+    `peers:`,
+    `  - id: "poutine-b"`,
+    `    url: "http://127.0.0.1:${portB}"`,
+    `    public_key: "ed25519:${pubB}"`,
+  ].join("\n"));
+
+  const configA: Partial<Config> = {
+    databasePath: ":memory:",
+    jwtSecret: "test-a",
+    poutinePrivateKeyPath: keyPathA,
+    poutinePeersConfig: peersYamlA,
+    poutineInstanceId: "poutine-a",
+    navidromeUrl: `http://127.0.0.1:${navAPort}`,
+    navidromeUsername: "admin",
+    navidromePassword: "admin",
+  };
+  const appA = await buildApp(configA);
+  await appA.ready();
+
+  // Seed A's local library: MP3 @ 320 kbps
+  appA.db.prepare(
+    `INSERT OR IGNORE INTO instance_artists
+     (id, instance_id, remote_id, name, album_count)
+     VALUES ('local:art-1', 'local', 'art-1', 'Shared Artist', 1)`,
+  ).run();
+  appA.db.prepare(
+    `INSERT OR IGNORE INTO instance_albums
+     (id, instance_id, remote_id, name, artist_id, artist_name, track_count, cover_art_id)
+     VALUES ('local:alb-1', 'local', 'alb-1', 'Shared Album', 'local:art-1', 'Shared Artist', 1, NULL)`,
+  ).run();
+  appA.db.prepare(
+    `INSERT OR IGNORE INTO instance_tracks
+     (id, instance_id, remote_id, album_id, title, artist_name, track_number, duration_ms, format, bitrate)
+     VALUES ('local:trk-1', 'local', 'trk-1', 'local:alb-1', 'Shared Track', 'Shared Artist', 1, 200000, 'mp3', 320)`,
+  ).run();
+
+  // Seed B's local library: same track, caller-specified quality
+  appB.db.prepare(
+    `INSERT OR IGNORE INTO instance_artists
+     (id, instance_id, remote_id, name, album_count)
+     VALUES ('local:art-1', 'local', 'art-1', 'Shared Artist', 1)`,
+  ).run();
+  appB.db.prepare(
+    `INSERT OR IGNORE INTO instance_albums
+     (id, instance_id, remote_id, name, artist_id, artist_name, track_count, cover_art_id)
+     VALUES ('local:alb-1', 'local', 'alb-1', 'Shared Album', 'local:art-1', 'Shared Artist', 1, NULL)`,
+  ).run();
+  appB.db.prepare(
+    `INSERT OR IGNORE INTO instance_tracks
+     (id, instance_id, remote_id, album_id, title, artist_name, track_number, duration_ms, format, bitrate)
+     VALUES (?, 'local', 'trk-1', 'local:alb-1', 'Shared Track', 'Shared Artist', 1, 200000, ?, ?)`,
+  ).run("local:trk-1", opts.bFormat, opts.bBitrate);
+  mergeLibraries(appB.db);
+
+  // A syncs B → imports B's track as a peer source, then merges
+  const peerB = appA.peerRegistry.peers.get("poutine-b");
+  await syncPeer(appA.db, peerB!, appA.federatedFetch, "tester");
+  mergeLibraries(appA.db);
+
+  await seedUser(appA);
+
+  return { appA, appB, navA, navB, keyPathA, keyPathB, peersYamlA, peersYamlB };
+}
+
+async function teardownSharedTrackSetup(setup: {
+  appA: FastifyInstance;
+  appB: FastifyInstance;
+  navA: http.Server;
+  navB: http.Server;
+  keyPathA: string;
+  keyPathB: string;
+  peersYamlA: string;
+  peersYamlB: string;
+}) {
+  await setup.appA.close();
+  await setup.appB.close();
+  await new Promise<void>((resolve) => setup.navA.close(() => resolve()));
+  await new Promise<void>((resolve) => setup.navB.close(() => resolve()));
+  for (const f of [setup.keyPathA, setup.keyPathB, setup.peersYamlA, setup.peersYamlB]) {
+    if (fs.existsSync(f)) fs.unlinkSync(f);
+  }
+}
+
+// ── Source selection: identical quality → local preferred ─────────────────────
+
+describe("stream — identical track on local and peer → local source preferred", () => {
+  let setup: Awaited<ReturnType<typeof buildSharedTrackSetup>>;
+
+  beforeEach(async () => {
+    setup = await buildSharedTrackSetup({
+      bFormat: "mp3",
+      bBitrate: 320,
+      bContentType: "audio/mpeg",
+    });
+  });
+
+  afterEach(async () => {
+    await teardownSharedTrackSetup(setup);
+  });
+
+  it("merged into one unified track with both local and peer sources", () => {
+    const tracks = setup.appA.db
+      .prepare("SELECT id FROM unified_tracks")
+      .all() as { id: string }[];
+    expect(tracks).toHaveLength(1);
+
+    const sources = setup.appA.db
+      .prepare(
+        "SELECT source_kind FROM track_sources WHERE unified_track_id = ? ORDER BY source_kind",
+      )
+      .all(tracks[0].id) as { source_kind: string }[];
+    expect(sources.map((s) => s.source_kind)).toEqual(["local", "peer"]);
+  });
+
+  it("streams from local Navidrome (local tie-break beats equal-quality peer)", async () => {
+    const track = setup.appA.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+
+    const res = await setup.appA.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${track.id}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Audio bytes must come from hub-a's own Navidrome, not hub-b's
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO_LOCAL);
+  });
+});
+
+// ── Source selection: peer is higher quality → peer preferred ─────────────────
+
+describe("stream — peer has higher-quality recording → peer source preferred", () => {
+  let setup: Awaited<ReturnType<typeof buildSharedTrackSetup>>;
+
+  beforeEach(async () => {
+    setup = await buildSharedTrackSetup({
+      bFormat: "flac",
+      bBitrate: 1000,
+      bContentType: "audio/flac",
+    });
+  });
+
+  afterEach(async () => {
+    await teardownSharedTrackSetup(setup);
+  });
+
+  it("merged into one unified track with both local and peer sources", () => {
+    const tracks = setup.appA.db
+      .prepare("SELECT id FROM unified_tracks")
+      .all() as { id: string }[];
+    expect(tracks).toHaveLength(1);
+
+    const sources = setup.appA.db
+      .prepare(
+        "SELECT source_kind, format FROM track_sources WHERE unified_track_id = ? ORDER BY source_kind",
+      )
+      .all(tracks[0].id) as { source_kind: string; format: string }[];
+    expect(sources.map((s) => s.source_kind)).toEqual(["local", "peer"]);
+
+    const localSrc = sources.find((s) => s.source_kind === "local");
+    const peerSrc  = sources.find((s) => s.source_kind === "peer");
+    expect(localSrc?.format).toBe("mp3");
+    expect(peerSrc?.format).toBe("flac");
+  });
+
+  it("streams from peer Navidrome (FLAC format quality beats local MP3)", async () => {
+    const track = setup.appA.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+
+    const res = await setup.appA.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${track.id}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Content-type must reflect hub-b's FLAC source
+    expect(res.headers["content-type"]).toMatch(/audio\/flac/);
+    // Audio bytes must come from hub-b's Navidrome, not hub-a's
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO_PEER);
   });
 });

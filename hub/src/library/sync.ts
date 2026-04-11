@@ -1,12 +1,29 @@
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
-import type { Instance } from "../federation/registry.js";
-import {
-  listInstances,
-  getInstanceCredentials,
-} from "../federation/registry.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import type { SubsonicAlbum, SubsonicSong } from "../adapters/subsonic.js";
+import type { PeerRegistry } from "../federation/peers.js";
+import { syncLocal } from "./sync-local.js";
+import { syncPeer } from "./sync-peer.js";
+import type { FederationFetcher } from "./sync-peer.js";
+import { mergeLibraries } from "./merge.js";
+import { seedSyntheticInstances } from "./seed-instances.js";
+
+/** Minimal instance descriptor used by syncInstance. */
+export interface Instance {
+  id: string;
+  name: string;
+  url: string;
+  adapterType: string;
+  ownerId: string;
+  status: string;
+  lastSeen: string | null;
+  lastSyncedAt: string | null;
+  trackCount: number;
+  serverVersion: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface SyncResult {
   instanceId: string;
@@ -247,55 +264,39 @@ export async function syncInstance(
 }
 
 /**
- * Sync all online instances.
+ * Sync the local Navidrome and all known peers, then merge.
+ * This is the main entry point for Phase 4+ sync.
  */
-export async function syncAllInstances(
+export async function syncAll(
   db: Database.Database,
   config: Config,
-  createClient?: (instance: Instance, creds: { username: string; password: string }) => SubsonicClient,
-): Promise<SyncResult[]> {
-  const instances = listInstances(db);
-  const results: SyncResult[] = [];
+  peerRegistry: PeerRegistry,
+  federatedFetch: FederationFetcher,
+  ownerUsername: string,
+): Promise<{ local: SyncResult; peers: SyncResult[] }> {
+  // Ensure synthetic instance rows exist (idempotent)
+  seedSyntheticInstances(db, config, peerRegistry);
 
-  const clientFactory =
-    createClient ??
-    ((inst: Instance, creds: { username: string; password: string }) =>
-      new SubsonicClient({
-        url: inst.url,
-        username: creds.username,
-        password: creds.password,
-      }));
+  const local = await syncLocal(db, config);
 
-  for (const instance of instances) {
-    const creds = getInstanceCredentials(db, instance.id, config.encryptionKey);
-    if (!creds) {
-      results.push({
-        instanceId: instance.id,
-        artistCount: 0,
-        albumCount: 0,
-        trackCount: 0,
-        errors: ["Could not decrypt credentials"],
-      });
-      continue;
-    }
-
-    const client = clientFactory(instance, creds);
-
+  const peers: SyncResult[] = [];
+  for (const peer of peerRegistry.peers.values()) {
     try {
-      const result = await syncInstance(db, instance, client, {
-        concurrency: config.instanceConcurrency,
-      });
-      results.push(result);
+      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername);
+      peers.push(peerResult);
     } catch (err) {
-      results.push({
-        instanceId: instance.id,
+      peers.push({
+        instanceId: peer.id,
         artistCount: 0,
         albumCount: 0,
         trackCount: 0,
-        errors: [`Sync failed: ${err}`],
+        errors: [`Peer sync failed: ${String(err)}`],
       });
     }
   }
 
-  return results;
+  mergeLibraries(db);
+
+  return { local, peers };
 }
+

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
-import { getAccessToken } from "@/lib/api";
+import { streamUrl } from "@/lib/subsonic";
 import {
   Play,
   Pause,
@@ -43,26 +43,26 @@ export function PlayerBar() {
       ? queue[currentIndex]
       : null;
 
-  const streamUrl = currentTrack
-    ? `/api/stream/${currentTrack.id}?format=mp3&maxBitRate=192&token=${getAccessToken()}`
+  const currentStreamUrl = currentTrack
+    ? streamUrl(currentTrack.id, "opus", 192)
     : null;
 
   // Update audio element when track changes
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !streamUrl) return;
+    if (!audio || !currentStreamUrl) return;
 
-    audio.src = streamUrl;
+    audio.src = currentStreamUrl;
     audio.load();
     if (isPlaying) {
       audio.play().catch(() => {});
     }
-  }, [streamUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentStreamUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync play/pause state
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !streamUrl) return;
+    if (!audio || !currentStreamUrl) return;
 
     if (isPlaying) {
       audio.play().catch(() => setPlaying(false));
@@ -127,7 +127,7 @@ export function PlayerBar() {
         <div className="min-w-0">
           <p className="text-sm font-medium truncate">{currentTrack.title}</p>
           <p className="text-xs text-text-secondary truncate">
-            {currentTrack.artistName}
+            {currentTrack.artist}
           </p>
         </div>
       </div>

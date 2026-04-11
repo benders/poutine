@@ -65,7 +65,7 @@ export function Sidebar() {
             }
           >
             <Settings className="w-4 h-4" />
-            Instances
+            Settings
           </NavLink>
         )}
       </nav>

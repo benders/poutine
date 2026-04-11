@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { searchLibrary } from "@/lib/api";
-import type { Track } from "@/lib/api";
+import { search3 } from "@/lib/subsonic";
+import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
 import { Search, Play, Disc, User, Music } from "lucide-react";
@@ -39,15 +39,15 @@ export function SearchPage() {
 
   const { data: results, isLoading } = useQuery({
     queryKey: ["search", debouncedQuery],
-    queryFn: () => searchLibrary(debouncedQuery),
+    queryFn: () => search3(debouncedQuery),
     enabled: debouncedQuery.length >= 2,
   });
 
   const hasResults =
     results &&
     (results.artists.length > 0 ||
-      results.releaseGroups.length > 0 ||
-      results.tracks.length > 0);
+      results.albums.length > 0 ||
+      results.songs.length > 0);
 
   return (
     <div className="space-y-6">
@@ -108,7 +108,7 @@ export function SearchPage() {
                     <div className="min-w-0">
                       <p className="text-sm text-text-primary truncate">{artist.name}</p>
                       <p className="text-xs text-text-muted">
-                        {artist.trackCount} {artist.trackCount === 1 ? "track" : "tracks"}
+                        {artist.albumCount} {artist.albumCount === 1 ? "album" : "albums"}
                       </p>
                     </div>
                   </button>
@@ -118,30 +118,30 @@ export function SearchPage() {
           )}
 
           {/* Albums */}
-          {results.releaseGroups.length > 0 && (
+          {results.albums.length > 0 && (
             <section>
               <h2 className="text-lg font-semibold text-text-primary mb-3 flex items-center gap-2">
                 <Disc className="w-5 h-5 text-text-muted" />
                 Albums
               </h2>
               <div className="space-y-1">
-                {results.releaseGroups.slice(0, 10).map((rg) => (
+                {results.albums.slice(0, 10).map((album) => (
                   <button
-                    key={rg.id}
-                    onClick={() => navigate(`/albums/${rg.id}`)}
+                    key={album.id}
+                    onClick={() => navigate(`/albums/${album.id}`)}
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-hover transition-colors text-left cursor-pointer"
                   >
                     <div
                       className="w-10 h-10 rounded-md flex items-center justify-center shrink-0"
-                      style={{ backgroundColor: hashColor(rg.name) }}
+                      style={{ backgroundColor: hashColor(album.name) }}
                     >
                       <Disc className="w-5 h-5 text-white/30" />
                     </div>
                     <div className="min-w-0">
-                      <p className="text-sm text-text-primary truncate">{rg.name}</p>
+                      <p className="text-sm text-text-primary truncate">{album.name}</p>
                       <p className="text-xs text-text-muted truncate">
-                        {rg.artistName}
-                        {rg.year ? ` \u00B7 ${rg.year}` : ""}
+                        {album.artist}
+                        {album.year ? ` \u00B7 ${album.year}` : ""}
                       </p>
                     </div>
                   </button>
@@ -151,15 +151,15 @@ export function SearchPage() {
           )}
 
           {/* Tracks */}
-          {results.tracks.length > 0 && (
+          {results.songs.length > 0 && (
             <section>
               <h2 className="text-lg font-semibold text-text-primary mb-3 flex items-center gap-2">
                 <Music className="w-5 h-5 text-text-muted" />
                 Tracks
               </h2>
               <div className="space-y-1">
-                {results.tracks.slice(0, 10).map((track) => (
-                  <TrackResult key={track.id} track={track} onPlay={() => playTrack(track)} />
+                {results.songs.slice(0, 10).map((song) => (
+                  <SongResult key={song.id} song={song} onPlay={() => playTrack(song)} />
                 ))}
               </div>
             </section>
@@ -170,7 +170,7 @@ export function SearchPage() {
   );
 }
 
-function TrackResult({ track, onPlay }: { track: Track; onPlay: () => void }) {
+function SongResult({ song, onPlay }: { song: SubsonicSong; onPlay: () => void }) {
   return (
     <div className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-hover transition-colors">
       <button
@@ -180,13 +180,13 @@ function TrackResult({ track, onPlay }: { track: Track; onPlay: () => void }) {
         <Play className="w-4 h-4 fill-current" />
       </button>
       <div className="min-w-0 flex-1">
-        <p className="text-sm text-text-primary truncate">{track.title}</p>
+        <p className="text-sm text-text-primary truncate">{song.title}</p>
         <p className="text-xs text-text-muted truncate">
-          {track.artistName} \u00B7 {track.releaseName}
+          {song.artist} \u00B7 {song.album}
         </p>
       </div>
       <span className="text-xs text-text-muted shrink-0">
-        {formatDuration(track.durationMs)}
+        {formatDuration(song.durationMs)}
       </span>
     </div>
   );

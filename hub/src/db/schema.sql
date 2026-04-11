@@ -176,29 +176,12 @@ CREATE TABLE IF NOT EXISTS track_sources (
   format TEXT,
   bitrate INTEGER,
   size INTEGER,
+  source_kind TEXT NOT NULL DEFAULT 'local', -- 'local' | 'peer'
+  peer_id TEXT,                       -- peer registry ID when source_kind = 'peer'
   UNIQUE(unified_track_id, instance_track_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_track_sources_track ON track_sources(unified_track_id);
-
--- ============================================================
--- Playback Queue
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS user_queue (
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  position INTEGER NOT NULL,
-  track_id TEXT NOT NULL REFERENCES unified_tracks(id) ON DELETE CASCADE,
-  added_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (user_id, position)
-);
-
-CREATE TABLE IF NOT EXISTS user_queue_state (
-  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  current_position INTEGER NOT NULL DEFAULT 0,
-  shuffle INTEGER NOT NULL DEFAULT 0,
-  repeat_mode TEXT NOT NULL DEFAULT 'none' -- none | one | all
-);
 
 -- ============================================================
 -- Settings (key-value store)
@@ -207,6 +190,28 @@ CREATE TABLE IF NOT EXISTS user_queue_state (
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- ============================================================
+-- Playlists
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS playlists (
+  id TEXT PRIMARY KEY,                -- UUID
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  comment TEXT,
+  public INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS playlist_tracks (
+  playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  unified_track_id TEXT NOT NULL REFERENCES unified_tracks(id) ON DELETE CASCADE,
+  added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (playlist_id, position)
 );
 
 -- ============================================================

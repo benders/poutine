@@ -1,16 +1,18 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  getInstances,
-  addInstance,
-  removeInstance,
-  syncInstance,
-  syncAll,
-  getSettings,
-  updateSettings,
+  getUsers,
+  createUser,
+  deleteUser,
+  getPeers,
+  triggerSync,
+  getCacheStats,
+  updateCacheSettings,
   clearArtCache,
+  getInstanceInfo,
+  triggerNavidromeScan,
 } from "@/lib/api";
-import type { Instance } from "@/lib/api";
+import type { User, Peer, CacheStats } from "@/lib/api";
 import { formatTimeAgo } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import {
@@ -20,60 +22,219 @@ import {
   Server,
   Wifi,
   WifiOff,
-  ChevronDown,
-  ChevronUp,
-  HardDrive,
   ImageIcon,
+  Users,
+  Copy,
+  Check,
+  Activity,
 } from "lucide-react";
 
-function StatusBadge({ status }: { status: string }) {
-  const config = {
-    online: {
-      className: "bg-success/10 text-success",
-      icon: <Wifi className="w-3 h-3" />,
-      label: "Online",
-    },
-    offline: {
-      className: "bg-error/10 text-error",
-      icon: <WifiOff className="w-3 h-3" />,
-      label: "Offline",
-    },
-    degraded: {
-      className: "bg-warning/10 text-warning",
-      icon: <Wifi className="w-3 h-3" />,
-      label: "Degraded",
-    },
-  }[status] ?? {
-    className: "bg-text-muted/10 text-text-muted",
-    icon: <Server className="w-3 h-3" />,
-    label: status,
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   };
 
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium",
-        config.className,
-      )}
+    <button
+      onClick={handleCopy}
+      title="Copy to clipboard"
+      className="p-1.5 text-text-muted hover:text-text-primary hover:bg-surface-hover rounded transition-colors"
     >
-      {config.icon}
-      {config.label}
-    </span>
+      {copied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+    </button>
   );
 }
 
-function AddInstanceForm({ onSuccess }: { onSuccess: () => void }) {
+function InstanceSection() {
+  const queryClient = useQueryClient();
+
+  const { data: info, isLoading } = useQuery({
+    queryKey: ["admin-instance"],
+    queryFn: getInstanceInfo,
+    refetchInterval: 30_000,
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: triggerSync,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-instance"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-peers"] });
+      queryClient.invalidateQueries({ queryKey: ["albumList2"] });
+      queryClient.invalidateQueries({ queryKey: ["artists"] });
+    },
+  });
+
+  const scanMutation = useMutation({
+    mutationFn: triggerNavidromeScan,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-instance"] });
+    },
+  });
+
+  if (isLoading || !info) {
+    return (
+      <div className="bg-surface border border-border rounded-lg px-4 py-3">
+        <p className="text-sm text-text-muted">Loading instance info...</p>
+      </div>
+    );
+  }
+
+  const nd = info.navidrome;
+  const isHealthy = nd.reachable && nd.status === "online";
+  const statusLabel = !nd.reachable ? "Unreachable" : nd.status === "online" ? "Online" : nd.status;
+  const statusClass = isHealthy
+    ? "bg-success/10 text-success"
+    : nd.reachable
+    ? "bg-warning/10 text-warning"
+    : "bg-error/10 text-error";
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-4">
+      {/* Identity */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Server className="w-4 h-4 text-text-muted shrink-0" />
+          <span className="text-xs text-text-secondary uppercase tracking-wide font-medium">Instance ID</span>
+        </div>
+        <div className="flex items-center gap-2 pl-6">
+          <code className="flex-1 text-sm text-text-primary font-mono bg-surface-hover px-2 py-1 rounded">{info.instanceId || "(not set)"}</code>
+          {info.instanceId && <CopyButton text={info.instanceId} />}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4 text-text-muted shrink-0" />
+          <span className="text-xs text-text-secondary uppercase tracking-wide font-medium">Public Key</span>
+        </div>
+        <div className="flex items-center gap-2 pl-6">
+          <code className="flex-1 text-xs text-text-primary font-mono bg-surface-hover px-2 py-1.5 rounded break-all leading-relaxed">{info.publicKey}</code>
+          <CopyButton text={info.publicKey} />
+        </div>
+      </div>
+
+      <div className="border-t border-border" />
+
+      {/* Navidrome status */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-text-primary">Local Navidrome</span>
+          <span className={cn("inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium", statusClass)}>
+            {isHealthy ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+            {nd.scanning ? "Scanning…" : statusLabel}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <p className="text-xs text-text-muted mb-0.5">Tracks in index</p>
+            <p className="text-text-primary font-medium">{nd.trackCount.toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-xs text-text-muted mb-0.5">Music folders</p>
+            <p className="text-text-primary">{nd.folderCount ?? "—"}</p>
+          </div>
+          <div>
+            <p className="text-xs text-text-muted mb-0.5">Last Navidrome scan</p>
+            <p className="text-text-primary">{nd.lastScan ? formatTimeAgo(nd.lastScan) : "Never"}</p>
+          </div>
+          <div>
+            <p className="text-xs text-text-muted mb-0.5">Last synced</p>
+            <p className="text-text-primary">{nd.lastSynced ? formatTimeAgo(nd.lastSynced) : "Never"}</p>
+          </div>
+        </div>
+      </div>
+
+      {scanMutation.isSuccess && (
+        <div className="p-3 bg-success/10 border border-success/20 rounded-lg text-sm text-success">
+          Navidrome scan started.
+        </div>
+      )}
+
+      {scanMutation.isError && (
+        <p className="text-sm text-error">
+          {scanMutation.error instanceof Error ? scanMutation.error.message : "Scan failed"}
+        </p>
+      )}
+
+      {syncMutation.isSuccess && (
+        <div className="p-3 bg-success/10 border border-success/20 rounded-lg text-sm text-success">
+          Sync complete — {syncMutation.data.local.trackCount} local tracks indexed.
+        </div>
+      )}
+
+      {syncMutation.isError && (
+        <p className="text-sm text-error">
+          {syncMutation.error instanceof Error ? syncMutation.error.message : "Sync failed"}
+        </p>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          onClick={() => scanMutation.mutate()}
+          disabled={scanMutation.isPending || nd.scanning || !nd.reachable}
+          title="Tell Navidrome to re-scan its music folders"
+          className="flex items-center gap-2 px-3 py-2 bg-surface border border-border hover:bg-surface-hover rounded-lg text-sm text-text-primary transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={cn("w-4 h-4", (scanMutation.isPending || nd.scanning) && "animate-spin")} />
+          {nd.scanning ? "Scanning…" : "Scan Library"}
+        </button>
+        <button
+          onClick={() => syncMutation.mutate()}
+          disabled={syncMutation.isPending}
+          title="Re-index Navidrome's library into Poutine"
+          className="flex items-center gap-2 px-3 py-2 bg-surface border border-border hover:bg-surface-hover rounded-lg text-sm text-text-primary transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={cn("w-4 h-4", syncMutation.isPending && "animate-spin")} />
+          {syncMutation.isPending ? "Syncing…" : "Sync Now"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PeerRow({ peer }: { peer: Peer }) {
+  const statusConfig =
+    peer.status === "online"
+      ? { className: "bg-success/10 text-success", icon: <Wifi className="w-3 h-3" />, label: "Online" }
+      : { className: "bg-error/10 text-error", icon: <WifiOff className="w-3 h-3" />, label: peer.status };
+
+  return (
+    <div className="flex items-center gap-4 px-4 py-3 bg-surface border border-border rounded-lg">
+      <Server className="w-5 h-5 text-text-muted shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-text-primary">{peer.id}</span>
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium",
+              statusConfig.className,
+            )}
+          >
+            {statusConfig.icon}
+            {statusConfig.label}
+          </span>
+        </div>
+        <p className="text-xs text-text-muted truncate">{peer.url}</p>
+      </div>
+      <div className="hidden sm:block text-xs text-text-secondary shrink-0">
+        {peer.lastSeen ? `Last seen ${formatTimeAgo(peer.lastSeen)}` : "Never synced"}
+      </div>
+    </div>
+  );
+}
+
+function AddUserForm({ onSuccess }: { onSuccess: () => void }) {
   const [expanded, setExpanded] = useState(false);
-  const [name, setName] = useState("");
-  const [url, setUrl] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 
   const mutation = useMutation({
-    mutationFn: addInstance,
+    mutationFn: () => createUser(username, password),
     onSuccess: () => {
-      setName("");
-      setUrl("");
       setUsername("");
       setPassword("");
       setExpanded(false);
@@ -81,61 +242,27 @@ function AddInstanceForm({ onSuccess }: { onSuccess: () => void }) {
     },
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    mutation.mutate({ name, url, username, password });
-  };
-
   return (
     <div className="bg-surface border border-border rounded-lg">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-text-primary hover:bg-surface-hover transition-colors rounded-lg"
+        className="w-full flex items-center gap-2 px-4 py-3 text-sm font-medium text-text-primary hover:bg-surface-hover transition-colors rounded-lg"
       >
-        <span className="flex items-center gap-2">
-          <Plus className="w-4 h-4" />
-          Add Instance
-        </span>
-        {expanded ? (
-          <ChevronUp className="w-4 h-4 text-text-muted" />
-        ) : (
-          <ChevronDown className="w-4 h-4 text-text-muted" />
-        )}
+        <Plus className="w-4 h-4" />
+        Add Guest User
       </button>
 
       {expanded && (
-        <form onSubmit={handleSubmit} className="px-4 pb-4 space-y-3">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            mutation.mutate();
+          }}
+          className="px-4 pb-4 space-y-3"
+        >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-text-secondary mb-1">
-                Name
-              </label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="My Navidrome"
-                className="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-text-primary focus:outline-none focus:border-accent"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-text-secondary mb-1">
-                URL
-              </label>
-              <input
-                type="url"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://music.example.com"
-                className="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-text-primary focus:outline-none focus:border-accent"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-text-secondary mb-1">
-                Username
-              </label>
+              <label className="block text-sm text-text-secondary mb-1">Username</label>
               <input
                 type="text"
                 value={username}
@@ -145,13 +272,12 @@ function AddInstanceForm({ onSuccess }: { onSuccess: () => void }) {
               />
             </div>
             <div>
-              <label className="block text-sm text-text-secondary mb-1">
-                Password
-              </label>
+              <label className="block text-sm text-text-secondary mb-1">Password</label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                minLength={8}
                 className="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-text-primary focus:outline-none focus:border-accent"
                 required
               />
@@ -160,9 +286,7 @@ function AddInstanceForm({ onSuccess }: { onSuccess: () => void }) {
 
           {mutation.isError && (
             <p className="text-sm text-error">
-              {mutation.error instanceof Error
-                ? mutation.error.message
-                : "Failed to add instance"}
+              {mutation.error instanceof Error ? mutation.error.message : "Failed to create user"}
             </p>
           )}
 
@@ -171,7 +295,7 @@ function AddInstanceForm({ onSuccess }: { onSuccess: () => void }) {
             disabled={mutation.isPending}
             className="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
           >
-            {mutation.isPending ? "Testing connection..." : "Add Instance"}
+            {mutation.isPending ? "Creating..." : "Create User"}
           </button>
         </form>
       )}
@@ -179,75 +303,44 @@ function AddInstanceForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-function InstanceRow({ instance }: { instance: Instance }) {
+function UserRow({ user, currentUserId }: { user: User; currentUserId: string }) {
   const queryClient = useQueryClient();
 
   const deleteMutation = useMutation({
-    mutationFn: () => removeInstance(instance.id),
+    mutationFn: () => deleteUser(user.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["instances"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
     },
   });
-
-  const syncMutation = useMutation({
-    mutationFn: () => syncInstance(instance.id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["instances"] });
-    },
-  });
-
-  const handleDelete = () => {
-    if (window.confirm(`Remove instance "${instance.name}"? This will remove all tracks synced from this instance.`)) {
-      deleteMutation.mutate();
-    }
-  };
 
   return (
     <div className="flex items-center gap-4 px-4 py-3 bg-surface border border-border rounded-lg">
-      <Server className="w-5 h-5 text-text-muted shrink-0" />
-
+      <Users className="w-5 h-5 text-text-muted shrink-0" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-text-primary truncate">
-            {instance.name}
-          </span>
-          <StatusBadge status={instance.status} />
+          <span className="text-sm font-medium text-text-primary">{user.username}</span>
+          {user.isAdmin && (
+            <span className="px-2 py-0.5 bg-accent/10 text-accent rounded-full text-xs font-medium">
+              admin
+            </span>
+          )}
         </div>
-        <p className="text-xs text-text-muted truncate">{instance.url}</p>
+        <p className="text-xs text-text-muted">Joined {formatTimeAgo(user.createdAt)}</p>
       </div>
-
-      <div className="hidden sm:flex items-center gap-6 text-xs text-text-secondary shrink-0">
-        <span title="Tracks">{instance.trackCount.toLocaleString()} tracks</span>
-        {instance.lastSyncedAt && (
-          <span title="Last synced">
-            Synced {formatTimeAgo(instance.lastSyncedAt)}
-          </span>
-        )}
-        {instance.serverVersion && (
-          <span title="Server version">v{instance.serverVersion}</span>
-        )}
-      </div>
-
-      <div className="flex items-center gap-1 shrink-0">
+      {!user.isAdmin && user.id !== currentUserId && (
         <button
-          onClick={() => syncMutation.mutate()}
-          disabled={syncMutation.isPending}
-          title="Sync instance"
-          className="p-2 text-text-muted hover:text-text-primary hover:bg-surface-hover rounded-lg transition-colors disabled:opacity-50"
-        >
-          <RefreshCw
-            className={cn("w-4 h-4", syncMutation.isPending && "animate-spin")}
-          />
-        </button>
-        <button
-          onClick={handleDelete}
+          onClick={() => {
+            if (window.confirm(`Remove user "${user.username}"?`)) {
+              deleteMutation.mutate();
+            }
+          }}
           disabled={deleteMutation.isPending}
-          title="Remove instance"
+          title="Remove user"
           className="p-2 text-text-muted hover:text-error hover:bg-error/10 rounded-lg transition-colors disabled:opacity-50"
         >
           <Trash2 className="w-4 h-4" />
         </button>
-      </div>
+      )}
     </div>
   );
 }
@@ -256,46 +349,40 @@ function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / Math.pow(1024, i);
-  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-function CacheSettings() {
+function CacheSection() {
   const queryClient = useQueryClient();
-
-  const { data: settings, isLoading } = useQuery({
-    queryKey: ["settings"],
-    queryFn: getSettings,
+  const { data: stats, isLoading } = useQuery({
+    queryKey: ["admin-cache"],
+    queryFn: getCacheStats,
   });
 
   const [maxMb, setMaxMb] = useState("");
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    if (settings && !dirty) {
-      setMaxMb(String(Math.round(settings.artCacheMaxBytes / 1024 / 1024)));
+    if (stats && !dirty) {
+      setMaxMb(String(Math.round(stats.artCacheMaxBytes / 1024 / 1024)));
     }
-  }, [settings, dirty]);
+  }, [stats, dirty]);
 
   const saveMutation = useMutation({
-    mutationFn: () => {
-      const bytes = Math.round(parseFloat(maxMb) * 1024 * 1024);
-      return updateSettings({ artCacheMaxBytes: bytes });
-    },
+    mutationFn: () =>
+      updateCacheSettings({ artCacheMaxBytes: Math.round(parseFloat(maxMb) * 1024 * 1024) }),
     onSuccess: () => {
       setDirty(false);
-      queryClient.invalidateQueries({ queryKey: ["settings"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-cache"] });
     },
   });
 
   const clearMutation = useMutation({
     mutationFn: clearArtCache,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["settings"] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin-cache"] }),
   });
 
-  if (isLoading || !settings) {
+  if (isLoading || !stats) {
     return (
       <div className="bg-surface border border-border rounded-lg px-4 py-3">
         <p className="text-sm text-text-muted">Loading cache settings...</p>
@@ -304,26 +391,23 @@ function CacheSettings() {
   }
 
   const usagePercent =
-    settings.artCacheMaxBytes > 0
-      ? Math.min(100, (settings.artCacheCurrentBytes / settings.artCacheMaxBytes) * 100)
+    stats.artCacheMaxBytes > 0
+      ? Math.min(100, (stats.artCacheCurrentBytes / stats.artCacheMaxBytes) * 100)
       : 0;
 
   return (
     <div className="bg-surface border border-border rounded-lg p-4 space-y-4">
       <div className="flex items-center gap-2">
         <ImageIcon className="w-4 h-4 text-text-muted" />
-        <span className="text-sm font-medium text-text-primary">
-          Album Art Cache
-        </span>
+        <span className="text-sm font-medium text-text-primary">Album Art Cache</span>
       </div>
 
-      {/* Usage bar */}
       <div>
         <div className="flex items-center justify-between text-xs text-text-secondary mb-1">
           <span>
-            {formatBytes(settings.artCacheCurrentBytes)} / {formatBytes(settings.artCacheMaxBytes)}
+            {formatBytes(stats.artCacheCurrentBytes)} / {formatBytes(stats.artCacheMaxBytes)}
           </span>
-          <span>{settings.artCacheFileCount} images</span>
+          <span>{stats.artCacheFileCount} images</span>
         </div>
         <div className="h-2 bg-border rounded-full overflow-hidden">
           <div
@@ -336,12 +420,9 @@ function CacheSettings() {
         </div>
       </div>
 
-      {/* Max size input */}
       <div className="flex items-end gap-3">
         <div className="flex-1">
-          <label className="block text-sm text-text-secondary mb-1">
-            Max Cache Size (MB)
-          </label>
+          <label className="block text-sm text-text-secondary mb-1">Max Cache Size (MB)</label>
           <input
             type="number"
             min="1"
@@ -367,7 +448,7 @@ function CacheSettings() {
               clearMutation.mutate();
             }
           }}
-          disabled={clearMutation.isPending || settings.artCacheFileCount === 0}
+          disabled={clearMutation.isPending || stats.artCacheFileCount === 0}
           className="px-4 py-2 bg-surface border border-border hover:bg-surface-hover rounded-lg text-sm text-text-primary transition-colors disabled:opacity-50"
         >
           {clearMutation.isPending ? "Clearing..." : "Clear Cache"}
@@ -376,9 +457,7 @@ function CacheSettings() {
 
       {saveMutation.isError && (
         <p className="text-sm text-error">
-          {saveMutation.error instanceof Error
-            ? saveMutation.error.message
-            : "Failed to save settings"}
+          {saveMutation.error instanceof Error ? saveMutation.error.message : "Failed to save settings"}
         </p>
       )}
     </div>
@@ -388,76 +467,92 @@ function CacheSettings() {
 export function AdminPage() {
   const queryClient = useQueryClient();
 
-  const {
-    data: instances,
-    isLoading,
-    isError,
-  } = useQuery({
-    queryKey: ["instances"],
-    queryFn: getInstances,
+  const { data: peers, isLoading: peersLoading } = useQuery({
+    queryKey: ["admin-peers"],
+    queryFn: getPeers,
   });
 
-  const syncAllMutation = useMutation({
-    mutationFn: syncAll,
+  const { data: users, isLoading: usersLoading } = useQuery({
+    queryKey: ["admin-users"],
+    queryFn: getUsers,
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: triggerSync,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["instances"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-peers"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-instance"] });
+      queryClient.invalidateQueries({ queryKey: ["albumList2"] });
+      queryClient.invalidateQueries({ queryKey: ["artists"] });
     },
   });
 
+  const currentUserId = users?.find((u) => u.isAdmin)?.id ?? "";
+
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-bold text-text-primary">Instances</h1>
-        <button
-          onClick={() => syncAllMutation.mutate()}
-          disabled={syncAllMutation.isPending}
-          className="flex items-center gap-2 px-3 py-2 bg-surface border border-border hover:bg-surface-hover rounded-lg text-sm text-text-primary transition-colors disabled:opacity-50"
-        >
-          <RefreshCw
-            className={cn(
-              "w-4 h-4",
-              syncAllMutation.isPending && "animate-spin",
-            )}
-          />
-          {syncAllMutation.isPending ? "Syncing..." : "Sync All"}
-        </button>
-      </div>
+    <div className="max-w-4xl mx-auto px-4 py-8 space-y-10">
+      {/* Instance */}
+      <section>
+        <h1 className="text-xl font-bold text-text-primary mb-4">This Instance</h1>
+        <InstanceSection />
+      </section>
 
-      <div className="space-y-4">
-        <AddInstanceForm
-          onSuccess={() =>
-            queryClient.invalidateQueries({ queryKey: ["instances"] })
-          }
-        />
+      {/* Peers */}
+      <section>
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-xl font-bold text-text-primary">Federation Peers</h1>
+          <button
+            onClick={() => syncMutation.mutate()}
+            disabled={syncMutation.isPending}
+            className="flex items-center gap-2 px-3 py-2 bg-surface border border-border hover:bg-surface-hover rounded-lg text-sm text-text-primary transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={cn("w-4 h-4", syncMutation.isPending && "animate-spin")} />
+            {syncMutation.isPending ? "Syncing..." : "Sync All"}
+          </button>
+        </div>
 
-        {isLoading && (
-          <p className="text-sm text-text-muted text-center py-8">
-            Loading instances...
+        {syncMutation.isSuccess && (
+          <div className="mb-4 p-3 bg-success/10 border border-success/20 rounded-lg text-sm text-success">
+            Sync complete — local: {syncMutation.data.local.trackCount} tracks,{" "}
+            {syncMutation.data.peers.length} peer(s) synced.
+          </div>
+        )}
+
+        {syncMutation.isError && (
+          <p className="mb-4 text-sm text-error">
+            {syncMutation.error instanceof Error ? syncMutation.error.message : "Sync failed"}
           </p>
         )}
 
-        {isError && (
-          <p className="text-sm text-error text-center py-8">
-            Failed to load instances.
-          </p>
-        )}
+        <div className="space-y-2">
+          {peersLoading && <p className="text-sm text-text-muted py-4">Loading peers...</p>}
+          {!peersLoading && peers?.length === 0 && (
+            <p className="text-sm text-text-muted py-4">
+              No peers configured. Add peers to <code className="text-xs">peers.yaml</code> and
+              reload.
+            </p>
+          )}
+          {peers?.map((peer) => <PeerRow key={peer.id} peer={peer} />)}
+        </div>
+      </section>
 
-        {instances && instances.length === 0 && (
-          <p className="text-sm text-text-muted text-center py-8">
-            No instances configured. Add one above to get started.
-          </p>
-        )}
+      {/* Users */}
+      <section>
+        <h2 className="text-xl font-bold text-text-primary mb-4">Users</h2>
+        <div className="space-y-2">
+          <AddUserForm onSuccess={() => queryClient.invalidateQueries({ queryKey: ["admin-users"] })} />
+          {usersLoading && <p className="text-sm text-text-muted py-4">Loading users...</p>}
+          {users?.map((user) => (
+            <UserRow key={user.id} user={user} currentUserId={currentUserId} />
+          ))}
+        </div>
+      </section>
 
-        {instances?.map((instance) => (
-          <InstanceRow key={instance.id} instance={instance} />
-        ))}
-      </div>
-
-      {/* Cache Settings */}
-      <div className="mt-10">
+      {/* Cache */}
+      <section>
         <h2 className="text-xl font-bold text-text-primary mb-4">Cache</h2>
-        <CacheSettings />
-      </div>
+        <CacheSection />
+      </section>
     </div>
   );
 }

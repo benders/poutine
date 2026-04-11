@@ -1,8 +1,8 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getReleaseGroups, artUrl } from "@/lib/api";
-import type { ReleaseGroup } from "@/lib/api";
+import { getAlbumList2, artUrl } from "@/lib/subsonic";
+import type { SubsonicAlbum } from "@/lib/subsonic";
 import { Search, Disc, ChevronDown } from "lucide-react";
 
 function hashColor(name: string): string {
@@ -21,21 +21,21 @@ export function LibraryPage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortOption>("name");
 
-  const { data: releaseGroups, isLoading } = useQuery({
-    queryKey: ["releaseGroups"],
-    queryFn: () => getReleaseGroups({ limit: 500 }),
+  const { data: albums, isLoading } = useQuery({
+    queryKey: ["albumList2"],
+    queryFn: () => getAlbumList2({ size: 500 }),
   });
 
   const filtered = useMemo(() => {
-    if (!releaseGroups) return [];
-    let items = [...releaseGroups];
+    if (!albums) return [];
+    let items = [...albums];
 
     if (search) {
       const q = search.toLowerCase();
       items = items.filter(
-        (rg) =>
-          rg.name.toLowerCase().includes(q) ||
-          rg.artistName.toLowerCase().includes(q),
+        (a) =>
+          a.name.toLowerCase().includes(q) ||
+          a.artist.toLowerCase().includes(q),
       );
     }
 
@@ -51,7 +51,7 @@ export function LibraryPage() {
     });
 
     return items;
-  }, [releaseGroups, search, sort]);
+  }, [albums, search, sort]);
 
   return (
     <div className="space-y-6">
@@ -91,8 +91,8 @@ export function LibraryPage() {
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-          {filtered.map((rg) => (
-            <AlbumCard key={rg.id} releaseGroup={rg} onClick={() => navigate(`/albums/${rg.id}`)} />
+          {filtered.map((album) => (
+            <AlbumCard key={album.id} album={album} onClick={() => navigate(`/albums/${album.id}`)} />
           ))}
         </div>
       )}
@@ -101,10 +101,10 @@ export function LibraryPage() {
 }
 
 function AlbumCard({
-  releaseGroup,
+  album,
   onClick,
 }: {
-  releaseGroup: ReleaseGroup;
+  album: SubsonicAlbum;
   onClick: () => void;
 }) {
   return (
@@ -114,12 +114,12 @@ function AlbumCard({
     >
       <div
         className="aspect-square rounded-md mb-3 flex items-center justify-center overflow-hidden"
-        style={{ backgroundColor: hashColor(releaseGroup.name) }}
+        style={{ backgroundColor: hashColor(album.name) }}
       >
-        {releaseGroup.imageUrl ? (
+        {album.coverArt ? (
           <img
-            src={artUrl(releaseGroup.imageUrl, 300)}
-            alt={releaseGroup.name}
+            src={artUrl(album.coverArt, 300)}
+            alt={album.name}
             className="w-full h-full object-cover"
             loading="lazy"
           />
@@ -128,11 +128,11 @@ function AlbumCard({
         )}
       </div>
       <p className="text-sm font-medium text-text-primary truncate">
-        {releaseGroup.name}
+        {album.name}
       </p>
       <p className="text-xs text-text-secondary truncate">
-        {releaseGroup.artistName}
-        {releaseGroup.year ? ` \u00B7 ${releaseGroup.year}` : ""}
+        {album.artist}
+        {album.year ? ` \u00B7 ${album.year}` : ""}
       </p>
     </button>
   );

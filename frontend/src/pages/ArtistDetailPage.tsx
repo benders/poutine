@@ -1,8 +1,8 @@
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getArtist, artUrl } from "@/lib/api";
-import type { ReleaseGroup } from "@/lib/api";
-import { ChevronRight, Disc, User } from "lucide-react";
+import { getArtist, artUrl } from "@/lib/subsonic";
+import type { SubsonicAlbum } from "@/lib/subsonic";
+import { ChevronRight, Disc } from "lucide-react";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -56,23 +56,15 @@ export function ArtistDetailPage() {
           className="w-28 h-28 rounded-full flex items-center justify-center shrink-0"
           style={{ backgroundColor: hashColor(artist.name) }}
         >
-          {artist.imageUrl ? (
-            <img
-              src={artUrl(artist.imageUrl, 300)}
-              alt={artist.name}
-              className="w-full h-full rounded-full object-cover"
-            />
-          ) : (
-            <span className="text-3xl font-bold text-white/60">
-              {initials(artist.name)}
-            </span>
-          )}
+          <span className="text-3xl font-bold text-white/60">
+            {initials(artist.name)}
+          </span>
         </div>
         <div>
           <h1 className="text-3xl font-bold text-text-primary">{artist.name}</h1>
           <p className="text-text-secondary mt-1">
-            {artist.releaseGroups.length}{" "}
-            {artist.releaseGroups.length === 1 ? "album" : "albums"}
+            {artist.album.length}{" "}
+            {artist.album.length === 1 ? "album" : "albums"}
           </p>
         </div>
       </div>
@@ -80,15 +72,15 @@ export function ArtistDetailPage() {
       {/* Discography */}
       <div>
         <h2 className="text-lg font-semibold text-text-primary mb-4">Discography</h2>
-        {artist.releaseGroups.length === 0 ? (
+        {artist.album.length === 0 ? (
           <p className="text-text-muted">No albums found.</p>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-            {artist.releaseGroups.map((rg) => (
+            {artist.album.map((album) => (
               <AlbumCard
-                key={rg.id}
-                releaseGroup={rg}
-                onClick={() => navigate(`/albums/${rg.id}`)}
+                key={album.id}
+                album={album}
+                onClick={() => navigate(`/albums/${album.id}`)}
               />
             ))}
           </div>
@@ -99,10 +91,10 @@ export function ArtistDetailPage() {
 }
 
 function AlbumCard({
-  releaseGroup,
+  album,
   onClick,
 }: {
-  releaseGroup: ReleaseGroup;
+  album: SubsonicAlbum;
   onClick: () => void;
 }) {
   return (
@@ -111,16 +103,25 @@ function AlbumCard({
       className="group text-left rounded-lg bg-surface p-3 transition-colors hover:bg-surface-hover cursor-pointer"
     >
       <div
-        className="aspect-square rounded-md mb-3 flex items-center justify-center"
-        style={{ backgroundColor: hashColor(releaseGroup.name) }}
+        className="aspect-square rounded-md mb-3 flex items-center justify-center overflow-hidden"
+        style={{ backgroundColor: hashColor(album.name) }}
       >
-        <Disc className="w-10 h-10 text-white/30" />
+        {album.coverArt ? (
+          <img
+            src={artUrl(album.coverArt, 300)}
+            alt={album.name}
+            className="w-full h-full object-cover"
+            loading="lazy"
+          />
+        ) : (
+          <Disc className="w-10 h-10 text-white/30" />
+        )}
       </div>
       <p className="text-sm font-medium text-text-primary truncate">
-        {releaseGroup.name}
+        {album.name}
       </p>
       <p className="text-xs text-text-secondary truncate">
-        {releaseGroup.year ?? "Unknown year"}
+        {album.year ?? "Unknown year"}
       </p>
     </button>
   );

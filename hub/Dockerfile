@@ -12,10 +12,13 @@ RUN pnpm install --frozen-lockfile
 FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/hub/node_modules ./hub/node_modules
+COPY --from=deps /app/frontend/node_modules ./frontend/node_modules
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY hub/ hub/
-COPY frontend/package.json frontend/
+COPY frontend/ frontend/
+# Build hub (TypeScript) and frontend (Vite), copy SQL assets
 RUN pnpm --filter hub build && cp -r hub/src/db/*.sql hub/dist/db/
+RUN pnpm --filter frontend build
 
 FROM node:22-slim AS runtime
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
@@ -26,7 +29,9 @@ COPY --from=build /app/hub/package.json hub/
 COPY --from=build /app/frontend/package.json frontend/
 RUN pnpm install --frozen-lockfile --prod
 COPY --from=build /app/hub/dist hub/dist/
+COPY --from=build /app/frontend/dist hub/public/
 RUN mkdir -p /app/data
 ENV NODE_ENV=production
+ENV PUBLIC_DIR=/app/hub/public
 EXPOSE 3000
 CMD ["node", "hub/dist/server.js"]

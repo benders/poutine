@@ -8,7 +8,8 @@
     "build": "pnpm --filter hub build && pnpm --filter frontend build",
     "test": "pnpm --filter hub test",
     "lint": "pnpm --filter hub lint && pnpm --filter frontend lint",
-    "typecheck": "pnpm --filter hub typecheck && pnpm --filter frontend typecheck"
+    "typecheck": "pnpm --filter hub typecheck && pnpm --filter frontend typecheck",
+    "test:federation": "bash test/federation/run.sh"
   },
   "packageManager": "pnpm@10.32.1+sha512.a706938f0e89ac1456b6563eab4edf1d1faf3368d1191fc5c59790e96dc918e4456ab2e67d613de1043d2e8c81f87303e6b40d4ffeca9df15ef1ad567348f2be",
   "pnpm": {

@@ -35,7 +35,7 @@ echo "JWT_SECRET=$(openssl rand -hex 32)" > .env
 docker compose up --build
 ```
 
-The frontend is at `http://localhost:8080` and the hub API at `http://localhost:3000`. SQLite data is persisted in a Docker volume (`hub-data`).
+The app (frontend + API) is available at `http://localhost:3000`. SQLite data is persisted in a Docker volume (`hub-data`). Override the port with `POUTINE_HOST_PORT` in your `.env`.
 
 ### Local development
 

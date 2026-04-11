@@ -517,6 +517,112 @@ describe("getAlbumInfo", () => {
   });
 });
 
+// ── getScanStatus ───────────────────────────────────────────────────────────
+
+describe("getScanStatus", () => {
+  it("returns scan status including Navidrome-specific fields", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        subsonicResponse({
+          scanStatus: {
+            scanning: false,
+            count: 0,
+            folderCount: 2,
+            lastScan: "2024-06-01T10:30:00Z",
+          },
+        }),
+      ),
+    );
+
+    const result = await client.getScanStatus();
+
+    expect(result.scanning).toBe(false);
+    expect(result.count).toBe(0);
+    expect(result.folderCount).toBe(2);
+    expect(result.lastScan).toBe("2024-06-01T10:30:00Z");
+
+    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(calledUrl.pathname).toBe("/rest/getScanStatus");
+  });
+
+  it("returns scanning=true with count when a scan is in progress", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        subsonicResponse({
+          scanStatus: {
+            scanning: true,
+            count: 1234,
+            folderCount: 1,
+            lastScan: "2024-05-01T08:00:00Z",
+          },
+        }),
+      ),
+    );
+
+    const result = await client.getScanStatus();
+
+    expect(result.scanning).toBe(true);
+    expect(result.count).toBe(1234);
+  });
+
+  it("handles missing Navidrome extension fields gracefully", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        subsonicResponse({
+          scanStatus: { scanning: false, count: 0 },
+        }),
+      ),
+    );
+
+    const result = await client.getScanStatus();
+
+    expect(result.folderCount).toBe(0);
+    expect(result.lastScan).toBeNull();
+  });
+});
+
+// ── startScan ───────────────────────────────────────────────────────────────
+
+describe("startScan", () => {
+  it("triggers a scan and returns the resulting status", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        subsonicResponse({
+          scanStatus: {
+            scanning: true,
+            count: 0,
+            folderCount: 2,
+            lastScan: "2024-06-01T10:30:00Z",
+          },
+        }),
+      ),
+    );
+
+    const result = await client.startScan();
+
+    expect(result.scanning).toBe(true);
+
+    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(calledUrl.pathname).toBe("/rest/startScan");
+    expect(calledUrl.searchParams.has("fullScan")).toBe(false);
+  });
+
+  it("passes fullScan=true when requested", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        subsonicResponse({
+          scanStatus: { scanning: true, count: 0, folderCount: 1, lastScan: null },
+        }),
+      ),
+    );
+
+    await client.startScan(true);
+
+    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(calledUrl.searchParams.get("fullScan")).toBe("true");
+  });
+});
+
 // ── Error handling ──────────────────────────────────────────────────────────
 
 describe("error handling", () => {

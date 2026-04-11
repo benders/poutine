@@ -1,7 +1,7 @@
 import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getReleaseGroup, artUrl } from "@/lib/api";
-import type { Track, Release } from "@/lib/api";
+import { getAlbum, artUrl } from "@/lib/subsonic";
+import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
 import { Play, Plus, ChevronRight, Disc } from "lucide-react";
@@ -19,9 +19,9 @@ export function ReleaseGroupPage() {
   const { id } = useParams<{ id: string }>();
   const { playTracks, addToQueue } = usePlayer();
 
-  const { data: releaseGroup, isLoading } = useQuery({
-    queryKey: ["releaseGroup", id],
-    queryFn: () => getReleaseGroup(id!),
+  const { data: album, isLoading } = useQuery({
+    queryKey: ["album", id],
+    queryFn: () => getAlbum(id!),
     enabled: !!id,
   });
 
@@ -29,12 +29,9 @@ export function ReleaseGroupPage() {
     return <div className="text-text-muted text-center py-20">Loading...</div>;
   }
 
-  if (!releaseGroup) {
+  if (!album) {
     return <div className="text-text-muted text-center py-20">Album not found.</div>;
   }
-
-  const firstRelease = releaseGroup.releases?.[0];
-  const allFirstReleaseTracks = firstRelease?.tracks ?? [];
 
   return (
     <div className="space-y-8">
@@ -44,19 +41,19 @@ export function ReleaseGroupPage() {
           Library
         </Link>
         <ChevronRight className="w-3.5 h-3.5" />
-        <span className="text-text-primary truncate">{releaseGroup.name}</span>
+        <span className="text-text-primary truncate">{album.name}</span>
       </nav>
 
       {/* Album header */}
       <div className="flex items-start gap-6">
         <div
           className="w-48 h-48 rounded-lg flex items-center justify-center shrink-0 overflow-hidden"
-          style={{ backgroundColor: hashColor(releaseGroup.name) }}
+          style={{ backgroundColor: hashColor(album.name) }}
         >
-          {releaseGroup.imageUrl ? (
+          {album.coverArt ? (
             <img
-              src={artUrl(releaseGroup.imageUrl, 400)}
-              alt={releaseGroup.name}
+              src={artUrl(album.coverArt, 400)}
+              alt={album.name}
               className="w-full h-full object-cover"
             />
           ) : (
@@ -64,21 +61,21 @@ export function ReleaseGroupPage() {
           )}
         </div>
         <div className="min-w-0 pt-2">
-          <h1 className="text-3xl font-bold text-text-primary">{releaseGroup.name}</h1>
+          <h1 className="text-3xl font-bold text-text-primary">{album.name}</h1>
           <p className="text-text-secondary mt-1">
             <Link
-              to={`/artists/${releaseGroup.artistId}`}
+              to={`/artists/${album.artistId}`}
               className="hover:text-accent transition-colors"
             >
-              {releaseGroup.artistName}
+              {album.artist}
             </Link>
-            {releaseGroup.year ? ` \u00B7 ${releaseGroup.year}` : ""}
-            {releaseGroup.genre ? ` \u00B7 ${releaseGroup.genre}` : ""}
+            {album.year ? ` \u00B7 ${album.year}` : ""}
+            {album.genre ? ` \u00B7 ${album.genre}` : ""}
           </p>
 
-          {allFirstReleaseTracks.length > 0 && (
+          {album.songs.length > 0 && (
             <button
-              onClick={() => playTracks(allFirstReleaseTracks, 0)}
+              onClick={() => playTracks(album.songs, 0)}
               className="mt-4 inline-flex items-center gap-2 px-5 py-2 bg-accent hover:bg-accent-hover text-white rounded-full text-sm font-medium transition-colors cursor-pointer"
             >
               <Play className="w-4 h-4 fill-current" />
@@ -88,38 +85,7 @@ export function ReleaseGroupPage() {
         </div>
       </div>
 
-      {/* Releases */}
-      {releaseGroup.releases?.map((release) => (
-        <ReleaseSection
-          key={release.id}
-          release={release}
-          showEdition={releaseGroup.releases.length > 1}
-          onPlayTrack={(index) => playTracks(release.tracks, index)}
-          onAddToQueue={addToQueue}
-        />
-      ))}
-    </div>
-  );
-}
-
-function ReleaseSection({
-  release,
-  showEdition,
-  onPlayTrack,
-  onAddToQueue,
-}: {
-  release: Release;
-  showEdition: boolean;
-  onPlayTrack: (index: number) => void;
-  onAddToQueue: (track: Track) => void;
-}) {
-  return (
-    <div>
-      {showEdition && (
-        <h3 className="text-sm font-medium text-text-secondary mb-3">
-          {release.edition || release.name}
-        </h3>
-      )}
+      {/* Track list */}
       <div className="bg-surface rounded-lg overflow-hidden">
         <table className="w-full">
           <thead>
@@ -131,55 +97,59 @@ function ReleaseSection({
             </tr>
           </thead>
           <tbody>
-            {release.tracks.map((track, index) => (
-              <tr
-                key={track.id}
-                className="group border-b border-border/50 last:border-0 hover:bg-surface-hover transition-colors"
-              >
-                <td className="py-2.5 px-4 text-sm text-text-muted">
-                  <span className="group-hover:hidden">{track.trackNumber}</span>
-                  <button
-                    onClick={() => onPlayTrack(index)}
-                    className="hidden group-hover:block text-text-primary hover:text-accent cursor-pointer"
-                  >
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                  </button>
-                </td>
-                <td className="py-2.5 px-4">
-                  <p className="text-sm text-text-primary">{track.title}</p>
-                  {track.sources && track.sources.length > 0 && (
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      {track.sources.map((source, i) => (
-                        <span
-                          key={i}
-                          className="text-[10px] px-1.5 py-0.5 rounded bg-border/50 text-text-muted"
-                        >
-                          {source.format}
-                          {source.bitrate ? ` ${source.bitrate}k` : ""}
-                          {" \u00B7 "}
-                          {source.instanceName}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </td>
-                <td className="py-2.5 px-4 text-sm text-text-muted text-right">
-                  {formatDuration(track.durationMs)}
-                </td>
-                <td className="py-2.5 px-4 text-right">
-                  <button
-                    onClick={() => onAddToQueue(track)}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary transition-all cursor-pointer"
-                    title="Add to queue"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
-                </td>
-              </tr>
+            {album.songs.map((song, index) => (
+              <SongRow
+                key={song.id}
+                song={song}
+                index={index}
+                onPlay={() => playTracks(album.songs, index)}
+                onAddToQueue={() => addToQueue(song)}
+              />
             ))}
           </tbody>
         </table>
       </div>
     </div>
+  );
+}
+
+function SongRow({
+  song,
+  index,
+  onPlay,
+  onAddToQueue,
+}: {
+  song: SubsonicSong;
+  index: number;
+  onPlay: () => void;
+  onAddToQueue: () => void;
+}) {
+  return (
+    <tr className="group border-b border-border/50 last:border-0 hover:bg-surface-hover transition-colors">
+      <td className="py-2.5 px-4 text-sm text-text-muted">
+        <span className="group-hover:hidden">{song.track ?? index + 1}</span>
+        <button
+          onClick={onPlay}
+          className="hidden group-hover:block text-text-primary hover:text-accent cursor-pointer"
+        >
+          <Play className="w-3.5 h-3.5 fill-current" />
+        </button>
+      </td>
+      <td className="py-2.5 px-4">
+        <p className="text-sm text-text-primary">{song.title}</p>
+      </td>
+      <td className="py-2.5 px-4 text-sm text-text-muted text-right">
+        {formatDuration(song.durationMs)}
+      </td>
+      <td className="py-2.5 px-4 text-right">
+        <button
+          onClick={onAddToQueue}
+          className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary transition-all cursor-pointer"
+          title="Add to queue"
+        >
+          <Plus className="w-4 h-4" />
+        </button>
+      </td>
+    </tr>
   );
 }
