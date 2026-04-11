@@ -11,7 +11,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 1. Never start coding without an open GitHub Issue. No exceptions. Create one if none exists.
 2. Close the issue immediately after committing, before anything else.
 3. Check existing issues before creating new ones: `gh issue list --repo benders/poutine`
-4. Post progress updates as comments on the issue as you work. Agent comments must include `[@claude]` prefix.
+4. Post progress updates as comments on the issue as you work. Agent comments must include `[@claude]:` (or other agent name) prefix, and the rest of the message should be a block-quote `> `.
 5. When unsure what's next, check open issues — don't freelance.
 6. Reference the issue number in the commit message (e.g. `closes #42`)
 
