@@ -25,18 +25,9 @@ Designed for small groups (4–12 people) who want to share music without giving
 
 See [docs/system-architecture.md](docs/system-architecture.md) for the system overview, [docs/federation-api.md](docs/federation-api.md) for the federation contract, and [docs/hub-internals.md](docs/hub-internals.md) for engineering internals.
 
-## Quick start (Docker)
-
-```bash
-echo "JWT_SECRET=$(openssl rand -hex 32)" > .env
-docker compose up --build
-```
+## First-time setup
 
 Serves on `http://localhost:3000` (frontend and API on one port). SQLite and cover-art cache persist in the `hub-data` Docker volume. Override the host port with `POUTINE_HOST_PORT` in `.env`.
-
-Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-internals.md#environment-variables).
-
-## First-time setup
 
 1. Edit `.env` to set owner credentials and instance ID:
    ```
@@ -51,6 +42,8 @@ Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-intern
 3. `docker compose up --build`. Navidrome scans on startup; the hub's `AutoSyncService` picks up the scan and populates the unified library.
 4. Log in to `http://localhost:3000/admin` with the owner credentials.
 5. To federate with peers, edit `peers.yaml` on both sides and reload (`docker compose kill -s HUP hub`).
+
+Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-internals.md#environment-variables).
 
 ## Local development
 
@@ -94,25 +87,9 @@ docker compose up -d hub
 
 The hub serves the frontend as static files, so only the `hub` service needs rebuilding. Running containers use the compiled image, not live source — rebuild is required after any code change.
 
-### Restarting
-
-```bash
-docker compose restart hub
-```
-
 ### Resetting the owner password
 
 Owner seeding only runs on first boot (when `users` is empty). If `.env` credentials change later, reset the password directly in SQLite using `hashPassword` from `hub/dist/auth/passwords.js` via `docker exec`.
-
-### Triggering a manual sync
-
-`POST /admin/sync` (owner auth) or click **Sync** in the admin UI. The `AutoSyncService` also auto-syncs whenever Navidrome finishes a scan.
-
-### Reloading peers.yaml
-
-```bash
-docker compose kill -s HUP hub
-```
 
 ### Wiping the Navidrome volume
 
