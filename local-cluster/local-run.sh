@@ -159,9 +159,7 @@ wait_http "http://localhost:3001/api/health" "hub-a" 120
 wait_http "http://localhost:3002/api/health" "hub-b" 120
 wait_http "http://localhost:3003/api/health" "hub-c" 120
 
-echo ""
-echo "==> Starting Frontend on A..."
-$COMPOSE_A up -d --build --force-recreate frontend
+# The hub now bundles the frontend — no separate frontend service needed.
 
 # echo ""
 # echo "==> Syncing hub-b local library (navidrome-b must scan first)..."

@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
+import fastifyStatic from "@fastify/static";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
 import { adminRoutes } from "./routes/admin.js";
@@ -147,6 +148,29 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
   // Health check
   app.get("/api/health", async () => ({ status: "ok" }));
+
+  // Static file serving + SPA fallback (production only; skipped in dev)
+  if (config.staticDir) {
+    const { resolve } = await import("node:path");
+    const root = resolve(config.staticDir);
+    await app.register(fastifyStatic, { root, wildcard: false });
+
+    // SPA fallback: serve index.html for any unmatched non-API route.
+    // /admin and /admin/ are SPA routes (the React admin page); only sub-paths
+    // like /admin/login are API. /rest/*, /api/*, /federation/* are always API.
+    app.setNotFoundHandler(async (req, reply) => {
+      const urlPath = req.url.split("?")[0];
+      const isApiRoute =
+        (urlPath.startsWith("/admin/") && urlPath !== "/admin/") ||
+        urlPath.startsWith("/rest") ||
+        urlPath.startsWith("/federation") ||
+        urlPath.startsWith("/api");
+      if (isApiRoute) {
+        return reply.status(404).send({ error: "Not found" });
+      }
+      return reply.sendFile("index.html");
+    });
+  }
 
   // Start auto-sync after routes are registered
   app.addHook("onReady", () => {

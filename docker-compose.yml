@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: hub/Dockerfile
     ports:
-      - "${HUB_HOST_PORT:-3000}:3000"
+      - "${POUTINE_HOST_PORT:-3000}:3000"
     environment:
       - NODE_ENV=production
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
@@ -17,6 +17,8 @@ services:
       - POUTINE_PEERS_CONFIG=/app/config/peers.yaml
       - POUTINE_OWNER_USERNAME=${POUTINE_OWNER_USERNAME:?Set POUTINE_OWNER_USERNAME in .env}
       - POUTINE_OWNER_PASSWORD=${POUTINE_OWNER_PASSWORD:?Set POUTINE_OWNER_PASSWORD in .env}
+      # PUBLIC_DIR is baked into the image (hub/Dockerfile sets it to /app/hub/public).
+      # Override here only if you want to mount a custom frontend build.
     volumes:
       - hub-data:/app/data
       - ${PEERS_CONFIG_HOST_PATH:-./peers.yaml}:/app/config/peers.yaml:ro
@@ -51,25 +53,13 @@ services:
       - internal
     restart: unless-stopped
 
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-    ports:
-      - "8080:80"
-    depends_on:
-      - hub
-    networks:
-      - public
-    restart: unless-stopped
-
 volumes:
   hub-data:
   navidrome-data:
 
 networks:
   # Exposed to the host (and, via the operator's reverse proxy / tunnel, to the
-  # internet). Only hub and frontend live here.
+  # internet). Hub serves both the API and the React SPA on a single port.
   public:
   # Private network for hub <-> navidrome. Navidrome is never directly exposed.
   internal:

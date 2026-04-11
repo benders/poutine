@@ -19,6 +19,10 @@ export interface Config {
   poutinePeersConfig: string;
   poutineOwnerUsername: string;
   poutineOwnerPassword: string;
+  // Optional: path to a directory of static frontend files to serve.
+  // When set, the hub serves the SPA at / in addition to all API routes.
+  // Leave unset in dev — the Vite dev server handles the frontend instead.
+  staticDir: string | undefined;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -80,5 +84,6 @@ export function loadConfig(): Config {
       "POUTINE_OWNER_PASSWORD",
       process.env.POUTINE_OWNER_PASSWORD
     ),
+    staticDir: process.env.PUBLIC_DIR || undefined,
   };
 }
