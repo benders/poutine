@@ -1,10 +1,11 @@
 import type { FastifyPluginAsync, RouteHandlerMethod } from "fastify";
 import { Readable } from "node:stream";
 import { readFileSync } from "node:fs";
-import { requireSubsonicAuth } from "../auth/subsonic-auth.js";
+import { requireSubsonicAuth, requireSubsonicAuthBinary } from "../auth/subsonic-auth.js";
 import {
   sendSubsonicOk,
   sendSubsonicError,
+  sendBinaryError,
   encodeId,
   decodeId,
 } from "./subsonic-response.js";
@@ -615,8 +616,18 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ── getCoverArt ─────────────────────────────────────────────────────────────
+  // Binary endpoint: uses requireSubsonicAuthBinary so auth failures return
+  // real HTTP error codes instead of a 200+JSON Subsonic envelope.
 
-  route("/getCoverArt", async (request, reply) => {
+  function binaryRoute(path: string, handler: RouteHandlerMethod): void {
+    const binaryPreHandler = requireSubsonicAuthBinary;
+    app.get(path, { preHandler: binaryPreHandler }, handler);
+    app.get(`${path}.view`, { preHandler: binaryPreHandler }, handler);
+    app.post(path, { preHandler: binaryPreHandler }, handler);
+    app.post(`${path}.view`, { preHandler: binaryPreHandler }, handler);
+  }
+
+  binaryRoute("/getCoverArt", async (request, reply) => {
     const q = request.query as Record<string, string>;
     const id = q.id ?? "";
     const size = q.size;
@@ -628,7 +639,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       instanceId = decoded.instanceId;
       coverArtId = decoded.coverArtId;
     } catch {
-      sendSubsonicError(reply, 70, "Not found", q);
+      sendBinaryError(reply, 400, "Invalid cover art ID");
       return;
     }
 
@@ -654,7 +665,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       // Peer art routing
       const peer = app.peerRegistry.peers.get(instanceId);
       if (!peer) {
-        sendSubsonicError(reply, 70, "Not found", q);
+        sendBinaryError(reply, 404, "Peer not found");
         return;
       }
       // Peers serve their own art as local:<coverArtId>
@@ -666,7 +677,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           { asUser: request.subsonicUser.username },
         );
       } catch {
-        sendSubsonicError(reply, 70, "Not found", q);
+        sendBinaryError(reply, 502, "Failed to fetch art from peer");
         return;
       }
     } else {
@@ -680,13 +691,18 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         const sizeNum = size ? parseInt(size, 10) : undefined;
         response = await client.getCoverArt(coverArtId, sizeNum);
       } catch {
-        sendSubsonicError(reply, 70, "Not found", q);
+        sendBinaryError(reply, 502, "Failed to fetch art from Navidrome");
         return;
       }
     }
 
+    if (!response.ok) {
+      sendBinaryError(reply, response.status === 404 ? 404 : 502, "Art not found");
+      return;
+    }
+
     if (!response.body) {
-      sendSubsonicError(reply, 70, "Not found", q);
+      sendBinaryError(reply, 502, "Empty response from upstream");
       return;
     }
 
@@ -720,7 +736,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     try {
       trackId = decodeId(q.id ?? "", "t");
     } catch {
-      sendSubsonicError(reply, 70, "Song not found", q);
+      sendBinaryError(reply, 400, "Invalid track ID");
       return;
     }
 
@@ -744,7 +760,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     );
 
     if (!best) {
-      sendSubsonicError(reply, 70, "Song not found", q);
+      sendBinaryError(reply, 404, "Track not found");
       return;
     }
 
@@ -762,14 +778,14 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
         response = await client.stream(best.remoteId, streamParams);
       } catch {
-        sendSubsonicError(reply, 0, "Stream error", q);
+        sendBinaryError(reply, 502, "Stream error");
         return;
       }
     } else {
       // Peer routing
       const peer = app.peerRegistry.peers.get(best.peerId!);
       if (!peer) {
-        sendSubsonicError(reply, 70, "Peer not available", q);
+        sendBinaryError(reply, 502, "Peer not available");
         return;
       }
       try {
@@ -779,13 +795,13 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           { asUser: request.subsonicUser.username },
         );
       } catch {
-        sendSubsonicError(reply, 0, "Peer stream error", q);
+        sendBinaryError(reply, 502, "Peer stream error");
         return;
       }
     }
 
     if (!response.body) {
-      sendSubsonicError(reply, 0, "Empty response from upstream", q);
+      sendBinaryError(reply, 502, "Empty response from upstream");
       return;
     }
 
@@ -802,8 +818,8 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     nodeStream.pipe(reply.raw);
   }
 
-  route("/stream", handleStream);
-  route("/download", handleStream); // alias — clients use interchangeably
+  binaryRoute("/stream", handleStream);
+  binaryRoute("/download", handleStream); // alias — clients use interchangeably
 
   // ── Playlist stubs ──────────────────────────────────────────────────────────
   // TODO: implement fully once playlists table is populated (Phase 3+)

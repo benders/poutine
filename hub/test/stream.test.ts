@@ -117,38 +117,29 @@ describe("stream — error cases", () => {
     await app.close();
   });
 
-  it("missing id parameter → Subsonic error 70", async () => {
+  it("missing id parameter → 400", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/rest/stream?u=tester&p=secret&f=json",
     });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body["subsonic-response"].status).toBe("failed");
-    expect(body["subsonic-response"].error.code).toBe(70);
+    expect(res.statusCode).toBe(400);
   });
 
-  it("id with wrong prefix → Subsonic error 70", async () => {
+  it("id with wrong prefix → 400", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/rest/stream?u=tester&p=secret&f=json&id=xyz999",
     });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body["subsonic-response"].status).toBe("failed");
-    expect(body["subsonic-response"].error.code).toBe(70);
+    expect(res.statusCode).toBe(400);
   });
 
-  it("valid prefixed id with no matching track sources → Subsonic error 70", async () => {
+  it("valid prefixed id with no matching track sources → 404", async () => {
     // "t" prefix but UUID that doesn't exist in the DB
     const res = await app.inject({
       method: "GET",
       url: "/rest/stream?u=tester&p=secret&f=json&id=t00000000-0000-0000-0000-000000000000",
     });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body["subsonic-response"].status).toBe("failed");
-    expect(body["subsonic-response"].error.code).toBe(70);
+    expect(res.statusCode).toBe(404);
   });
 });
 

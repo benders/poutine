@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { verifyPassword } from "./passwords.js";
 import { verifyToken } from "./jwt.js";
-import { sendSubsonicError } from "../routes/subsonic-response.js";
+import { sendSubsonicError, sendBinaryError } from "../routes/subsonic-response.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -88,6 +88,81 @@ export async function requireSubsonicAuth(
   const valid = await verifyPassword(user.password_hash, password);
   if (!valid) {
     sendSubsonicError(reply, 40, "Wrong username or password", query);
+    return;
+  }
+
+  request.subsonicUser = {
+    id: user.id,
+    username: user.username,
+    isAdmin: user.is_admin === 1,
+  };
+}
+
+/**
+ * Same as requireSubsonicAuth but uses HTTP error status codes instead of
+ * Subsonic envelopes. Use this for binary endpoints (getCoverArt, stream)
+ * where a 200+JSON body would be interpreted as corrupt image/audio data.
+ */
+export async function requireSubsonicAuthBinary(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<void> {
+  const app = request.server;
+  const db = app.db;
+  const query = request.query as Record<string, string>;
+
+  const jwt = extractJwt(request);
+  if (jwt) {
+    try {
+      const { userId } = await verifyToken(jwt, app.config);
+      const user = db
+        .prepare("SELECT id, username, is_admin FROM users WHERE id = ?")
+        .get(userId) as
+        | { id: string; username: string; is_admin: number }
+        | undefined;
+
+      if (user) {
+        request.subsonicUser = {
+          id: user.id,
+          username: user.username,
+          isAdmin: user.is_admin === 1,
+        };
+        return;
+      }
+    } catch {
+      // fall through to param auth
+    }
+  }
+
+  const username = query.u;
+  let password = query.p;
+
+  if (!username || !password) {
+    sendBinaryError(reply, 401, "Authentication required");
+    return;
+  }
+
+  if (password.startsWith("enc:")) {
+    const hex = password.slice(4);
+    password = Buffer.from(hex, "hex").toString("utf8");
+  }
+
+  const user = db
+    .prepare(
+      "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
+    )
+    .get(username) as
+    | { id: string; username: string; password_hash: string; is_admin: number }
+    | undefined;
+
+  if (!user) {
+    sendBinaryError(reply, 401, "Wrong username or password");
+    return;
+  }
+
+  const valid = await verifyPassword(user.password_hash, password);
+  if (!valid) {
+    sendBinaryError(reply, 401, "Wrong username or password");
     return;
   }
 

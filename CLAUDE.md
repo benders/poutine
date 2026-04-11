@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Poutine is a federated music player. Each instance bundles a Navidrome (internal-only) and exposes a native **Subsonic API** (`/rest/*`) so any Subsonic-compatible mobile app or the React SPA can connect directly. Instances federate with each other via signed peer-to-peer requests (`/federation/*`). The React SPA frontend proxies through nginx in production.
+Poutine is a federated music player. Each instance bundles a Navidrome (internal-only) and exposes a native **Subsonic API** (`/rest/*`) so any Subsonic-compatible mobile app or the React SPA can connect directly. Instances federate with each other via signed peer-to-peer requests (`/federation/*`). The hub serves the compiled React SPA as static files from a single port — no separate nginx container in production.
 
 ## Monorepo structure
 
@@ -43,6 +43,7 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - `POUTINE_OWNER_USERNAME` / `POUTINE_OWNER_PASSWORD` — seeds the owner user on first boot if `users` table is empty
 - `POUTINE_PRIVATE_KEY_PATH` — defaults to `./data/poutine_ed25519.pem` (auto-generated if absent)
 - `POUTINE_PEERS_CONFIG` — defaults to `./config/peers.yaml`
+- `PUBLIC_DIR` — optional path to compiled frontend `dist/`. When set, hub serves the React SPA and falls back to `index.html` for unknown non-API routes. Baked into the Docker image as `/app/hub/public`. Leave unset in dev (use Vite dev server instead).
 - See `hub/src/config.ts` for the full list
 
 ## Album art caching
@@ -114,14 +115,16 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 - **Local cluster setup mirrors federation test pattern** — `local-cluster/local-run.sh` starts three Compose projects (`cd-rips`, `digital-purchases`, `other`) from the same `docker-compose.yml`, creates a shared Docker network `poutine-local-cluster`, and connects hubs with DNS aliases `hub-a/hub-b/hub-c`. The test keypairs from `test/federation/keys/` are reused. If containers are started manually without the script, the shared network must be created and containers connected manually: `docker network create poutine-local-cluster && docker network connect --alias hub-a poutine-local-cluster cd-rips-hub-1` etc.
 - **JWT refresh flow: access token 15m, refresh token 7d** — `POST /admin/login` issues both an `access_token` cookie (httpOnly, 15m) and a `refresh_token` cookie (httpOnly, path `/admin/refresh`, 7d). `POST /admin/refresh` verifies the refresh token (checks `type: "refresh"` claim), rotates both tokens, and returns the new `accessToken` in the body. `hub/src/auth/jwt.ts::verifyRefreshToken` enforces the type claim separately from `verifyToken`. On the frontend, `apiFetch` and `subsonicFetch` both silently attempt refresh on 401 (via `attemptRefresh()` in `api.ts`) and retry the original request before redirecting to `/login`. A module-level `refreshPromise` deduplicate concurrent refresh attempts.
 - **`POST /admin/refresh` has no auth requirement** — it reads only the `refresh_token` cookie. The cookie's `path: "/admin/refresh"` means browsers only send it to that exact endpoint, limiting exposure. No `requireOwner` preHandler on this route.
+- **Binary endpoints must return real HTTP error codes, not Subsonic envelopes** — `sendSubsonicError` always returns HTTP 200 with a JSON/XML Subsonic envelope, which is correct for JSON API endpoints. But binary endpoints (`getCoverArt`, `stream`, `download`) return raw bytes — clients interpret any 200 response as image/audio data, so a JSON error body at 200 silently corrupts the result. Two changes required: (1) use `sendBinaryError(reply, httpStatus, message)` (in `subsonic-response.ts`) for all error paths in the handler; (2) register these routes with `requireSubsonicAuthBinary` instead of `requireSubsonicAuth` (via `binaryRoute()` in `subsonic.ts`) so auth failures also return HTTP status codes. Error codes: 400 bad input, 401 auth failure, 404 not found, 502 upstream failure.
+- **Hub serves the React SPA as static files via `@fastify/static` + SPA fallback** — when `PUBLIC_DIR` env var is set, `buildApp()` registers `@fastify/static` with `wildcard: false` and a `setNotFoundHandler` that returns `index.html` for any unmatched non-API route. API routes (`/rest/*`, `/api/*`, `/federation/*`, `/admin/*` except bare `/admin` and `/admin/`) get a JSON 404 instead. In dev, leave `PUBLIC_DIR` unset and use the Vite dev server (`pnpm dev` in `frontend/`), which proxies all backend paths to `localhost:3000`. The hub Dockerfile builds the frontend and copies `frontend/dist/` into `hub/public/` in the runtime image.
 - **nginx `location /admin/` (trailing slash + proxy_pass) auto-redirects `/admin` → `/admin/`** — nginx's built-in behavior: a prefix location ending in `/` with `proxy_pass` issues a 301 for the slash-less URI. By default the redirect is absolute and uses `$host` (no port), stripping `:8080` in dev. Fix: `absolute_redirect off;` makes redirects relative (port preserved), AND add `location = /admin` / `location = /admin/` exact-match blocks that serve `index.html` so the SPA page loads correctly instead of being proxied to the hub (which has no bare `/admin/` route). Exact-match locations take priority over prefix matches in nginx.
 
 ## Docker architecture
 
-- `hub/Dockerfile` — multi-stage: deps → build (tsc + copy sql) → slim runtime with prod deps
-- `frontend/Dockerfile` — multi-stage: deps → vite build → nginx serving static files
-- `frontend/nginx.conf` — proxies `/api/`, `/admin/`, `/rest/`, and `/federation/` to the `hub` service, SPA fallback via `try_files`
-- `docker-compose.yml` — hub (port `${HUB_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports) + frontend (port 8080), persistent volume for SQLite. `PEERS_CONFIG_HOST_PATH` overrides the peers.yaml bind-mount source (default `./peers.yaml`).
+- `hub/Dockerfile` — multi-stage: deps → build (tsc + frontend vite build + copy sql) → slim runtime with prod deps. Frontend `dist/` is copied into `hub/public/` in the runtime image; `PUBLIC_DIR=/app/hub/public` is baked in so the hub serves the SPA automatically.
+- `frontend/Dockerfile` — still present for local dev / nginx-proxy setups, but **not used by `docker-compose.yml`** (hub bundles the frontend).
+- `frontend/nginx.conf` — used by `frontend/Dockerfile` only; not part of the default deployment.
+- `docker-compose.yml` — hub (port `${POUTINE_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports). Single service for both API and SPA. `PEERS_CONFIG_HOST_PATH` overrides the peers.yaml bind-mount source (default `./peers.yaml`).
 - Navidrome is on an internal Docker network; only the hub can reach it. No credentials are stored for it in the DB — they live in env vars.
 
 ## Task tracking

@@ -132,6 +132,23 @@ export function sendSubsonicError(
   }
 }
 
+/**
+ * Send an HTTP error for binary endpoints (getCoverArt, stream).
+ * These endpoints return raw bytes, not a Subsonic JSON/XML envelope, so
+ * returning HTTP 200 with a JSON error body confuses clients — they treat
+ * the JSON as image/audio data. Use real HTTP status codes instead.
+ */
+export function sendBinaryError(
+  reply: FastifyReply,
+  httpStatus: number,
+  message: string,
+): void {
+  void reply
+    .code(httpStatus)
+    .header("content-type", "application/json; charset=utf-8")
+    .send({ error: message });
+}
+
 // ── ID encoding ───────────────────────────────────────────────────────────────
 
 export function encodeId(prefix: string, id: string): string {
