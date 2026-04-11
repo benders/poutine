@@ -1,99 +1,140 @@
 # poutine
 
-A federated music player that merges multiple personal music libraries into a single unified collection. Each participant runs a [Navidrome](https://www.navidrome.org/) instance on their own hardware, and a central hub aggregates them into one browsable, searchable, and playable library through a web interface.
+Federated music player. Each instance bundles a [Navidrome](https://www.navidrome.org/) (internal-only) and exposes a native Subsonic API for web and mobile clients. Instances federate with each other via signed peer-to-peer requests, merging multiple personal libraries into one browsable, searchable, streamable collection.
 
-Built for small groups (4–12 people) who want to share and listen to each other's music without giving up ownership of their collections.
+Designed for small groups (4–12 people) who want to share music without giving up ownership of their collections.
 
-## Architecture
+## Architecture (one glance)
 
 ```
-┌──────────────────────────────────────────────┐
-│  Web Frontend (React / Vite / Tailwind)       │
-├──────────────────────────────────────────────┤
-│  Poutine Hub (Fastify / SQLite)               │
-│  ┌──────────┬────────┬────────┬───────────┐  │
-│  │Federation│Metadata│ Stream │   Auth     │  │
-│  │ Manager  │ Merger │ Proxy  │  Service   │  │
-│  └──────────┴────────┴────────┴───────────┘  │
-├──────────────────────────────────────────────┤
-│  Navidrome Instances (Subsonic API)           │
-│  ┌──────┐ ┌──────┐ ┌──────┐     ┌──────┐   │
-│  │ NAS  │ │ RPi  │ │ Mini │ ... │ NAS  │   │
-│  └──────┘ └──────┘ └──────┘     └──────┘   │
-└──────────────────────────────────────────────┘
+┌────────────────────────────────────────────┐
+│  Web Frontend (React SPA, served by hub)   │
+├────────────────────────────────────────────┤
+│  Poutine Hub (Fastify + SQLite)            │
+│    /rest/*         — Subsonic API          │
+│    /federation/*   — peer-to-peer (Ed25519)│
+│    /admin/*        — owner management      │
+├────────────────────────────────────────────┤
+│  Bundled Navidrome (internal network only) │
+└────────────────────────────────────────────┘
+         ▲                     ▲
+         │ Subsonic clients    │ Ed25519-signed federation
+         ▼                     ▼
+   Web / mobile            Other hubs (peers)
 ```
 
-## Quick Start
+See [docs/system-architecture.md](docs/system-architecture.md) for the system overview, [docs/federation-api.md](docs/federation-api.md) for the federation contract, and [docs/hub-internals.md](docs/hub-internals.md) for engineering internals.
 
-### Docker (recommended)
+## Quick start (Docker)
 
 ```bash
-# Generate a .env file with a JWT secret
 echo "JWT_SECRET=$(openssl rand -hex 32)" > .env
-
-# Build and start
 docker compose up --build
 ```
 
-The app (frontend + API) is available at `http://localhost:3000`. SQLite data is persisted in a Docker volume (`hub-data`). Override the port with `POUTINE_HOST_PORT` in your `.env`.
+Serves on `http://localhost:3000` (frontend and API on one port). SQLite and cover-art cache persist in the `hub-data` Docker volume. Override the host port with `POUTINE_HOST_PORT` in `.env`.
 
-### Local development
+Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-internals.md#environment-variables).
+
+## First-time setup
+
+1. Edit `.env` to set owner credentials and instance ID:
+   ```
+   JWT_SECRET=<hex>
+   POUTINE_INSTANCE_ID=poutine-yourname
+   POUTINE_OWNER_USERNAME=owner
+   POUTINE_OWNER_PASSWORD=<password>
+   NAVIDROME_USERNAME=admin
+   NAVIDROME_PASSWORD=<password>
+   ```
+2. Put your music on disk and bind-mount it into the `navidrome` service in `docker-compose.yml`.
+3. `docker compose up --build`. Navidrome scans on startup; the hub's `AutoSyncService` picks up the scan and populates the unified library.
+4. Log in to `http://localhost:3000/admin` with the owner credentials.
+5. To federate with peers, edit `peers.yaml` on both sides and reload (`docker compose kill -s HUP hub`).
+
+## Local development
 
 ```bash
-# Install dependencies
 pnpm install
-
-# Start the hub (port 3000)
-pnpm dev
-
-# Start the frontend (port 5173, proxies API to hub)
-cd frontend && pnpm dev
+pnpm dev                        # Hub on :3000 (tsx watch)
+cd frontend && pnpm dev         # Vite on :5173, proxies to :3000
 ```
 
-### Usage
+Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static files — Vite handles the SPA.
 
-1. Open the frontend and register an account (all users have admin access)
-2. Go to **Instances** in the sidebar and add a Navidrome server (URL, username, password)
-3. Click **Sync** to pull the library
-4. Browse, search, and play music from the **Library** page
+## Commands
 
-## Tech Stack
+| Command                     | Effect                                          |
+|-----------------------------|-------------------------------------------------|
+| `pnpm dev`                  | Start hub in watch mode                         |
+| `pnpm build`                | Build hub + frontend                            |
+| `pnpm test`                 | Run hub unit tests (vitest)                     |
+| `pnpm test:federation`      | Three-hub federation integration test           |
+| `pnpm lint`                 | Lint both packages                              |
+| `pnpm typecheck`            | Typecheck both packages                         |
+| `docker compose up --build` | Full stack via Docker (requires `JWT_SECRET`)   |
 
-| Component | Technology |
-|-----------|-----------|
-| Hub API | TypeScript, Fastify, better-sqlite3 |
-| Frontend | React 19, Vite, Tailwind CSS, Zustand, TanStack Query |
-| Auth | Argon2id password hashing, JWT (jose) |
-| Instance protocol | Subsonic/OpenSubsonic API |
-| Audio | Server-side transcoding via Navidrome/FFmpeg, proxied through hub |
+## Testing
 
-## Project Structure
+- `pnpm test` — fast unit tests (vitest). CI runs this.
+- `pnpm test:federation` — three-hub federation integration test. Boots three Compose projects, verifies cross-instance dedup and federated streaming. Not run in CI.
+- `*.integration.test.ts` — excluded from CI; hit real external servers. Run manually.
 
-```
-poutine/
-├── hub/                      # API server
-│   ├── src/
-│   │   ├── adapters/         # Subsonic API client
-│   │   ├── auth/             # Passwords, JWT, encryption, middleware
-│   │   ├── db/               # SQLite schema and client
-│   │   ├── federation/       # Instance registry, health checks
-│   │   ├── library/          # Sync engine, merge algorithm, normalization
-│   │   ├── routes/           # Auth, instances, library, stream, queue
-│   │   ├── config.ts
-│   │   └── server.ts
-│   └── test/                 # Unit and integration tests
-├── frontend/                 # React SPA
-│   └── src/
-│       ├── components/       # Layout, player bar
-│       ├── pages/            # Library, artists, albums, search, admin
-│       ├── stores/           # Auth and player state (Zustand)
-│       └── lib/              # API client, utilities
-└── docs/                     # Architecture decisions and implementation plan
+See [docs/hub-internals.md#testing-notes](docs/hub-internals.md#testing-notes) for test patterns and gotchas.
+
+## Operations
+
+### Updating a running instance
+
+```bash
+git pull
+docker compose build hub
+docker compose up -d hub
 ```
 
-## How It Works
+The hub serves the frontend as static files, so only the `hub` service needs rebuilding. Running containers use the compiled image, not live source — rebuild is required after any code change.
 
-- **Sync**: The hub fetches each instance's full library via the Subsonic API (`getArtists` → `getArtist` → `getAlbum`) and stores raw metadata in SQLite.
-- **Merge**: A merge algorithm deduplicates across instances using MusicBrainz IDs (preferred) or fuzzy matching on normalized names + duration.
-- **Stream**: When you play a track, the hub selects the best source (online, matching format, highest quality) and proxies the audio stream from the originating Navidrome instance.
-- **Transcode**: Transcoding (FLAC → MP3/Opus/AAC) happens on the Navidrome instance, not the hub.
+### Restarting
+
+```bash
+docker compose restart hub
+```
+
+### Resetting the owner password
+
+Owner seeding only runs on first boot (when `users` is empty). If `.env` credentials change later, reset the password directly in SQLite using `hashPassword` from `hub/dist/auth/passwords.js` via `docker exec`.
+
+### Triggering a manual sync
+
+`POST /admin/sync` (owner auth) or click **Sync** in the admin UI. The `AutoSyncService` also auto-syncs whenever Navidrome finishes a scan.
+
+### Reloading peers.yaml
+
+```bash
+docker compose kill -s HUP hub
+```
+
+### Wiping the Navidrome volume
+
+Navidrome's admin-bootstrap env vars only run on a fresh volume. To force a reset, use:
+
+```bash
+./clean-wipe.sh
+```
+
+## Tech stack
+
+| Layer     | Tech                                                      |
+|-----------|-----------------------------------------------------------|
+| Hub       | TypeScript, Fastify, better-sqlite3, jose (JWT), argon2   |
+| Frontend  | React 19, Vite, Tailwind CSS, Zustand, TanStack Query     |
+| Per-peer  | Navidrome (Subsonic / OpenSubsonic API)                   |
+| Transcode | FFmpeg (via Navidrome, never on the hub)                  |
+
+## Docs
+
+| File                                                             | Purpose                                             |
+|------------------------------------------------------------------|-----------------------------------------------------|
+| [docs/system-architecture.md](docs/system-architecture.md) | System architecture                                 |
+| [docs/federation-api.md](docs/federation-api.md)                 | Federation protocol contract                        |
+| [docs/hub-internals.md](docs/hub-internals.md)                   | Engineering conventions, gotchas, lessons learned   |

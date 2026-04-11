@@ -8,26 +8,26 @@ Peer-to-peer protocol used by Poutine instances to share library metadata and pr
 
 Two version identifiers are carried on every federation response:
 
-| Header | Type | Description |
-|--------|------|-------------|
-| `Poutine-Api-Version` | Integer | Protocol version. Incremented on breaking changes to request/response contracts. |
+| Header                | Type    | Description                                                                       |
+|-----------------------|---------|-----------------------------------------------------------------------------------|
+| `Poutine-Api-Version` | Integer | Protocol version. Incremented on breaking changes to request/response contracts.  |
 
 The protocol version is also embedded in `/library/export` response bodies as `apiVersion`.
 
 All outgoing HTTP requests from the hub carry:
 
-| Header | Value | Description |
-|--------|-------|-------------|
-| `User-Agent` | `Poutine/<semver>` | Application version of the sending hub. Sent on federation requests, Navidrome Subsonic calls, and peer health checks. |
+| Header       | Value               | Description                                                                                                              |
+|--------------|---------------------|--------------------------------------------------------------------------------------------------------------------------|
+| `User-Agent` | `Poutine/<semver>`  | Application version of the sending hub. Sent on federation requests, Navidrome Subsonic calls, and peer health checks.   |
 
 Peers report both versions through `/api/health`, which `GET /admin/peers` reads and surfaces as `appVersion` and `apiVersion` per peer.
 
 **Current versions**
 
-| Field | Value |
-|-------|-------|
-| Protocol (`Poutine-Api-Version`) | `1` |
-| Application (`User-Agent`) | `Poutine/0.1.0` |
+| Field                              | Value            |
+|------------------------------------|------------------|
+| Protocol (`Poutine-Api-Version`)   | `1`              |
+| Application (`User-Agent`)         | `Poutine/0.1.0`  |
 
 ---
 
@@ -37,12 +37,12 @@ Every request to a `/federation/*` endpoint must be signed with the sender's Ed2
 
 ### Signing headers
 
-| Header | Description |
-|--------|-------------|
-| `x-poutine-instance` | Sender's instance ID (must match a registered peer) |
-| `x-poutine-user` | Username the sender is acting on behalf of |
-| `x-poutine-timestamp` | Unix epoch milliseconds as a decimal string |
-| `x-poutine-signature` | Base64-encoded Ed25519 signature over the canonical payload |
+| Header                | Description                                                   |
+|-----------------------|---------------------------------------------------------------|
+| `x-poutine-instance`  | Sender's instance ID (must match a registered peer)           |
+| `x-poutine-user`      | Username the sender is acting on behalf of                    |
+| `x-poutine-timestamp` | Unix epoch milliseconds as a decimal string                   |
+| `x-poutine-signature` | Base64-encoded Ed25519 signature over the canonical payload   |
 
 ### Canonical signing payload
 
@@ -58,12 +58,12 @@ The receiver rejects requests whose `x-poutine-timestamp` differs from the serve
 
 ### Error responses
 
-| Status | Condition |
-|--------|-----------|
-| `401` | Missing or malformed signing headers |
-| `401` | Timestamp outside the 5-minute window |
-| `401` | Unknown peer instance ID |
-| `401` | Signature verification failure |
+| Status | Condition                               |
+|--------|-----------------------------------------|
+| `401`  | Missing or malformed signing headers    |
+| `401`  | Timestamp outside the 5-minute window   |
+| `401`  | Unknown peer instance ID                |
+| `401`  | Signature verification failure          |
 
 All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header is present even on 401 responses.
 
@@ -77,11 +77,11 @@ Exports the instance's local library as paginated JSON. Importing peers call thi
 
 **Query parameters**
 
-| Parameter | Default | Max | Description |
-|-----------|---------|-----|-------------|
-| `limit` | `500` | `2000` | Tracks per page |
-| `offset` | `0` | — | Zero-based track offset |
-| `since` | — | — | Reserved for incremental sync (not yet implemented) |
+| Parameter | Default | Max    | Description                                            |
+|-----------|---------|--------|--------------------------------------------------------|
+| `limit`   | `500`   | `2000` | Tracks per page                                        |
+| `offset`  | `0`     | —      | Zero-based track offset                                |
+| `since`   | —       | —      | Reserved for incremental sync (not yet implemented)    |
 
 **Response `200 OK`**
 
@@ -161,9 +161,9 @@ Proxies audio from the local Navidrome for the given unified track ID.
 
 **Path parameters**
 
-| Parameter | Description |
-|-----------|-------------|
-| `trackId` | The sender's `unified_track_id` (no `t` prefix) |
+| Parameter | Description                                       |
+|-----------|---------------------------------------------------|
+| `trackId` | The sender's `unified_track_id` (no `t` prefix)   |
 
 **Response `200 OK`**
 
@@ -171,10 +171,10 @@ Raw audio bytes. `Content-Type` and `Content-Length` are forwarded from the upst
 
 **Error responses**
 
-| Status | Condition |
-|--------|-----------|
-| `404` | Track not found or has no local source |
-| `502` | Upstream Navidrome stream error or empty response |
+| Status | Condition                                           |
+|--------|-----------------------------------------------------|
+| `404`  | Track not found or has no local source              |
+| `502`  | Upstream Navidrome stream error or empty response   |
 
 ---
 
@@ -184,15 +184,15 @@ Serves local cover art. Fetches from Navidrome and caches on disk.
 
 **Path parameters**
 
-| Parameter | Description |
-|-----------|-------------|
-| `encodedId` | Cover art ID in `{instanceId}:{coverArtId}` format. `instanceId` must be `"local"`. |
+| Parameter   | Description                                                                            |
+|-------------|----------------------------------------------------------------------------------------|
+| `encodedId` | Cover art ID in `{instanceId}:{coverArtId}` format. `instanceId` must be `"local"`.    |
 
 **Query parameters**
 
-| Parameter | Description |
-|-----------|-------------|
-| `size` | Optional thumbnail width in pixels |
+| Parameter | Description                          |
+|-----------|--------------------------------------|
+| `size`    | Optional thumbnail width in pixels   |
 
 **Response `200 OK`**
 
@@ -200,11 +200,11 @@ Raw image bytes. `Content-Type` is forwarded from Navidrome. `Cache-Control: pub
 
 **Error responses**
 
-| Status | Condition |
-|--------|-----------|
-| `404` | `encodedId` has no `:` separator |
-| `404` | `instanceId` is not `"local"` |
-| `502` | Upstream Navidrome art fetch error or empty response |
+| Status | Condition                                              |
+|--------|--------------------------------------------------------|
+| `404`  | `encodedId` has no `:` separator                       |
+| `404`  | `instanceId` is not `"local"`                          |
+| `502`  | Upstream Navidrome art fetch error or empty response   |
 
 ---
 

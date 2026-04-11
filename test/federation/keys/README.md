@@ -4,11 +4,11 @@ These ed25519 keypairs are committed to the repository **exclusively** for the
 federation regression test suite. They are not secret and carry no trust outside
 of local test environments.
 
-| File | Instance | Public key |
-|------|----------|------------|
-| `poutine-a_ed25519.pem` | `poutine-a` | see `peers-b.yaml`, `peers-c.yaml` |
-| `poutine-b_ed25519.pem` | `poutine-b` | see `peers-a.yaml`, `peers-c.yaml` |
-| `poutine-c_ed25519.pem` | `poutine-c` | see `peers-a.yaml`, `peers-b.yaml` |
+| File                     | Instance    | Public key                              |
+|--------------------------|-------------|-----------------------------------------|
+| `poutine-a_ed25519.pem`  | `poutine-a` | see `peers-b.yaml`, `peers-c.yaml`      |
+| `poutine-b_ed25519.pem`  | `poutine-b` | see `peers-a.yaml`, `peers-c.yaml`      |
+| `poutine-c_ed25519.pem`  | `poutine-c` | see `peers-a.yaml`, `peers-b.yaml`      |
 
 To regenerate (if needed):
 ```bash
