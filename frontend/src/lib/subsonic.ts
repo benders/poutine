@@ -264,23 +264,27 @@ export function streamUrl(
   format = "opus",
   maxBitRate = 128,
 ): string {
+  // Auth via httpOnly access_token cookie (sent automatically by the browser).
+  // Do NOT embed the JWT in the URL — the token baked in at render time goes
+  // stale when the access token refreshes, causing playback to break mid-session.
   const params = new URLSearchParams({
     v: SUBSONIC_VERSION,
     c: CLIENT,
     id: songId,
     format,
     maxBitRate: String(maxBitRate),
-    token: getAccessToken() ?? "",
   });
   return `/rest/stream?${params}`;
 }
 
 export function artUrl(coverArtId: string, size?: number): string {
+  // Auth via httpOnly access_token cookie (sent automatically by the browser).
+  // Do NOT embed the JWT in the URL — the token baked in at render time goes
+  // stale when the access token refreshes, causing images to 401.
   const params = new URLSearchParams({
     v: SUBSONIC_VERSION,
     c: CLIENT,
     id: coverArtId,
-    token: getAccessToken() ?? "",
   });
   if (size) params.set("size", String(size));
   return `/rest/getCoverArt?${params}`;

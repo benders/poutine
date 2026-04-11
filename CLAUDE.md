@@ -59,7 +59,7 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 
 - All library browsing and search calls go through the native Subsonic API — `getAlbumList2`, `getArtists`, `getArtist`, `getAlbum`, `search3`
 - Auth uses the JWT from `getAccessToken()` (shared with the admin API) — no separate Subsonic credentials are stored
-- `subsonicFetch()` sends JWT via `Authorization: Bearer` header; `artUrl()` and `streamUrl()` pass JWT as a `token` query param (for `<img>`/`<audio>` elements that can't set headers)
+- `subsonicFetch()` sends JWT via `Authorization: Bearer` header; `artUrl()` and `streamUrl()` rely on the httpOnly `access_token` cookie (sent automatically by the browser for `<img>`/`<audio>` elements). Do NOT embed the JWT token in art/stream URLs — it gets baked in at render time and goes stale when the token refreshes, causing 401s without a re-render.
 - Subsonic song IDs are prefixed (`t<uuid>`), album IDs are `al<uuid>`, artist IDs are `ar<uuid>` — these prefixed IDs appear in URL routes (e.g. `/albums/al<uuid>`) and are passed directly to `getAlbum(id)` / `getArtist(id)`
 - `SubsonicSong.durationMs` is computed from the Subsonic `duration` field (seconds × 1000) — the rest of the frontend uses milliseconds
 
@@ -82,7 +82,7 @@ docker compose up --build  # Full stack via Docker (requires .env with JWT_SECRE
 
 ## Lessons learned
 
-- **Subsonic routes accept JWT or traditional Subsonic auth** — The hub's `/rest/*` routes accept JWT (via `Authorization: Bearer` header, `access_token` cookie, or `token` query param) as the primary auth method. Traditional Subsonic `u`+`p` query-param auth is still supported for third-party Subsonic clients. The frontend uses JWT exclusively — `subsonicFetch()` sends the Bearer header, while `streamUrl()`/`artUrl()` use the `token` query param (since `<audio>`/`<img>` elements can't set headers).
+- **Subsonic routes accept JWT or traditional Subsonic auth** — The hub's `/rest/*` routes accept JWT (via `Authorization: Bearer` header, `access_token` cookie, or `token` query param) as the primary auth method. Traditional Subsonic `u`+`p` query-param auth is still supported for third-party Subsonic clients. The frontend uses JWT exclusively — `subsonicFetch()` sends the Bearer header, while `streamUrl()`/`artUrl()` rely on the `access_token` cookie (sent automatically by the browser for `<img>`/`<audio>` elements — do NOT embed the token in the URL, it goes stale at render time).
 - **Cover art IDs must be encoded with instance context** — Subsonic cover art IDs are instance-local. The merge process must encode them as `{instanceId}:{coverArtId}` so the hub knows which upstream to query. Bare cover art IDs are not usable. Helpers in `hub/src/library/cover-art.ts`.
 - **After a schema or merge logic change, a resync is required** — changes to how data is stored in unified tables only take effect after `syncAll()` + merge runs.
 - **Runtime settings live in the `settings` table** — use this key-value table (not env vars) for settings that admins should be able to change without restarting the server. The `hub/src/services/art-cache.ts` pattern shows how to read from it with a fallback default.
