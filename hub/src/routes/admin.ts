@@ -320,12 +320,23 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       }),
     );
 
+    const peerStatsStmt = app.db.prepare<[string], { track_count: number; artist_count: number; album_count: number }>(`
+      SELECT
+        COUNT(DISTINCT ts.unified_track_id) AS track_count,
+        COUNT(DISTINCT ut.artist_id)        AS artist_count,
+        COUNT(DISTINCT ut.release_id)       AS album_count
+      FROM track_sources ts
+      JOIN unified_tracks ut ON ts.unified_track_id = ut.id
+      WHERE ts.peer_id = ?
+    `);
+
     return peers.map((peer, i) => {
       const row = app.db
         .prepare("SELECT last_seen, last_synced_at FROM instances WHERE id = ?")
         .get(peer.id) as { last_seen: string | null; last_synced_at: string | null } | undefined;
       const health = healthChecks[i].status === "fulfilled" ? healthChecks[i].value : null;
       const alive = health !== null;
+      const stats = peerStatsStmt.get(peer.id) ?? { track_count: 0, artist_count: 0, album_count: 0 };
       return {
         id: peer.id,
         url: peer.url,
@@ -334,6 +345,9 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         lastSeen: row?.last_seen ?? null,
         appVersion: health?.appVersion ?? null,
         apiVersion: health?.apiVersion ?? null,
+        trackCount: stats.track_count,
+        artistCount: stats.artist_count,
+        albumCount: stats.album_count,
       };
     });
   });

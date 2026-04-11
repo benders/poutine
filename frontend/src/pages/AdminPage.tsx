@@ -202,27 +202,38 @@ function PeerRow({ peer }: { peer: Peer }) {
       ? { className: "bg-success/10 text-success", icon: <Wifi className="w-3 h-3" />, label: "Online" }
       : { className: "bg-error/10 text-error", icon: <WifiOff className="w-3 h-3" />, label: peer.status };
 
+  const hasCounts = peer.trackCount > 0 || peer.artistCount > 0 || peer.albumCount > 0;
+
   return (
-    <div className="flex items-center gap-4 px-4 py-3 bg-surface border border-border rounded-lg">
-      <Server className="w-5 h-5 text-text-muted shrink-0" />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-text-primary">{peer.id}</span>
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium",
-              statusConfig.className,
-            )}
-          >
-            {statusConfig.icon}
-            {statusConfig.label}
-          </span>
+    <div className="px-4 py-3 bg-surface border border-border rounded-lg">
+      <div className="flex items-center gap-4">
+        <Server className="w-5 h-5 text-text-muted shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-text-primary">{peer.id}</span>
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium",
+                statusConfig.className,
+              )}
+            >
+              {statusConfig.icon}
+              {statusConfig.label}
+            </span>
+          </div>
+          <p className="text-xs text-text-muted truncate">{peer.url}</p>
         </div>
-        <p className="text-xs text-text-muted truncate">{peer.url}</p>
+        <div className="hidden sm:block text-xs text-text-secondary shrink-0">
+          {peer.lastSeen ? `Last seen ${formatTimeAgo(peer.lastSeen)}` : "Never synced"}
+        </div>
       </div>
-      <div className="hidden sm:block text-xs text-text-secondary shrink-0">
-        {peer.lastSeen ? `Last seen ${formatTimeAgo(peer.lastSeen)}` : "Never synced"}
-      </div>
+      {hasCounts && (
+        <div className="mt-2 ml-9 flex gap-4 text-xs text-text-secondary">
+          <span>{peer.artistCount.toLocaleString()} artists</span>
+          <span>{peer.albumCount.toLocaleString()} albums</span>
+          <span>{peer.trackCount.toLocaleString()} tracks</span>
+        </div>
+      )}
     </div>
   );
 }

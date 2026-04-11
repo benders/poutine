@@ -123,6 +123,9 @@ export interface Peer {
   publicKey: string;
   status: string;
   lastSeen: string | null;
+  trackCount: number;
+  artistCount: number;
+  albumCount: number;
 }
 
 export interface InstanceInfo {
