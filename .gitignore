@@ -1,11 +1,12 @@
 node_modules/
 dist/
 data/
+cache/
 .env
+peers.yaml
 *.db
 *.db-wal
 *.db-shm
 coverage/
 .turbo/
-art-cache/
 .claude/
