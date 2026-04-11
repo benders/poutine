@@ -154,7 +154,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 ## Local cluster setup
 
-Mirrors the federation test pattern. `local-cluster/local-run.sh` starts three Compose projects (`cd-rips`, `digital-purchases`, `other`) from `docker-compose.yml`, creates a shared Docker network `poutine-local-cluster`, connects hubs with DNS aliases `hub-a`/`hub-b`/`hub-c`. Reuses `test/federation/keys/`.
+Mirrors the federation test pattern. `test/local-cluster/run.sh` starts three Compose projects (`cd-rips`, `digital-purchases`, `other`) from `docker-compose.yml`, creates a shared Docker network `poutine-local-cluster`, connects hubs with DNS aliases `hub-a`/`hub-b`/`hub-c`. Reuses `test/federation/keys/`.
 
 Manual startup without the script requires creating the network and connecting containers:
 
