@@ -13,6 +13,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 3. Check existing yaks before creating new ones.
 4. Append progress notes to yak descriptions as you work.
 5. When unsure what's next, run `/yaks:next` — don't freelance.
+6. Include the Yak ID in the commit message
 
 ## Per-task checklist
 
