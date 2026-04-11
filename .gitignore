@@ -10,3 +10,7 @@ peers.yaml
 coverage/
 .turbo/
 .claude/
+.direnv
+.devcontainer
+.envrc
+.pnpm-store
