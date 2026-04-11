@@ -4,7 +4,8 @@ title: 'BUG: local-run.sh hub-a fails to join docker bridge network'
 type: bug
 priority: 3
 created: '2026-04-11T02:37:47Z'
-updated: '2026-04-11T06:09:54Z'
+updated: '2026-04-11T16:01:08Z'
+commit: 0c16863
 ---
 
 local-run.sh line 80 runs:
