@@ -106,7 +106,6 @@ wait_http() {
 # Sync an instance and wait until its local track count is nonzero.
 # Outputs the admin JWT to stdout; all progress goes to stderr.
 login_and_sync() {
-  set -x
   local port="$1" label="$2" timeout="${3:-180}"
   local elapsed=0
 
@@ -164,17 +163,17 @@ echo ""
 echo "==> Starting Frontend on A..."
 $COMPOSE_A up -d --build --force-recreate frontend
 
-echo ""
-echo "==> Syncing hub-b local library (navidrome-b must scan first)..."
-login_and_sync 3002 "hub-b" 180 > /dev/null # only care that it succeeds
+# echo ""
+# echo "==> Syncing hub-b local library (navidrome-b must scan first)..."
+# login_and_sync 3002 "hub-b" 180 > /dev/null # only care that it succeeds
 
-echo ""
-echo "==> Syncing hub-c local library (navidrome-c must scan first)..."
-login_and_sync 3003 "hub-c" 180 > /dev/null # only care that it succeeds
+# echo ""
+# echo "==> Syncing hub-c local library (navidrome-c must scan first)..."
+# login_and_sync 3003 "hub-c" 180 > /dev/null # only care that it succeeds
 
-echo ""
-echo "==> Syncing hub-a (local + federated from hub-b and hub-c)..."
-JWT_A=$(login_and_sync 3001 "hub-a" 180)
+# echo ""
+# echo "==> Syncing hub-a (local + federated from hub-b and hub-c)..."
+# JWT_A=$(login_and_sync 3001 "hub-a" 180)
 
 # echo ""
 # echo "==> Verifying federated metadata on hub-a..."

@@ -215,5 +215,15 @@ export async function syncPeer(
     offset += limit;
   }
 
+  if (result.errors.length === 0) {
+    db.prepare(
+      "UPDATE instances SET status = 'online', last_seen = datetime('now'), last_synced_at = datetime('now'), track_count = ?, updated_at = datetime('now') WHERE id = ?",
+    ).run(result.trackCount, peer.id);
+  } else {
+    db.prepare(
+      "UPDATE instances SET status = 'offline', updated_at = datetime('now') WHERE id = ?",
+    ).run(peer.id);
+  }
+
   return result;
 }

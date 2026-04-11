@@ -64,6 +64,8 @@ function InstanceSection() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-instance"] });
       queryClient.invalidateQueries({ queryKey: ["admin-peers"] });
+      queryClient.invalidateQueries({ queryKey: ["albumList2"] });
+      queryClient.invalidateQueries({ queryKey: ["artists"] });
     },
   });
 
@@ -480,6 +482,8 @@ export function AdminPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-peers"] });
       queryClient.invalidateQueries({ queryKey: ["admin-instance"] });
+      queryClient.invalidateQueries({ queryKey: ["albumList2"] });
+      queryClient.invalidateQueries({ queryKey: ["artists"] });
     },
   });
 
