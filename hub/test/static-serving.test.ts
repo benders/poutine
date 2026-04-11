@@ -53,7 +53,7 @@ describe("static serving — disabled (no staticDir)", () => {
   it("health check still works", async () => {
     const res = await app.inject({ method: "GET", url: "/api/health" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ status: "ok" });
+    expect(res.json()).toMatchObject({ status: "ok" });
   });
 });
 
@@ -109,7 +109,7 @@ describe("static serving — enabled (staticDir set)", () => {
   it("API route /api/health still works", async () => {
     const res = await app.inject({ method: "GET", url: "/api/health" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ status: "ok" });
+    expect(res.json()).toMatchObject({ status: "ok" });
   });
 
   it("unmatched /admin/* returns JSON 404, not index.html", async () => {

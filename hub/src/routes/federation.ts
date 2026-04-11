@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { readFileSync } from "node:fs";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { decodeCoverArtId } from "../library/cover-art.js";
+import { FEDERATION_API_VERSION } from "../version.js";
 
 // ── Plugin options ────────────────────────────────────────────────────────────
 
@@ -67,6 +68,11 @@ export const federationRoutes: FastifyPluginAsync<FederationPluginOptions> =
   async (app, opts) => {
     const preHandler = opts.requirePeerAuth;
 
+    // Stamp every federation response with the current protocol version.
+    app.addHook("onSend", async (_req, reply) => {
+      reply.header("Poutine-Api-Version", String(FEDERATION_API_VERSION));
+    });
+
     // ── GET /library/export ───────────────────────────────────────────────────
 
     app.get<{
@@ -99,6 +105,7 @@ export const federationRoutes: FastifyPluginAsync<FederationPluginOptions> =
       if (tracks.length === 0) {
         return reply.send({
           instanceId: app.peerRegistry.instanceId,
+          apiVersion: FEDERATION_API_VERSION,
           page: { limit, offset, total },
           artists: [],
           releaseGroups: [],
@@ -185,6 +192,7 @@ export const federationRoutes: FastifyPluginAsync<FederationPluginOptions> =
 
       return reply.send({
         instanceId: app.peerRegistry.instanceId,
+        apiVersion: FEDERATION_API_VERSION,
         page: { limit, offset, total },
         artists: artists.map((a) => ({
           id: a.id,

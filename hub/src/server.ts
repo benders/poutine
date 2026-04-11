@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import { loadConfig } from "./config.js";
+import { APP_VERSION, FEDERATION_API_VERSION } from "./version.js";
 import { createDatabase } from "./db/client.js";
 import { adminRoutes } from "./routes/admin.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
@@ -147,7 +148,11 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   });
 
   // Health check
-  app.get("/api/health", async () => ({ status: "ok" }));
+  app.get("/api/health", async () => ({
+    status: "ok",
+    appVersion: APP_VERSION,
+    apiVersion: FEDERATION_API_VERSION,
+  }));
 
   // Static file serving + SPA fallback (production only; skipped in dev)
   if (config.staticDir) {

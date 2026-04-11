@@ -11,6 +11,7 @@ import {
   signRequest,
 } from "../src/federation/signing.js";
 import type { Config } from "../src/config.js";
+import { FEDERATION_API_VERSION } from "../src/version.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -188,5 +189,145 @@ describe("federation routes — auth middleware", () => {
     } finally {
       if (fs.existsSync(wrongKeyPath)) fs.unlinkSync(wrongKeyPath);
     }
+  });
+});
+
+// ── Contract tests ────────────────────────────────────────────────────────────
+
+describe("federation routes — contract", () => {
+  let app: FastifyInstance;
+  let privKeyA: KeyObject;
+  let keyPathA: string;
+  let keyPathB: string;
+  let peersYamlB: string;
+
+  beforeEach(async () => {
+    keyPathA = tmpPath("key-a.pem");
+    keyPathB = tmpPath("key-b.pem");
+    peersYamlB = tmpPath("peers-b.yaml");
+
+    const keyA = loadOrCreatePrivateKey(keyPathA);
+    privKeyA = keyA.privateKey;
+    const pubKeyBase64A = keyA.publicKeyBase64;
+
+    writeYaml(
+      peersYamlB,
+      [
+        `peers:`,
+        `  - id: "poutine-a"`,
+        `    url: "http://localhost"`,
+        `    public_key: "ed25519:${pubKeyBase64A}"`,
+      ].join("\n"),
+    );
+
+    const testConfig: Partial<Config> = {
+      databasePath: ":memory:",
+      jwtSecret: "test-secret",
+      poutinePrivateKeyPath: keyPathB,
+      poutinePeersConfig: peersYamlB,
+      poutineInstanceId: "poutine-b",
+    };
+
+    app = await buildApp(testConfig);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    for (const f of [keyPathA, keyPathB, peersYamlB]) {
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  // ── Version header ──────────────────────────────────────────────────────────
+
+  it("GET /library/export → Poutine-Api-Version header present", async () => {
+    const url = "/federation/library/export";
+    const headers = makeSignedHeaders({ privateKey: privKeyA, instanceId: "poutine-a", userAssertion: "alice", url });
+    const res = await app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["poutine-api-version"]).toBe(String(FEDERATION_API_VERSION));
+  });
+
+  it("GET /library/export → Poutine-Api-Version header present on 401 too", async () => {
+    const res = await app.inject({ method: "GET", url: "/federation/library/export", headers: {} });
+    expect(res.statusCode).toBe(401);
+    expect(res.headers["poutine-api-version"]).toBe(String(FEDERATION_API_VERSION));
+  });
+
+  // ── /library/export response shape ─────────────────────────────────────────
+
+  it("GET /library/export → response body shape", async () => {
+    const url = "/federation/library/export";
+    const headers = makeSignedHeaders({ privateKey: privKeyA, instanceId: "poutine-a", userAssertion: "alice", url });
+    const res = await app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(200);
+
+    const body = res.json();
+    // Top-level fields
+    expect(typeof body.instanceId).toBe("string");
+    expect(body.apiVersion).toBe(FEDERATION_API_VERSION);
+    // Page object
+    expect(typeof body.page.limit).toBe("number");
+    expect(typeof body.page.offset).toBe("number");
+    expect(typeof body.page.total).toBe("number");
+    // Collection arrays
+    expect(Array.isArray(body.artists)).toBe(true);
+    expect(Array.isArray(body.releaseGroups)).toBe(true);
+    expect(Array.isArray(body.releases)).toBe(true);
+    expect(Array.isArray(body.tracks)).toBe(true);
+  });
+
+  it("GET /library/export → pagination query params respected", async () => {
+    const url = "/federation/library/export?limit=10&offset=0";
+    const headers = makeSignedHeaders({ privateKey: privKeyA, instanceId: "poutine-a", userAssertion: "alice", url });
+    const res = await app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(200);
+
+    const body = res.json();
+    expect(body.page.limit).toBe(10);
+    expect(body.page.offset).toBe(0);
+  });
+
+  it("GET /library/export → limit capped at 2000", async () => {
+    const url = "/federation/library/export?limit=9999";
+    const headers = makeSignedHeaders({ privateKey: privKeyA, instanceId: "poutine-a", userAssertion: "alice", url });
+    const res = await app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(200);
+
+    const body = res.json();
+    expect(body.page.limit).toBeLessThanOrEqual(2000);
+  });
+
+  // ── /stream/:trackId ────────────────────────────────────────────────────────
+
+  it("GET /stream/:trackId → Poutine-Api-Version header on 404", async () => {
+    const url = "/federation/stream/nonexistent-track-id";
+    const headers = makeSignedHeaders({ privateKey: privKeyA, instanceId: "poutine-a", userAssertion: "alice", url });
+    const res = await app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["poutine-api-version"]).toBe(String(FEDERATION_API_VERSION));
+    expect(res.json()).toHaveProperty("error");
+  });
+
+  // ── /art/:encodedId ─────────────────────────────────────────────────────────
+
+  it("GET /art/:encodedId → Poutine-Api-Version header on 404", async () => {
+    const url = "/federation/art/not-valid-id";
+    const headers = makeSignedHeaders({ privateKey: privKeyA, instanceId: "poutine-a", userAssertion: "alice", url });
+    const res = await app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["poutine-api-version"]).toBe(String(FEDERATION_API_VERSION));
+    expect(res.json()).toHaveProperty("error");
+  });
+
+  it("GET /art/:encodedId with peer instanceId → 404 (only local served)", async () => {
+    // encodedId format is "instanceId:coverArtId" — pass a non-local instance
+    const url = `/federation/art/peer-instance:al-some-cover`;
+    const headers = makeSignedHeaders({ privateKey: privKeyA, instanceId: "poutine-a", userAssertion: "alice", url });
+    const res = await app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(404);
+    const body = res.json();
+    expect(body.error).toMatch(/local/i);
   });
 });

@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import { USER_AGENT } from "../version.js";
+
+const FETCH_HEADERS = { "user-agent": USER_AGENT };
 
 // ── Response types ──────────────────────────────────────────────────────────
 
@@ -196,7 +199,7 @@ export class SubsonicClient {
     extraParams?: Record<string, string>,
   ): Promise<Record<string, unknown>> {
     const url = this.buildUrl(path, extraParams);
-    const response = await fetch(url);
+    const response = await fetch(url, { headers: FETCH_HEADERS });
 
     if (!response.ok) {
       throw new Error(
@@ -230,7 +233,7 @@ export class SubsonicClient {
     extraParams?: Record<string, string>,
   ): Promise<Response> {
     const url = this.buildUrl(path, extraParams);
-    const response = await fetch(url);
+    const response = await fetch(url, { headers: FETCH_HEADERS });
 
     if (!response.ok) {
       throw new Error(

@@ -3,6 +3,7 @@ import { verifyPassword, hashPassword } from "../auth/passwords.js";
 import { createAccessToken, createRefreshToken, verifyRefreshToken, verifyToken } from "../auth/jwt.js";
 import { syncAll } from "../library/sync.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
+import { USER_AGENT } from "../version.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -298,15 +299,21 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.get("/peers", { preHandler: requireOwner }, async () => {
     const peers = Array.from(app.peerRegistry.peers.values());
 
+    interface HealthPayload {
+      appVersion?: string;
+      apiVersion?: number;
+    }
+
     const healthChecks = await Promise.allSettled(
       peers.map(async (peer) => {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
         try {
-          const res = await fetch(`${peer.url}/api/health`, { signal: controller.signal });
-          return res.ok;
+          const res = await fetch(`${peer.url}/api/health`, { signal: controller.signal, headers: { "user-agent": USER_AGENT } });
+          if (!res.ok) return null;
+          return (await res.json()) as HealthPayload;
         } catch {
-          return false;
+          return null;
         } finally {
           clearTimeout(timeout);
         }
@@ -317,13 +324,16 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       const row = app.db
         .prepare("SELECT last_seen, last_synced_at FROM instances WHERE id = ?")
         .get(peer.id) as { last_seen: string | null; last_synced_at: string | null } | undefined;
-      const alive = healthChecks[i].status === "fulfilled" && healthChecks[i].value === true;
+      const health = healthChecks[i].status === "fulfilled" ? healthChecks[i].value : null;
+      const alive = health !== null;
       return {
         id: peer.id,
         url: peer.url,
         publicKey: peer.publicKeySpec,
         status: alive ? "online" : "offline",
         lastSeen: row?.last_seen ?? null,
+        appVersion: health?.appVersion ?? null,
+        apiVersion: health?.apiVersion ?? null,
       };
     });
   });
