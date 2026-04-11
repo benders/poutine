@@ -16,6 +16,7 @@
             pnpm
             navidrome
             docker
+            sqlite
           ];
           
           # Environment variables for Python packages
