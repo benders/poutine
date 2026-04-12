@@ -89,7 +89,13 @@ The hub serves the frontend as static files, so only the `hub` service needs reb
 
 ### Resetting the owner password
 
-Owner seeding only runs on first boot (when `users` is empty). If `.env` credentials change later, reset the password directly in SQLite using `hashPassword` from `hub/dist/auth/passwords.js` via `docker exec`.
+Owner seeding only runs on first boot (when `users` is empty). To reset a password while the hub is running:
+
+```bash
+./reset-password.sh <container> <username>
+```
+
+Reads the new password interactively. Errors if the user does not exist or the database is empty.
 
 ### Wiping the Navidrome volume
 
