@@ -300,6 +300,87 @@ describe("admin — peers", () => {
   });
 });
 
+// ── /admin/peers/data ─────────────────────────────────────────────────────────
+
+describe("admin — delete peer data", () => {
+  let app: FastifyInstance;
+  let token: string;
+
+  beforeEach(async () => {
+    app = await buildApp(testConfig);
+    await app.ready();
+    await seedAdmin(app);
+    token = await loginAs(app, "owner", "adminpass");
+
+    // Seed a fake peer instance and some peer data
+    app.db.prepare(
+      `INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status, last_synced_at, track_count)
+       VALUES ('peer-1', 'Peer One', 'http://peer1.example.com', 'subsonic', '', 'admin-1', 'online', datetime('now'), 5)`,
+    ).run();
+    app.db.prepare(
+      `INSERT OR IGNORE INTO instance_artists (id, instance_id, remote_id, name)
+       VALUES ('peer-1:artist-1', 'peer-1', 'artist-1', 'Test Artist')`,
+    ).run();
+    app.db.prepare(
+      `INSERT OR IGNORE INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name, track_count, duration_ms)
+       VALUES ('peer-1:album-1', 'peer-1', 'album-1', 'Test Album', 'peer-1:artist-1', 'Test Artist', 1, 60000)`,
+    ).run();
+    app.db.prepare(
+      `INSERT OR IGNORE INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, duration_ms, track_number, disc_number, bitrate, format, size)
+       VALUES ('peer-1:track-1', 'peer-1', 'track-1', 'peer-1:album-1', 'Test Track', 'Test Artist', 60000, 1, 1, 128, 'mp3', 1000000)`,
+    ).run();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("DELETE /admin/peers/data → returns 200 with { deleted: true }", async () => {
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/admin/peers/data",
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ deleted: true });
+  });
+
+  it("DELETE /admin/peers/data → clears peer instance data and resets sync state", async () => {
+    await app.inject({
+      method: "DELETE",
+      url: "/admin/peers/data",
+      headers: authHeader(token),
+    });
+
+    const artists = app.db
+      .prepare("SELECT * FROM instance_artists WHERE instance_id != 'local'")
+      .all();
+    expect(artists).toHaveLength(0);
+
+    const albums = app.db
+      .prepare("SELECT * FROM instance_albums WHERE instance_id != 'local'")
+      .all();
+    expect(albums).toHaveLength(0);
+
+    const tracks = app.db
+      .prepare("SELECT * FROM instance_tracks WHERE instance_id != 'local'")
+      .all();
+    expect(tracks).toHaveLength(0);
+
+    const peer = app.db
+      .prepare("SELECT * FROM instances WHERE id = 'peer-1'")
+      .get() as { last_synced_at: string | null; track_count: number; status: string };
+    expect(peer.last_synced_at).toBeNull();
+    expect(peer.track_count).toBe(0);
+    expect(peer.status).toBe("offline");
+  });
+
+  it("DELETE /admin/peers/data → 401 without auth", async () => {
+    const res = await app.inject({ method: "DELETE", url: "/admin/peers/data" });
+    expect(res.statusCode).toBe(401);
+  });
+});
+
 // ── /admin/sync ───────────────────────────────────────────────────────────────
 
 describe("admin — sync", () => {

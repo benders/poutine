@@ -193,6 +193,10 @@ export function triggerSync() {
   });
 }
 
+export async function deletePeerData(): Promise<void> {
+  await apiFetch("/admin/peers/data", { method: "DELETE" });
+}
+
 export function getCacheStats() {
   return apiFetch<CacheStats>("/admin/cache");
 }

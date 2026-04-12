@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { verifyPassword, hashPassword } from "../auth/passwords.js";
 import { createAccessToken, createRefreshToken, verifyRefreshToken, verifyToken } from "../auth/jwt.js";
 import { syncAll } from "../library/sync.js";
+import { mergeLibraries } from "../library/merge.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { USER_AGENT } from "../version.js";
 
@@ -363,6 +364,22 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       app.federatedFetch,
       request.adminUsername,
     );
+  });
+
+  // DELETE /admin/peers/data — remove all data fetched from peers, reset sync state
+  app.delete("/peers/data", { preHandler: requireOwner }, async () => {
+    app.db.transaction(() => {
+      app.db.prepare("DELETE FROM instance_tracks WHERE instance_id != 'local'").run();
+      app.db.prepare("DELETE FROM instance_albums WHERE instance_id != 'local'").run();
+      app.db.prepare("DELETE FROM instance_artists WHERE instance_id != 'local'").run();
+      app.db
+        .prepare(
+          "UPDATE instances SET last_synced_at = NULL, track_count = 0, status = 'offline' WHERE id != 'local'",
+        )
+        .run();
+    })();
+    mergeLibraries(app.db);
+    return { deleted: true };
   });
 
   // GET /admin/cache

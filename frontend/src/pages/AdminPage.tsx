@@ -6,6 +6,7 @@ import {
   deleteUser,
   getPeers,
   triggerSync,
+  deletePeerData,
   getCacheStats,
   updateCacheSettings,
   clearArtCache,
@@ -498,6 +499,13 @@ export function AdminPage() {
     },
   });
 
+  const deletePeerDataMutation = useMutation({
+    mutationFn: deletePeerData,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-peers"] });
+    },
+  });
+
   const currentUserId = users?.find((u) => u.isAdmin)?.id ?? "";
 
   return (
@@ -512,14 +520,30 @@ export function AdminPage() {
       <section>
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-xl font-bold text-text-primary">Federation Peers</h1>
-          <button
-            onClick={() => syncMutation.mutate()}
-            disabled={syncMutation.isPending}
-            className="flex items-center gap-2 px-3 py-2 bg-surface border border-border hover:bg-surface-hover rounded-lg text-sm text-text-primary transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={cn("w-4 h-4", syncMutation.isPending && "animate-spin")} />
-            {syncMutation.isPending ? "Syncing..." : "Sync All"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => syncMutation.mutate()}
+              disabled={syncMutation.isPending}
+              className="flex items-center gap-2 px-3 py-2 bg-surface border border-border hover:bg-surface-hover rounded-lg text-sm text-text-primary transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={cn("w-4 h-4", syncMutation.isPending && "animate-spin")} />
+              {syncMutation.isPending ? "Syncing..." : "Sync All"}
+            </button>
+            {peers && peers.length > 0 && (
+              <button
+                onClick={() => {
+                  if (window.confirm("Delete all data fetched from peers? This will reset sync state.")) {
+                    deletePeerDataMutation.mutate();
+                  }
+                }}
+                disabled={deletePeerDataMutation.isPending}
+                className="flex items-center gap-2 px-3 py-2 bg-surface border border-error/40 hover:bg-error/10 rounded-lg text-sm text-error transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                {deletePeerDataMutation.isPending ? "Deleting..." : "Delete Peer Data"}
+              </button>
+            )}
+          </div>
         </div>
 
         {syncMutation.isSuccess && (
