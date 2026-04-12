@@ -8,6 +8,8 @@ import { USER_AGENT } from "../version.js";
 declare module "fastify" {
   interface FastifyRequest {
     adminUsername: string;
+    userId: string;
+    isAdmin: boolean;
   }
 }
 
