@@ -26,7 +26,7 @@ Peers report both versions through `/api/health`, which `GET /admin/peers` reads
 
 | Field                              | Value            |
 |------------------------------------|------------------|
-| Protocol (`Poutine-Api-Version`)   | `1`              |
+| Protocol (`Poutine-Api-Version`)   | `2`              |
 | Application (`User-Agent`)         | `Poutine/0.1.0`  |
 
 ---
@@ -210,7 +210,11 @@ Raw image bytes. `Content-Type` is forwarded from Navidrome. `Cache-Control: pub
 
 ## Changelog
 
-### Version 1 (current)
+### Version 2 (current)
+
+- **`/library/export`**: Only locally-sourced tracks are exported. Peer-imported tracks are excluded to prevent fan-out re-export loops. The `total` field in `page` and the tracks array reflect this filtered set. Sources are also filtered to `source_kind = 'local'` only.
+
+### Version 1
 
 Initial protocol version.
 

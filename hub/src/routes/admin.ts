@@ -366,6 +366,42 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     );
   });
 
+  // GET /admin/peers/:peerId/data — raw instance_* rows for a peer (debug)
+  app.get<{ Params: { peerId: string } }>(
+    "/peers/:peerId/data",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { peerId } = request.params;
+
+      const instance = app.db
+        .prepare("SELECT id FROM instances WHERE id = ?")
+        .get(peerId) as { id: string } | undefined;
+      if (!instance) {
+        return reply.code(404).send({ error: "Peer not found" });
+      }
+
+      const artists = app.db
+        .prepare("SELECT id, remote_id, name, musicbrainz_id, album_count, image_url FROM instance_artists WHERE instance_id = ? ORDER BY name")
+        .all(peerId);
+      const albums = app.db
+        .prepare("SELECT id, remote_id, name, artist_name, year, genre, musicbrainz_id, release_group_mbid, track_count, cover_art_id FROM instance_albums WHERE instance_id = ? ORDER BY artist_name, name")
+        .all(peerId);
+      const tracks = app.db
+        .prepare("SELECT id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, bitrate, format, size, musicbrainz_id FROM instance_tracks WHERE instance_id = ? ORDER BY artist_name, title")
+        .all(peerId);
+
+      return {
+        peerId,
+        artistCount: (artists as unknown[]).length,
+        albumCount: (albums as unknown[]).length,
+        trackCount: (tracks as unknown[]).length,
+        artists,
+        albums,
+        tracks,
+      };
+    },
+  );
+
   // DELETE /admin/peers/data — remove all data fetched from peers, reset sync state
   app.delete("/peers/data", { preHandler: requireOwner }, async () => {
     app.db.transaction(() => {

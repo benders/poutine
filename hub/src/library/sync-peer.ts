@@ -116,6 +116,17 @@ export async function syncPeer(
       genre = excluded.genre
   `);
 
+  // Track all remote IDs seen during this sync for stale-data cleanup
+  const seenArtistRemoteIds = new Set<string>();
+  const seenAlbumRemoteIds = new Set<string>(); // release group remote IDs
+  const seenTrackRemoteIds = new Set<string>();
+
+  // Accumulate correct trackCount per release group across pages.
+  // Uses release.trackCount from the export (the true total), deduplicated
+  // by release ID to avoid double-counting when a release spans multiple pages.
+  const seenReleaseIds = new Set<string>();
+  const rgTrackCount = new Map<string, number>();
+
   const limit = 500;
   let offset = 0;
 
@@ -139,6 +150,17 @@ export async function syncPeer(
       break;
     }
 
+    // Accumulate trackCount from releases (first occurrence of each release wins)
+    for (const release of page.releases) {
+      if (!seenReleaseIds.has(release.id)) {
+        seenReleaseIds.add(release.id);
+        rgTrackCount.set(
+          release.releaseGroupId,
+          (rgTrackCount.get(release.releaseGroupId) ?? 0) + release.trackCount,
+        );
+      }
+    }
+
     // Build lookup maps for this page
     const artistNameMap = new Map<string, string>(
       page.artists.map((a) => [a.id, a.name]),
@@ -156,15 +178,16 @@ export async function syncPeer(
         artist.name,
         artist.musicbrainzId ?? null,
       );
+      seenArtistRemoteIds.add(artist.id);
       result.artistCount++;
     }
 
-    // Upsert release groups as instance_albums
+    // Upsert release groups as instance_albums.
+    // trackCount comes from rgTrackCount (accumulated from release.trackCount),
+    // not from counting tracks on this page — tracks for an album may span pages.
     for (const rg of page.releaseGroups) {
       const artistName = artistNameMap.get(rg.artistId) ?? "";
-      const trackCount = page.tracks.filter(
-        (t) => releaseToRgMap.get(t.releaseId) === rg.id,
-      ).length;
+      const trackCount = rgTrackCount.get(rg.id) ?? 0;
 
       upsertAlbum.run(
         `${peer.id}:${rg.id}`,
@@ -180,6 +203,7 @@ export async function syncPeer(
         trackCount,
         rg.coverArtId ?? null, // raw cover art id, merge.ts will encode as peer.id:coverArtId
       );
+      seenAlbumRemoteIds.add(rg.id);
       result.albumCount++;
     }
 
@@ -207,6 +231,7 @@ export async function syncPeer(
         track.musicbrainzId ?? null,
         track.genre ?? null,
       );
+      seenTrackRemoteIds.add(track.id);
       result.trackCount++;
     }
 
@@ -216,6 +241,11 @@ export async function syncPeer(
   }
 
   if (result.errors.length === 0) {
+    // Delete stale rows: anything for this peer not seen in the current sync.
+    // Uses temp tables to avoid hitting SQLite's variable limit on large libraries.
+    // Only runs on success — on failure, stale data is preferable to partial data.
+    _deleteStale(db, peer.id, seenTrackRemoteIds, seenAlbumRemoteIds, seenArtistRemoteIds);
+
     db.prepare(
       "UPDATE instances SET status = 'online', last_seen = datetime('now'), last_synced_at = datetime('now'), track_count = ?, updated_at = datetime('now') WHERE id = ?",
     ).run(result.trackCount, peer.id);
@@ -226,4 +256,49 @@ export async function syncPeer(
   }
 
   return result;
+}
+
+// ── Stale data cleanup ────────────────────────────────────────────────────────
+
+/**
+ * Remove instance_* rows for a peer that were not seen in the latest sync.
+ * Uses temporary tables so we're not limited by SQLite's variable count cap.
+ */
+function _deleteStale(
+  db: Database.Database,
+  peerId: string,
+  seenTracks: Set<string>,
+  seenAlbums: Set<string>,
+  seenArtists: Set<string>,
+): void {
+  // Ensure temp tables exist (idempotent across calls)
+  db.exec(`
+    CREATE TEMP TABLE IF NOT EXISTS _poutine_seen_tracks  (remote_id TEXT PRIMARY KEY);
+    CREATE TEMP TABLE IF NOT EXISTS _poutine_seen_albums  (remote_id TEXT PRIMARY KEY);
+    CREATE TEMP TABLE IF NOT EXISTS _poutine_seen_artists (remote_id TEXT PRIMARY KEY);
+  `);
+
+  db.transaction(() => {
+    db.prepare("DELETE FROM _poutine_seen_tracks").run();
+    db.prepare("DELETE FROM _poutine_seen_albums").run();
+    db.prepare("DELETE FROM _poutine_seen_artists").run();
+
+    const insTrack  = db.prepare("INSERT OR IGNORE INTO _poutine_seen_tracks  VALUES (?)");
+    const insAlbum  = db.prepare("INSERT OR IGNORE INTO _poutine_seen_albums  VALUES (?)");
+    const insArtist = db.prepare("INSERT OR IGNORE INTO _poutine_seen_artists VALUES (?)");
+
+    for (const id of seenTracks)  insTrack.run(id);
+    for (const id of seenAlbums)  insAlbum.run(id);
+    for (const id of seenArtists) insArtist.run(id);
+
+    db.prepare(
+      "DELETE FROM instance_tracks  WHERE instance_id = ? AND remote_id NOT IN (SELECT remote_id FROM _poutine_seen_tracks)",
+    ).run(peerId);
+    db.prepare(
+      "DELETE FROM instance_albums  WHERE instance_id = ? AND remote_id NOT IN (SELECT remote_id FROM _poutine_seen_albums)",
+    ).run(peerId);
+    db.prepare(
+      "DELETE FROM instance_artists WHERE instance_id = ? AND remote_id NOT IN (SELECT remote_id FROM _poutine_seen_artists)",
+    ).run(peerId);
+  })();
 }

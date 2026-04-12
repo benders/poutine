@@ -168,4 +168,57 @@ describe("sync-peer", () => {
     expect(peerSources[0].source_kind).toBe("peer");
     expect(peerSources[0].peer_id).toBe("poutine-b");
   });
+
+  it("second sync prunes stale tracks removed from peer", async () => {
+    const peerB = appA.peerRegistry.peers.get("poutine-b");
+
+    // First sync: B has 1 track (trk-1)
+    await syncPeer(appA.db, peerB!, appA.federatedFetch, "alice");
+    mergeLibraries(appA.db);
+
+    const countAfterFirst = (
+      appA.db
+        .prepare("SELECT COUNT(*) AS n FROM instance_tracks WHERE instance_id = 'poutine-b'")
+        .get() as { n: number }
+    ).n;
+    expect(countAfterFirst).toBe(1);
+
+    // Add a second track to B and re-merge so it appears in B's unified_tracks
+    appB.db
+      .prepare(
+        `INSERT OR IGNORE INTO instance_tracks
+         (id, instance_id, remote_id, album_id, title, artist_name, track_number, duration_ms, format, bitrate)
+         VALUES ('local:trk-2', 'local', 'trk-2', 'local:alb-1', 'Second Track', 'Test Artist', 2, 180000, 'flac', 1000)`,
+      )
+      .run();
+    mergeLibraries(appB.db);
+
+    // Second sync: B now has 2 tracks
+    await syncPeer(appA.db, peerB!, appA.federatedFetch, "alice");
+    const countAfterSecond = (
+      appA.db
+        .prepare("SELECT COUNT(*) AS n FROM instance_tracks WHERE instance_id = 'poutine-b'")
+        .get() as { n: number }
+    ).n;
+    expect(countAfterSecond).toBe(2);
+
+    // Remove the first track from B and re-merge
+    appB.db.prepare("DELETE FROM instance_tracks WHERE remote_id = 'trk-1'").run();
+    mergeLibraries(appB.db);
+
+    // Third sync: B now has only trk-2; trk-1 should be pruned from A
+    await syncPeer(appA.db, peerB!, appA.federatedFetch, "alice");
+    const countAfterThird = (
+      appA.db
+        .prepare("SELECT COUNT(*) AS n FROM instance_tracks WHERE instance_id = 'poutine-b'")
+        .get() as { n: number }
+    ).n;
+    expect(countAfterThird).toBe(1);
+
+    const remaining = appA.db
+      .prepare("SELECT remote_id FROM instance_tracks WHERE instance_id = 'poutine-b'")
+      .all() as Array<{ remote_id: string }>;
+    // The remaining track is the unified_track_id from B's export (not trk-1's original remote_id)
+    expect(remaining).toHaveLength(1);
+  });
 });

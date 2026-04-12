@@ -85,19 +85,25 @@ export const federationRoutes: FastifyPluginAsync<FederationPluginOptions> =
       );
       const offset = parseInt(request.query.offset ?? "0", 10);
 
-      // Paginate over unified_tracks; fetch dependent rows from those pages.
+      // Paginate over locally-sourced unified_tracks only.
+      // Peer-imported tracks are never re-exported to prevent fan-out loops.
       const total = (
-        app.db.prepare("SELECT COUNT(*) AS n FROM unified_tracks").get() as {
-          n: number;
-        }
+        app.db.prepare(
+          `SELECT COUNT(DISTINCT ut.id) AS n
+           FROM unified_tracks ut
+           JOIN track_sources ts ON ts.unified_track_id = ut.id
+           WHERE ts.source_kind = 'local'`,
+        ).get() as { n: number }
       ).n;
 
       const tracks = app.db
         .prepare(
-          `SELECT id, release_id, artist_id, title, musicbrainz_id,
-            track_number, disc_number, duration_ms, genre
-          FROM unified_tracks
-          ORDER BY id
+          `SELECT DISTINCT ut.id, ut.release_id, ut.artist_id, ut.title, ut.musicbrainz_id,
+            ut.track_number, ut.disc_number, ut.duration_ms, ut.genre
+          FROM unified_tracks ut
+          JOIN track_sources ts ON ts.unified_track_id = ut.id
+          WHERE ts.source_kind = 'local'
+          ORDER BY ut.id
           LIMIT ? OFFSET ?`,
         )
         .all(limit, offset) as TrackExportRow[];
@@ -168,17 +174,16 @@ export const federationRoutes: FastifyPluginAsync<FederationPluginOptions> =
             .all(...allArtistIds) as ArtistExportRow[])
         : [];
 
-      // Get sources — only local sources to prevent fan-out loops.
-      // TODO Phase 4: when peer-imported sources are stored, add a filter here
-      // to exclude them (e.g. by joining instances and checking a "source_type" column).
-      // For now ALL sources are local so this returns everything.
+      // Only export local sources — peer-imported sources are never re-exported
+      // to prevent fan-out loops where A→B→C sources end up back on A.
       const sources = trackIds.length
         ? (app.db
             .prepare(
               `SELECT ts.unified_track_id AS track_id, ts.remote_id,
                 ts.format, ts.bitrate, ts.size
               FROM track_sources ts
-              WHERE ts.unified_track_id IN (${placeholders(trackIds.length)})`,
+              WHERE ts.source_kind = 'local'
+                AND ts.unified_track_id IN (${placeholders(trackIds.length)})`,
             )
             .all(...trackIds) as SourceExportRow[])
         : [];
