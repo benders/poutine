@@ -83,13 +83,19 @@ export class ApiError extends Error {
 // Admin auth
 
 export async function login(username: string, password: string) {
-  const data = await apiFetch<{
-    user: { id: string; username: string; isAdmin: boolean };
-    accessToken: string;
-  }>("/admin/login", {
+  const res = await fetch("/admin/login", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
   });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.error || res.statusText);
+  }
+  const data = await res.json() as {
+    user: { id: string; username: string; isAdmin: boolean };
+    accessToken: string;
+  };
   setToken(data.accessToken);
   return data.user;
 }
