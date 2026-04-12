@@ -65,6 +65,7 @@ interface TrackRow {
   format: string | null;
   bitrate: number | null;
   size: number | null;
+  instance_name: string | null;
 }
 
 interface GenreRow {
@@ -105,6 +106,7 @@ function buildSong(row: TrackRow) {
     albumId: encodeId("al", row.rg_id),
     artistId: encodeId("ar", row.artist_id),
     discNumber: row.disc_number ?? undefined,
+    sourceInstance: row.instance_name ?? undefined,
   };
 }
 
@@ -462,7 +464,11 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
               (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
                ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
               (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
-               ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size
+               ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+              (SELECT i.name FROM track_sources ts
+               JOIN instances i ON i.id = ts.instance_id
+               WHERE ts.unified_track_id = ut.id
+               ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name
             FROM unified_tracks ut
             JOIN unified_artists ua ON ua.id = ut.artist_id
             JOIN unified_releases ur ON ur.id = ut.release_id
@@ -520,7 +526,11 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
           (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+          (SELECT i.name FROM track_sources ts
+           JOIN instances i ON i.id = ts.instance_id
+           WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name
         FROM unified_tracks ut
         JOIN unified_artists ua ON ua.id = ut.artist_id
         JOIN unified_releases ur ON ur.id = ut.release_id
@@ -591,7 +601,11 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
           (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+          (SELECT i.name FROM track_sources ts
+           JOIN instances i ON i.id = ts.instance_id
+           WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name
         FROM unified_tracks ut
         JOIN unified_artists ua ON ua.id = ut.artist_id
         JOIN unified_releases ur ON ur.id = ut.release_id

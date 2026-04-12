@@ -41,6 +41,8 @@ export interface SubsonicSong {
   coverArt?: string;
   genre?: string;
   bitRate?: number;
+  suffix?: string;
+  sourceInstance?: string;
 }
 
 export interface SubsonicArtistDetail extends SubsonicArtist {
@@ -99,6 +101,8 @@ interface RawSong {
   coverArt?: string;
   genre?: string;
   bitRate?: number;
+  suffix?: string;
+  sourceInstance?: string;
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
@@ -130,6 +134,8 @@ function parseSong(raw: RawSong): SubsonicSong {
     coverArt: raw.coverArt,
     genre: raw.genre,
     bitRate: raw.bitRate,
+    suffix: raw.suffix,
+    sourceInstance: raw.sourceInstance,
   };
 }
 
