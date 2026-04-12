@@ -69,6 +69,11 @@ export async function requireSubsonicAuth(
   // Decode enc:<HEX> prefix — Subsonic clients sometimes send hex-encoded passwords
   if (password.startsWith("enc:")) {
     const hex = password.slice(4);
+    // Validate hex format: must be valid hex chars and even length
+    if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 !== 0) {
+      sendSubsonicError(reply, 40, "Wrong username or password", query);
+      return;
+    }
     password = Buffer.from(hex, "hex").toString("utf8");
   }
 
@@ -144,6 +149,11 @@ export async function requireSubsonicAuthBinary(
 
   if (password.startsWith("enc:")) {
     const hex = password.slice(4);
+    // Validate hex format: must be valid hex chars and even length
+    if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 !== 0) {
+      sendBinaryError(reply, 401, "Wrong username or password");
+      return;
+    }
     password = Buffer.from(hex, "hex").toString("utf8");
   }
 
