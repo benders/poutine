@@ -105,9 +105,6 @@ Both defined in `hub/src/version.ts`. Protocol version also appears in `/library
 - Dev: leave `PUBLIC_DIR` unset and run Vite dev server (`pnpm dev` in `frontend/`), which proxies backend paths to `localhost:3000`.
 - Docker: `hub/Dockerfile` builds the frontend and copies `frontend/dist/` into `hub/public/`; `PUBLIC_DIR=/app/hub/public` is baked in.
 
-### Legacy nginx notes
-
-`frontend/Dockerfile` + `frontend/nginx.conf` still exist for dev / nginx-proxy setups but are **not used by the default `docker-compose.yml`**. If reviving them: nginx's `location /admin/` (trailing slash + `proxy_pass`) auto-redirects `/admin` → `/admin/` via a 301 using `$host` (no port — strips `:8080`). Fix: `absolute_redirect off;` AND add `location = /admin` / `location = /admin/` exact-match blocks that serve `index.html` so the SPA loads.
 
 ## Binary endpoints
 
@@ -133,7 +130,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 ## Docker
 
-- **`hub/Dockerfile`** — multi-stage: deps → build (`tsc` + `vite build` + copy sql) → slim runtime with prod deps. Frontend `dist/` copied into `hub/public/`. `PUBLIC_DIR=/app/hub/public` baked in.
+- **`hub/Dockerfile`** — multi-stage: `deps` (all deps) → `prod-deps` (prod-only deps, compiles native addons) → `build` (`tsc` + `vite build` + copy sql) → `runtime` (`node:22-slim`, no build tools — copies pre-built node_modules from `prod-deps`). Frontend `dist/` copied into `hub/public/`. `PUBLIC_DIR=/app/hub/public` baked in. `deps` and `prod-deps` run independently and can be parallelized by BuildKit.
 - **`docker-compose.yml`** — hub (port `${POUTINE_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports). Single service for both API and SPA. `PEERS_CONFIG_HOST_PATH` overrides the peers.yaml bind-mount source (default `./peers.yaml`).
 - **Native deps:** `argon2` and `better-sqlite3` need `python3 make g++`. Root `package.json` has `pnpm.onlyBuiltDependencies` to allow their postinstall scripts. pnpm v10+ ignores build scripts by default — any new native dep must be added there.
 - **Rebuild after source changes.** Running containers use the compiled image, not live source. `docker compose build <service> && docker compose up -d <service>` or stale routes/assets will be served.
