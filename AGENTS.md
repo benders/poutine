@@ -19,6 +19,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 
 1. Open or assign a GitHub Issue.
 2. Read the relevant doc(s):
+   - Touching auth, JWT, login, tokens, or Subsonic credentials: read `docs/authentication.md` FIRST.
    - Touching `/federation/*`: read `docs/federation-api.md` FIRST. Update it AND bump `FEDERATION_API_VERSION` in `hub/src/version.ts` on any contract change.
    - Touching hub internals, conventions, or anything with a known gotcha: check `docs/hub-internals.md`.
    - Architectural changes: read `docs/system-architecture.md`.
@@ -42,6 +43,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 | File                                 | Purpose                                                          |
 |--------------------------------------|------------------------------------------------------------------|
 | `README.md`                          | Setup, commands, testing, operations                             |
+| `docs/authentication.md`             | **Auth reference** — JWT, Subsonic dual-auth, token refresh      |
 | `docs/federation-api.md`             | **Federation protocol contract** — read before `/federation/*`   |
 | `docs/hub-internals.md`              | Conventions, env vars, gotchas, lessons learned, Docker          |
 | `docs/system-architecture.md`        | Current system architecture                                      |

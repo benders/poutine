@@ -38,22 +38,16 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 
 ## API surface
 
-| Surface           | Prefix          | Auth                                                                                   | Purpose                                   |
-|-------------------|-----------------|----------------------------------------------------------------------------------------|-------------------------------------------|
-| Subsonic          | `/rest/*`       | JWT (header / `access_token` cookie / `token` query) OR legacy Subsonic `u`+`p`        | Primary client API: browse, stream, art   |
-| Federation        | `/federation/*` | Ed25519-signed (see [federation-api.md](federation-api.md))                            | Peer-to-peer only                         |
-| Admin             | `/admin/*`      | Owner-only JWT cookie from `POST /admin/login`                                         | Users CRUD, peers, sync, cache, instance  |
-| Health            | `/api/health`   | None                                                                                   | `{ status, appVersion, apiVersion }`      |
+| Surface           | Prefix          | Auth                                                             | Purpose                                   |
+|-------------------|-----------------|------------------------------------------------------------------|--------------------------------------------|
+| Subsonic          | `/rest/*`       | JWT or Subsonic `u`+`p` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art   |
+| Federation        | `/federation/*` | Ed25519-signed (see [federation-api.md](federation-api.md))      | Peer-to-peer only                         |
+| Admin             | `/admin/*`      | JWT (see [authentication.md](authentication.md))                 | Users CRUD, peers, sync, cache, instance  |
+| Health            | `/api/health`   | None                                                             | `{ status, appVersion, apiVersion }`      |
 
-## Auth flow
+## Auth
 
-- **Passwords:** Argon2id.
-- **Access token:** 15 min. `access_token` httpOnly cookie + `Authorization: Bearer` header.
-- **Refresh token:** 7 d. `refresh_token` httpOnly cookie, path-scoped to `/admin/refresh`.
-- **`POST /admin/refresh`** rotates both tokens. Verifies `type: "refresh"` claim via `verifyRefreshToken` (separate from `verifyToken`). No preHandler — reads only the cookie.
-- **Frontend refresh:** `apiFetch` and `subsonicFetch` silently attempt `attemptRefresh()` on 401, deduped by a module-level `refreshPromise`, then retry the original request. Fall through to `/login` on failure.
-- **Owner seeding:** `seedOwner()` in `buildApp()` runs only when `users` is empty. Argon2 is async so it cannot live in the synchronous `createDatabase()`. If `.env` credentials change after first boot, reset the password directly in the DB using `hashPassword` from `hub/dist/auth/passwords.js`.
-- **Admin login sets a JWT cookie AND returns the token.** Cookie enables admin API calls; the body token goes in localStorage for the `Authorization` header. The same JWT is used for Subsonic auth — no separate credentials stored.
+See [authentication.md](authentication.md) for the full auth reference: JWT flow, Subsonic dual-auth, token refresh, owner seeding, frontend token management.
 
 ## Album art
 
@@ -98,7 +92,7 @@ Both defined in `hub/src/version.ts`. Protocol version also appears in `/library
 `frontend/src/lib/subsonic.ts`.
 
 - All library browsing and search calls go through the native Subsonic API: `getAlbumList2`, `getArtists`, `getArtist`, `getAlbum`, `search3`.
-- JWT is shared with the admin API (`getAccessToken()`). `subsonicFetch()` sends `Authorization: Bearer`; `artUrl()` and `streamUrl()` rely on the `access_token` cookie (browser sends it automatically for `<img>` and `<audio>`). **Do NOT embed the JWT in art/stream URLs** — it gets baked in at render time and goes stale on token refresh, causing 401s without a re-render.
+- Auth: JWT shared with admin API. See [authentication.md](authentication.md) for token management, refresh flow, and the "do not embed JWT in art/stream URLs" rule.
 - **`streamUrl(id, format, maxBitRate)`** is the export, not `currentStreamUrl`. A local variable named `currentStreamUrl` would shadow and self-reference; use a distinct name.
 - Subsonic IDs are prefixed: songs `t<uuid>`, albums `al<uuid>`, artists `ar<uuid>`. These appear in URL routes (e.g. `/albums/al<uuid>`) and pass straight to `getAlbum(id)` / `getArtist(id)`.
 - `SubsonicSong.durationMs` = Subsonic `duration` × 1000. Rest of the frontend uses ms.
