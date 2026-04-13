@@ -1,7 +1,8 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
 import { streamUrl } from "@/lib/subsonic";
+import { attemptRefresh, clearTokens } from "@/lib/api";
 import {
   Play,
   Pause,
@@ -18,6 +19,8 @@ import { cn } from "@/lib/cn";
 
 export function PlayerBar() {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const retryAttemptedRef = useRef(false);
   const {
     queue,
     currentIndex,
@@ -46,6 +49,12 @@ export function PlayerBar() {
   const currentStreamUrl = currentTrack
     ? streamUrl(currentTrack.id, "opus", 192)
     : null;
+
+  // Reset error/retry state when track changes
+  useEffect(() => {
+    retryAttemptedRef.current = false;
+    setStreamError(null);
+  }, [currentStreamUrl]);
 
   // Update audio element when track changes
   useEffect(() => {
@@ -92,6 +101,28 @@ export function PlayerBar() {
     next();
   }, [next]);
 
+  const handleError = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio || !currentStreamUrl) return;
+
+    if (!retryAttemptedRef.current) {
+      retryAttemptedRef.current = true;
+      const newToken = await attemptRefresh();
+      if (newToken) {
+        // Cookie refreshed — reload the same URL with the fresh cookie
+        audio.src = currentStreamUrl;
+        audio.load();
+        if (isPlaying) audio.play().catch(() => setPlaying(false));
+      } else {
+        clearTokens();
+        window.location.replace("/login");
+      }
+    } else {
+      setStreamError("Playback failed. Please try again or skip to the next track.");
+      setPlaying(false);
+    }
+  }, [currentStreamUrl, isPlaying, setPlaying]);
+
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     if (audioRef.current) {
@@ -117,7 +148,14 @@ export function PlayerBar() {
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
+        onError={handleError}
       />
+
+      {streamError && (
+        <div className="absolute top-0 left-0 right-0 bg-red-900/80 text-red-200 text-xs text-center py-1 px-4">
+          {streamError}
+        </div>
+      )}
 
       {/* Track info */}
       <div className="w-56 shrink-0 flex items-center gap-3 min-w-0">
