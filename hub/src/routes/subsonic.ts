@@ -82,6 +82,22 @@ interface TrackSourceRow {
   peer_id: string | null;
 }
 
+// ── Source selection subquery ─────────────────────────────────────────────────
+// Returns the best source for a track (highest bitrate). Used for format,
+// bitrate, size, and instance_name. Copy-pasted 3x in getAlbum, getSong,
+// search3 — fine for now, could be a CTE/lateral join if query plans get heavy.
+const BEST_SOURCE_SUBQUERY = `
+  (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ?
+   ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1)
+`;
+
+const BEST_SOURCE_INSTANCE_SUBQUERY = `
+  (SELECT i.name FROM track_sources ts
+   JOIN instances i ON i.id = ts.instance_id
+   WHERE ts.unified_track_id = ?
+   ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1)
+`;
+
 // ── Song shape builder ────────────────────────────────────────────────────────
 
 function buildSong(row: TrackRow) {
@@ -465,10 +481,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
                ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
               (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
                ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
-              (SELECT i.name FROM track_sources ts
-               JOIN instances i ON i.id = ts.instance_id
-               WHERE ts.unified_track_id = ut.id
-               ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name
+              ${BEST_SOURCE_INSTANCE_SUBQUERY.replace('?', 'ut.id')} AS instance_name
             FROM unified_tracks ut
             JOIN unified_artists ua ON ua.id = ut.artist_id
             JOIN unified_releases ur ON ur.id = ut.release_id
@@ -527,10 +540,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
           (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
-          (SELECT i.name FROM track_sources ts
-           JOIN instances i ON i.id = ts.instance_id
-           WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name
+          ${BEST_SOURCE_INSTANCE_SUBQUERY.replace('?', 'ut.id')} AS instance_name
         FROM unified_tracks ut
         JOIN unified_artists ua ON ua.id = ut.artist_id
         JOIN unified_releases ur ON ur.id = ut.release_id
@@ -602,10 +612,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
           (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
-          (SELECT i.name FROM track_sources ts
-           JOIN instances i ON i.id = ts.instance_id
-           WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name
+          ${BEST_SOURCE_INSTANCE_SUBQUERY.replace('?', 'ut.id')} AS instance_name
         FROM unified_tracks ut
         JOIN unified_artists ua ON ua.id = ut.artist_id
         JOIN unified_releases ur ON ur.id = ut.release_id

@@ -124,7 +124,7 @@ export function PlayerBar() {
         <div className="w-12 h-12 rounded bg-surface-active shrink-0 flex items-center justify-center">
           <ListMusic className="w-5 h-5 text-text-muted" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 max-w-xs">
           <p className="text-sm font-medium truncate">{currentTrack.title}</p>
           <p className="text-xs text-text-secondary truncate">
             {currentTrack.artist}
@@ -197,7 +197,7 @@ export function PlayerBar() {
         </div>
 
         {/* Seek bar */}
-        <div className="w-full max-w-xl flex items-center gap-2">
+        <div className="w-full flex items-center gap-2">
           <span className="text-xs text-text-muted w-10 text-right">
             {formatDuration(currentTime * 1000)}
           </span>
