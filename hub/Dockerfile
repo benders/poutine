@@ -40,5 +40,8 @@ COPY --from=build /app/frontend/dist hub/public/
 RUN mkdir -p /app/data
 ENV NODE_ENV=production
 ENV PUBLIC_DIR=/app/hub/public
+# Tell the New Relic agent not to look for a newrelic.js config file;
+# all configuration is supplied via environment variables.
+ENV NEW_RELIC_NO_CONFIG_FILE=true
 EXPOSE 3000
-CMD ["node", "hub/dist/server.js"]
+CMD ["node", "--import", "./hub/dist/newrelic-loader.js", "hub/dist/server.js"]

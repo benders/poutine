@@ -18,6 +18,9 @@ services:
       - POUTINE_PEERS_CONFIG=/app/config/peers.yaml
       - POUTINE_OWNER_USERNAME=${POUTINE_OWNER_USERNAME:?Set POUTINE_OWNER_USERNAME in .env}
       - POUTINE_OWNER_PASSWORD=${POUTINE_OWNER_PASSWORD:?Set POUTINE_OWNER_PASSWORD in .env}
+      # New Relic APM (optional — omit or leave blank to disable)
+      - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY:-}
+      - NEW_RELIC_APP_NAME=${NEW_RELIC_APP_NAME:-poutine-hub}
       # PUBLIC_DIR is baked into the image (hub/Dockerfile sets it to /app/hub/public).
       # Override here only if you want to mount a custom frontend build.
     volumes:
