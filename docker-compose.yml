@@ -7,6 +7,7 @@ services:
       - "${POUTINE_HOST_PORT:-3000}:3000"
     environment:
       - NODE_ENV=production
+      - INSTANCE_CONCURRENCY=11
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
       - DATABASE_PATH=/app/data/poutine.db
       - NAVIDROME_URL=http://navidrome:4533
