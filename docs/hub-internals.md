@@ -33,17 +33,8 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Auto-generated if absent                                        |
 | `POUTINE_PEERS_CONFIG`       | no       | `./config/peers.yaml`        | Peer registry file                                              |
 | `PUBLIC_DIR`                 | no       | —                            | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
-| `NEW_RELIC_LICENSE_KEY`      | no       | —                            | APM ingest key. Agent disabled (zero overhead) when absent        |
-| `NEW_RELIC_APP_NAME`         | no       | `poutine-hub`                | Display name in New Relic APM UI                                  |
 
-Frontend-only (build-time, baked into bundle):
-
-| Variable                     | Required | Default | Description                                              |
-|------------------------------|----------|---------|----------------------------------------------------------|
-| `VITE_NEW_RELIC_LICENSE_KEY` | no       | —       | Browser license key (`NRJS-…`). Agent omitted when absent |
-| `VITE_NEW_RELIC_APP_ID`      | no       | —       | Numeric Browser application ID from New Relic UI          |
-
-`hub/src/config.ts` is the authoritative list for hub env vars.
+`hub/src/config.ts` is the authoritative list.
 
 ## API surface
 
