@@ -43,6 +43,18 @@ export interface SubsonicSong {
   bitRate?: number;
   suffix?: string;
   sourceInstance?: string;
+  // Additional metadata for debugging (Issue #42)
+  year?: number;
+  contentType?: string;
+  size?: number;
+  path?: string;
+  channelCount?: number;
+  samplingRate?: number;
+  bitDepth?: number;
+  sortName?: string;
+  musicBrainzId?: string;
+  comment?: string;
+  bpm?: number;
 }
 
 export interface SubsonicArtistDetail extends SubsonicArtist {
@@ -103,6 +115,18 @@ interface RawSong {
   bitRate?: number;
   suffix?: string;
   sourceInstance?: string;
+  // Additional metadata for debugging (Issue #42)
+  year?: number;
+  contentType?: string;
+  size?: number;
+  path?: string;
+  channelCount?: number;
+  samplingRate?: number;
+  bitDepth?: number;
+  sortName?: string;
+  musicBrainzId?: string;
+  comment?: string;
+  bpm?: number;
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
@@ -136,6 +160,18 @@ function parseSong(raw: RawSong): SubsonicSong {
     bitRate: raw.bitRate,
     suffix: raw.suffix,
     sourceInstance: raw.sourceInstance,
+    // Additional metadata for debugging (Issue #42)
+    year: raw.year,
+    contentType: raw.contentType,
+    size: raw.size,
+    path: raw.path,
+    channelCount: raw.channelCount,
+    samplingRate: raw.samplingRate,
+    bitDepth: raw.bitDepth,
+    sortName: raw.sortName,
+    musicBrainzId: raw.musicBrainzId,
+    comment: raw.comment,
+    bpm: raw.bpm,
   };
 }
 

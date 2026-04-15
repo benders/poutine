@@ -73,6 +73,7 @@ interface TrackRow {
   bitrate: number | null;
   size: number | null;
   instance_name: string | null;
+  musicbrainz_id: string | null;
 }
 
 interface GenreRow {
@@ -130,6 +131,7 @@ function buildSong(row: TrackRow) {
     artistId: encodeId("ar", row.artist_id),
     discNumber: row.disc_number ?? undefined,
     sourceInstance: row.instance_name ?? undefined,
+    musicBrainzId: row.musicbrainz_id ?? undefined,
   };
 }
 
@@ -478,7 +480,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           .prepare(
             `SELECT
               ut.id, ut.title, ut.track_number, ut.disc_number,
-              ut.duration_ms, ut.genre,
+              ut.duration_ms, ut.genre, ut.musicbrainz_id,
               ut.artist_id, ua.name AS artist_name,
               urg.id AS rg_id, urg.name AS rg_name,
               urg.year AS rg_year, urg.image_url AS rg_image_url,
@@ -537,7 +539,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       .prepare(
         `SELECT
           ut.id, ut.title, ut.track_number, ut.disc_number,
-          ut.duration_ms, ut.genre,
+          ut.duration_ms, ut.genre, ut.musicbrainz_id,
           ut.artist_id, ua.name AS artist_name,
           urg.id AS rg_id, urg.name AS rg_name,
           urg.year AS rg_year, urg.image_url AS rg_image_url,
@@ -609,7 +611,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       .prepare(
         `SELECT
           ut.id, ut.title, ut.track_number, ut.disc_number,
-          ut.duration_ms, ut.genre,
+          ut.duration_ms, ut.genre, ut.musicbrainz_id,
           ut.artist_id, ua.name AS artist_name,
           urg.id AS rg_id, urg.name AS rg_name,
           urg.year AS rg_year, urg.image_url AS rg_image_url,
