@@ -1,4 +1,15 @@
+/**
+ * Tests for syncPeer — reading a peer's Navidrome library via /proxy/*.
+ *
+ * Each test starts a real HTTP server as a fake Navidrome B. The fake server
+ * responds to Subsonic catalog API calls (getArtists / getArtist / getAlbum)
+ * with configurable JSON. Hub B's /proxy/* forwards these calls to the fake
+ * Navidrome; hub A calls syncPeer() which reads through B's proxy with signed
+ * Ed25519 requests.
+ */
+
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -9,6 +20,143 @@ import { loadOrCreatePrivateKey } from "../src/federation/signing.js";
 import { syncPeer } from "../src/library/sync-peer.js";
 import { mergeLibraries } from "../src/library/merge.js";
 import type { Config } from "../src/config.js";
+
+// ── Fake Navidrome helpers ────────────────────────────────────────────────────
+
+function subsonicOk(data: Record<string, unknown>): string {
+  return JSON.stringify({
+    "subsonic-response": { status: "ok", version: "1.16.1", ...data },
+  });
+}
+
+interface FakeSong {
+  id: string;
+  title: string;
+  format: string;
+  bitrate: number;
+  durationMs: number;
+  trackNumber: number;
+}
+
+interface FakeAlbum {
+  id: string;
+  name: string;
+  songs: FakeSong[];
+}
+
+interface FakeArtist {
+  id: string;
+  name: string;
+  albums: FakeAlbum[];
+}
+
+/**
+ * Build a configurable fake Navidrome request handler.
+ * Call setArtists() to change what the server returns between syncs.
+ */
+function buildConfigurableFakeNavidrome(): {
+  handler: http.RequestListener;
+  setArtists: (artists: FakeArtist[]) => void;
+} {
+  let artists: FakeArtist[] = [];
+
+  const handler: http.RequestListener = (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const p = url.pathname;
+
+    if (p.includes("getArtists")) {
+      const indexes = artists.map((a) => ({
+        name: a.name[0].toUpperCase(),
+        artist: [{ id: a.id, name: a.name, albumCount: a.albums.length }],
+      }));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(subsonicOk({ artists: { index: indexes } }));
+      return;
+    }
+
+    if (p.includes("getArtist")) {
+      const artistId = url.searchParams.get("id") ?? "";
+      const artist = artists.find((a) => a.id === artistId);
+      if (!artist) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          "subsonic-response": {
+            status: "failed",
+            error: { code: 70, message: "not found" },
+          },
+        }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(subsonicOk({
+        artist: {
+          id: artist.id,
+          name: artist.name,
+          albumCount: artist.albums.length,
+          album: artist.albums.map((al) => ({
+            id: al.id,
+            name: al.name,
+            songCount: al.songs.length,
+            duration: Math.round(al.songs.reduce((s, t) => s + t.durationMs, 0) / 1000),
+          })),
+        },
+      }));
+      return;
+    }
+
+    if (p.includes("getAlbum")) {
+      const albumId = url.searchParams.get("id") ?? "";
+      let found: { artist: FakeArtist; album: FakeAlbum } | undefined;
+      for (const a of artists) {
+        const al = a.albums.find((x) => x.id === albumId);
+        if (al) { found = { artist: a, album: al }; break; }
+      }
+      if (!found) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          "subsonic-response": {
+            status: "failed",
+            error: { code: 70, message: "not found" },
+          },
+        }));
+        return;
+      }
+      const { artist, album } = found;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(subsonicOk({
+        album: {
+          id: album.id,
+          name: album.name,
+          artist: artist.name,
+          artistId: artist.id,
+          songCount: album.songs.length,
+          duration: Math.round(album.songs.reduce((s, t) => s + t.durationMs, 0) / 1000),
+          song: album.songs.map((s) => ({
+            id: s.id,
+            title: s.title,
+            artist: artist.name,
+            track: s.trackNumber,
+            duration: Math.round(s.durationMs / 1000),
+            bitRate: s.bitrate,
+            suffix: s.format,
+          })),
+        },
+      }));
+      return;
+    }
+
+    // All other requests → simple 200
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(subsonicOk({}));
+  };
+
+  return {
+    handler,
+    setArtists: (a) => { artists = a; },
+  };
+}
+
+// ── Test utilities ────────────────────────────────────────────────────────────
 
 function tmpPath(suffix = "") {
   return path.join(
@@ -23,14 +171,30 @@ function writeYaml(filePath: string, content: string) {
 
 // ── Test suite ────────────────────────────────────────────────────────────────
 
-describe("sync-peer", () => {
+describe("sync-peer (via /proxy/*)", () => {
   let appA: FastifyInstance;
   let appB: FastifyInstance;
   let portB: number;
+  let fakeNavidrome: http.Server;
+  let setArtists: (artists: FakeArtist[]) => void;
   let keyPathA: string;
   let keyPathB: string;
   let peersYamlA: string;
   let peersYamlB: string;
+
+  const defaultArtist: FakeArtist = {
+    id: "art-1",
+    name: "Test Artist",
+    albums: [
+      {
+        id: "alb-1",
+        name: "Test Album",
+        songs: [
+          { id: "trk-1", title: "Test Track", format: "flac", bitrate: 1000, durationMs: 240000, trackNumber: 1 },
+        ],
+      },
+    ],
+  };
 
   beforeEach(async () => {
     keyPathA = tmpPath("key-a.pem");
@@ -41,7 +205,16 @@ describe("sync-peer", () => {
     const { publicKeyBase64: pubA } = loadOrCreatePrivateKey(keyPathA);
     const { publicKeyBase64: pubB } = loadOrCreatePrivateKey(keyPathB);
 
-    // B trusts A (so A can fetch from B's federation endpoints)
+    // Build configurable fake Navidrome
+    const fake = buildConfigurableFakeNavidrome();
+    setArtists = fake.setArtists;
+    setArtists([defaultArtist]); // default: 1 artist, 1 album, 1 track
+
+    fakeNavidrome = http.createServer(fake.handler);
+    await new Promise<void>((resolve) => fakeNavidrome.listen(0, "127.0.0.1", () => resolve()));
+    const fakePort = (fakeNavidrome.address() as AddressInfo).port;
+
+    // B trusts A
     writeYaml(
       peersYamlB,
       [
@@ -52,20 +225,23 @@ describe("sync-peer", () => {
       ].join("\n"),
     );
 
-    // Build and start B first (so we get its port)
+    // Build and start B (B's Navidrome is the fake server)
     const configB: Partial<Config> = {
       databasePath: ":memory:",
       jwtSecret: "test-b",
       poutinePrivateKeyPath: keyPathB,
       poutinePeersConfig: peersYamlB,
       poutineInstanceId: "poutine-b",
+      navidromeUrl: `http://127.0.0.1:${fakePort}`,
+      navidromeUsername: "admin",
+      navidromePassword: "admin",
     };
     appB = await buildApp(configB);
     await appB.ready();
     await appB.listen({ port: 0, host: "127.0.0.1" });
     portB = (appB.server.address() as AddressInfo).port;
 
-    // Now write A's peers.yaml with B's real URL
+    // A knows B's URL
     writeYaml(
       peersYamlA,
       [
@@ -85,40 +261,18 @@ describe("sync-peer", () => {
     };
     appA = await buildApp(configA);
     await appA.ready();
-
-    // Seed B's instance_* tables with one artist/album/track so the export has data
-    const db = appB.db;
-
-    db.prepare(
-      `INSERT OR IGNORE INTO instance_artists (id, instance_id, remote_id, name, album_count)
-       VALUES ('local:art-1', 'local', 'art-1', 'Test Artist', 1)`,
-    ).run();
-
-    db.prepare(
-      `INSERT OR IGNORE INTO instance_albums
-       (id, instance_id, remote_id, name, artist_id, artist_name, track_count, cover_art_id)
-       VALUES ('local:alb-1', 'local', 'alb-1', 'Test Album', 'local:art-1', 'Test Artist', 1, 'cover-001')`,
-    ).run();
-
-    db.prepare(
-      `INSERT OR IGNORE INTO instance_tracks
-       (id, instance_id, remote_id, album_id, title, artist_name, track_number, duration_ms, format, bitrate)
-       VALUES ('local:trk-1', 'local', 'trk-1', 'local:alb-1', 'Test Track', 'Test Artist', 1, 240000, 'flac', 1000)`,
-    ).run();
-
-    // Run merge on B so unified tables are populated
-    mergeLibraries(db);
   });
 
   afterEach(async () => {
     await appA.close();
     await appB.close();
+    await new Promise<void>((resolve) => fakeNavidrome.close(() => resolve()));
     for (const f of [keyPathA, keyPathB, peersYamlA, peersYamlB]) {
       if (fs.existsSync(f)) fs.unlinkSync(f);
     }
   });
 
-  it("fetches B's export and populates A's instance_* tables with peer rows", async () => {
+  it("reads B's Navidrome via /proxy/* and populates A's instance_* tables", async () => {
     const peerB = appA.peerRegistry.peers.get("poutine-b");
     expect(peerB).toBeDefined();
 
@@ -129,25 +283,18 @@ describe("sync-peer", () => {
     expect(result.albumCount).toBeGreaterThan(0);
     expect(result.trackCount).toBeGreaterThan(0);
 
-    // Check A's DB has peer instance rows
     const artists = appA.db
-      .prepare(
-        "SELECT * FROM instance_artists WHERE instance_id = 'poutine-b'",
-      )
+      .prepare("SELECT * FROM instance_artists WHERE instance_id = 'poutine-b'")
       .all();
     expect(artists.length).toBeGreaterThan(0);
 
     const albums = appA.db
-      .prepare(
-        "SELECT * FROM instance_albums WHERE instance_id = 'poutine-b'",
-      )
+      .prepare("SELECT * FROM instance_albums WHERE instance_id = 'poutine-b'")
       .all();
     expect(albums.length).toBeGreaterThan(0);
 
     const tracks = appA.db
-      .prepare(
-        "SELECT * FROM instance_tracks WHERE instance_id = 'poutine-b'",
-      )
+      .prepare("SELECT * FROM instance_tracks WHERE instance_id = 'poutine-b'")
       .all();
     expect(tracks.length).toBeGreaterThan(0);
   });
@@ -169,10 +316,10 @@ describe("sync-peer", () => {
     expect(peerSources[0].peer_id).toBe("poutine-b");
   });
 
-  it("second sync prunes stale tracks removed from peer", async () => {
+  it("second sync prunes stale tracks removed from peer Navidrome", async () => {
     const peerB = appA.peerRegistry.peers.get("poutine-b");
 
-    // First sync: B has 1 track (trk-1)
+    // First sync: fake Navidrome has 1 track (trk-1)
     await syncPeer(appA.db, peerB!, appA.federatedFetch, "alice");
     mergeLibraries(appA.db);
 
@@ -183,15 +330,19 @@ describe("sync-peer", () => {
     ).n;
     expect(countAfterFirst).toBe(1);
 
-    // Add a second track to B and re-merge so it appears in B's unified_tracks
-    appB.db
-      .prepare(
-        `INSERT OR IGNORE INTO instance_tracks
-         (id, instance_id, remote_id, album_id, title, artist_name, track_number, duration_ms, format, bitrate)
-         VALUES ('local:trk-2', 'local', 'trk-2', 'local:alb-1', 'Second Track', 'Test Artist', 2, 180000, 'flac', 1000)`,
-      )
-      .run();
-    mergeLibraries(appB.db);
+    // Add a second track to B's fake Navidrome
+    setArtists([{
+      id: "art-1",
+      name: "Test Artist",
+      albums: [{
+        id: "alb-1",
+        name: "Test Album",
+        songs: [
+          { id: "trk-1", title: "Test Track", format: "flac", bitrate: 1000, durationMs: 240000, trackNumber: 1 },
+          { id: "trk-2", title: "Second Track", format: "flac", bitrate: 1000, durationMs: 180000, trackNumber: 2 },
+        ],
+      }],
+    }]);
 
     // Second sync: B now has 2 tracks
     await syncPeer(appA.db, peerB!, appA.federatedFetch, "alice");
@@ -202,11 +353,20 @@ describe("sync-peer", () => {
     ).n;
     expect(countAfterSecond).toBe(2);
 
-    // Remove the first track from B and re-merge
-    appB.db.prepare("DELETE FROM instance_tracks WHERE remote_id = 'trk-1'").run();
-    mergeLibraries(appB.db);
+    // Remove trk-1 from B's fake Navidrome (only trk-2 remains)
+    setArtists([{
+      id: "art-1",
+      name: "Test Artist",
+      albums: [{
+        id: "alb-1",
+        name: "Test Album",
+        songs: [
+          { id: "trk-2", title: "Second Track", format: "flac", bitrate: 1000, durationMs: 180000, trackNumber: 2 },
+        ],
+      }],
+    }]);
 
-    // Third sync: B now has only trk-2; trk-1 should be pruned from A
+    // Third sync: trk-1 should be pruned from A
     await syncPeer(appA.db, peerB!, appA.federatedFetch, "alice");
     const countAfterThird = (
       appA.db
@@ -218,7 +378,7 @@ describe("sync-peer", () => {
     const remaining = appA.db
       .prepare("SELECT remote_id FROM instance_tracks WHERE instance_id = 'poutine-b'")
       .all() as Array<{ remote_id: string }>;
-    // The remaining track is the unified_track_id from B's export (not trk-1's original remote_id)
     expect(remaining).toHaveLength(1);
+    expect(remaining[0].remote_id).toBe("trk-2");
   });
 });

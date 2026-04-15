@@ -1,3 +1,14 @@
+/**
+ * sync-local.ts
+ *
+ * Syncs the bundled local Navidrome into instance_* tables.
+ *
+ * Currently reads Navidrome directly via SubsonicClient (bypasses /proxy/*).
+ * TODO(phase-5): Route local reads through /proxy/* for uniformity. Requires
+ *   the hub URL to be available in config (add HUB_URL env var or derive from
+ *   PORT/HOST) so SubsonicClient can target http://localhost:{port}/proxy.
+ */
+
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
