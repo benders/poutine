@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS instances (
   status TEXT NOT NULL DEFAULT 'offline', -- online | offline | degraded
   last_seen TEXT,
   last_synced_at TEXT,
+  last_sync_ok INTEGER,
+  last_sync_message TEXT,
   track_count INTEGER NOT NULL DEFAULT 0,
   server_version TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),

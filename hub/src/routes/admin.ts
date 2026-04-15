@@ -247,11 +247,11 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   // GET /admin/instance — returns identity and local Navidrome status
   app.get("/instance", { preHandler: requireOwner }, async () => {
     const local = app.db
-      .prepare(`SELECT status, track_count,
+      .prepare(`SELECT status, track_count, last_sync_ok, last_sync_message,
           strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_at) as last_synced_at,
           strftime('%Y-%m-%dT%H:%M:%SZ', last_seen) as last_seen
         FROM instances WHERE id = 'local'`)
-      .get() as { status: string; track_count: number; last_synced_at: string | null; last_seen: string | null } | undefined;
+      .get() as { status: string; track_count: number; last_synced_at: string | null; last_seen: string | null; last_sync_ok: number | null; last_sync_message: string | null } | undefined;
 
     const naviClient = new SubsonicClient({
       url: app.config.navidromeUrl,
@@ -278,6 +278,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         trackCount: local?.track_count ?? 0,
         lastSynced: local?.last_synced_at ?? null,
         lastSeen: local?.last_seen ?? null,
+        lastSyncOk: local?.last_sync_ok != null ? local.last_sync_ok === 1 : null,
+        lastSyncMessage: local?.last_sync_message ?? null,
       },
     };
   });
@@ -335,8 +337,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
     return peers.map((peer, i) => {
       const row = app.db
-        .prepare("SELECT last_seen, last_synced_at FROM instances WHERE id = ?")
-        .get(peer.id) as { last_seen: string | null; last_synced_at: string | null } | undefined;
+        .prepare("SELECT last_seen, last_synced_at, last_sync_ok, last_sync_message FROM instances WHERE id = ?")
+        .get(peer.id) as { last_seen: string | null; last_synced_at: string | null; last_sync_ok: number | null; last_sync_message: string | null } | undefined;
       const health = healthChecks[i].status === "fulfilled" ? healthChecks[i].value : null;
       const alive = health !== null;
       const stats = peerStatsStmt.get(peer.id) ?? { track_count: 0, artist_count: 0, album_count: 0 };
@@ -346,6 +348,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         publicKey: peer.publicKeySpec,
         status: alive ? "online" : "offline",
         lastSeen: row?.last_seen ?? null,
+        lastSyncOk: row?.last_sync_ok != null ? row.last_sync_ok === 1 : null,
+        lastSyncMessage: row?.last_sync_message ?? null,
         appVersion: health?.appVersion ?? null,
         apiVersion: health?.apiVersion ?? null,
         trackCount: stats.track_count,
@@ -357,12 +361,17 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
   // POST /admin/sync — trigger a full sync (local + peers)
   app.post("/sync", { preHandler: requireOwner }, async (request) => {
+    const log = {
+      info: (msg: string) => request.log.info(msg),
+      error: (msg: string) => request.log.error(msg),
+    };
     return syncAll(
       app.db,
       app.config,
       app.peerRegistry,
       app.federatedFetch,
       request.adminUsername,
+      log,
     );
   });
 

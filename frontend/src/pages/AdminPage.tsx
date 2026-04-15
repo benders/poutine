@@ -235,6 +235,14 @@ function PeerRow({ peer }: { peer: Peer }) {
           <span>{peer.trackCount.toLocaleString()} tracks</span>
         </div>
       )}
+      {peer.lastSyncMessage && (
+        <p className={cn(
+          "mt-1.5 ml-9 text-xs",
+          peer.lastSyncOk === false ? "text-error" : "text-text-muted",
+        )}>
+          {peer.lastSyncMessage}
+        </p>
+      )}
     </div>
   );
 }
@@ -546,12 +554,25 @@ export function AdminPage() {
           </div>
         </div>
 
-        {syncMutation.isSuccess && (
-          <div className="mb-4 p-3 bg-success/10 border border-success/20 rounded-lg text-sm text-success">
-            Sync complete — local: {syncMutation.data.local.trackCount} tracks,{" "}
-            {syncMutation.data.peers.length} peer(s) synced.
-          </div>
-        )}
+        {syncMutation.isSuccess && (() => {
+          const failedPeers = syncMutation.data.peers.filter((p) => p.errors.length > 0);
+          if (failedPeers.length > 0) {
+            return (
+              <div className="mb-4 p-3 bg-error/10 border border-error/20 rounded-lg text-sm text-error space-y-1">
+                <p>Sync finished with errors — {failedPeers.length} peer(s) failed:</p>
+                {failedPeers.map((p) => (
+                  <p key={p.instanceId} className="ml-2">{p.instanceId}: {p.errors[0]}</p>
+                ))}
+              </div>
+            );
+          }
+          return (
+            <div className="mb-4 p-3 bg-success/10 border border-success/20 rounded-lg text-sm text-success">
+              Sync complete — local: {syncMutation.data.local.trackCount} tracks,{" "}
+              {syncMutation.data.peers.length} peer(s) synced.
+            </div>
+          );
+        })()}
 
         {syncMutation.isError && (
           <p className="mb-4 text-sm text-error">

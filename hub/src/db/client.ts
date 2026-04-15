@@ -32,6 +32,17 @@ function ensureColumns(db: Database.Database): void {
   if (!names.has("peer_id")) {
     db.exec("ALTER TABLE track_sources ADD COLUMN peer_id TEXT");
   }
+
+  const instanceCols = db
+    .prepare("PRAGMA table_info(instances)")
+    .all() as Array<{ name: string }>;
+  const instanceColNames = new Set(instanceCols.map((c) => c.name));
+  if (!instanceColNames.has("last_sync_ok")) {
+    db.exec("ALTER TABLE instances ADD COLUMN last_sync_ok INTEGER");
+  }
+  if (!instanceColNames.has("last_sync_message")) {
+    db.exec("ALTER TABLE instances ADD COLUMN last_sync_message TEXT");
+  }
 }
 
 export function createDatabase(dbPath: string): Database.Database {
