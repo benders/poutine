@@ -826,6 +826,27 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
     return;
   }
 
+  // Get track info for streaming
+  const trackRow = app.db
+    .prepare(
+      `SELECT ut.id, ut.title, ut.artist_id, ua.name AS artist_name, ut.duration_ms
+       FROM unified_tracks ut
+       JOIN unified_artists ua ON ua.id = ut.artist_id
+       WHERE ut.id = ?`,
+    )
+    .get(trackId) as { id: string; title: string; artist_name: string; duration_ms: number | null } | undefined;
+
+  // Start stream tracking
+  let streamOpId: string | undefined;
+  if (trackRow) {
+    streamOpId = app.streamTracking.start(
+      request.subsonicUser.username,
+      trackRow.id,
+      trackRow.title,
+      trackRow.artist_name,
+    );
+  }
+
   const rawSources = app.db
     .prepare(
       `SELECT it.remote_id, ts.format, ts.bitrate, ts.instance_id
@@ -910,6 +931,26 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
   const nodeStream = Readable.fromWeb(
     response.body as import("node:stream/web").ReadableStream,
   );
+  
+  // Track bytes transferred
+  let bytesTransferred = 0;
+  nodeStream.on("data", (chunk) => {
+    bytesTransferred += chunk.length;
+  });
+  
+  // Finish tracking when stream ends or errors
+  nodeStream.on("end", () => {
+    if (streamOpId) {
+      app.streamTracking.finish(streamOpId, null, bytesTransferred);
+    }
+  });
+  
+  nodeStream.on("error", () => {
+    if (streamOpId) {
+      app.streamTracking.finish(streamOpId, null, bytesTransferred);
+    }
+  });
+  
   nodeStream.pipe(reply.raw);
 }
 
