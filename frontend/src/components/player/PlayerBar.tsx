@@ -141,7 +141,7 @@ export function PlayerBar() {
   }
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 h-20 bg-player border-t border-border flex items-center px-4 gap-4 z-50">
+    <div className="fixed bottom-0 left-0 right-0 h-20 bg-player border-t border-border flex items-center px-8 gap-4 z-50">
       <audio
         ref={audioRef}
         preload="auto"
@@ -158,20 +158,31 @@ export function PlayerBar() {
       )}
 
       {/* Track info */}
-      <div className="w-56 shrink-0 flex items-center gap-3 min-w-0">
+      <div className="shrink-0 flex items-center gap-3">
         <div className="w-12 h-12 rounded bg-surface-active shrink-0 flex items-center justify-center">
           <ListMusic className="w-5 h-5 text-text-muted" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 max-w-xs">
           <p className="text-sm font-medium truncate">{currentTrack.title}</p>
           <p className="text-xs text-text-secondary truncate">
             {currentTrack.artist}
           </p>
+          <div className="flex items-center gap-2 text-xs text-text-muted mt-0.5">
+            {currentTrack.suffix && (
+              <span className="uppercase">{currentTrack.suffix}</span>
+            )}
+            {currentTrack.bitRate && (
+              <span>{currentTrack.bitRate} kbps</span>
+            )}
+            {currentTrack.sourceInstance && (
+              <span>• {currentTrack.sourceInstance}</span>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Controls */}
-      <div className="flex-1 flex flex-col items-center gap-1 max-w-xl">
+      <div className="flex-1 flex flex-col items-center gap-1 w-full max-w-xl mx-auto">
         <div className="flex items-center gap-3">
           <button
             onClick={toggleShuffle}
@@ -244,7 +255,7 @@ export function PlayerBar() {
       </div>
 
       {/* Volume */}
-      <div className="w-36 shrink-0 flex items-center gap-2">
+      <div className="shrink-0 flex items-center gap-2">
         <button
           onClick={() => setVolume(volume > 0 ? 0 : 0.8)}
           className="p-1 text-text-muted hover:text-text-primary transition-colors"
