@@ -8,6 +8,7 @@ import { createDatabase } from "./db/client.js";
 import { adminRoutes } from "./routes/admin.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
 import { federationRoutes } from "./routes/federation.js";
+import { proxyRoutes } from "./routes/proxy.js";
 import { ArtCache } from "./services/art-cache.js";
 import { loadOrCreatePrivateKey } from "./federation/signing.js";
 import { loadPeerRegistry } from "./federation/peers.js";
@@ -147,6 +148,11 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     requirePeerAuth,
   });
 
+  await app.register(proxyRoutes, {
+    prefix: "/proxy",
+    registry: peerRegistry,
+  });
+
   // Health check
   app.get("/api/health", async () => ({
     status: "ok",
@@ -169,7 +175,8 @@ export async function buildApp(configOverrides?: Partial<Config>) {
         (urlPath.startsWith("/admin/") && urlPath !== "/admin/") ||
         urlPath.startsWith("/rest") ||
         urlPath.startsWith("/federation") ||
-        urlPath.startsWith("/api");
+        urlPath.startsWith("/api") ||
+        urlPath.startsWith("/proxy");
       if (isApiRoute) {
         return reply.status(404).send({ error: "Not found" });
       }

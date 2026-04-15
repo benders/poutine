@@ -41,6 +41,7 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | Surface           | Prefix          | Auth                                                             | Purpose                                   |
 |-------------------|-----------------|------------------------------------------------------------------|--------------------------------------------|
 | Subsonic          | `/rest/*`       | JWT or Subsonic `u`+`p` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art   |
+| Proxy             | `/proxy/*`      | Ed25519, JWT, or Subsonic `u`+`p` (unified — see below)          | Authenticated transparent proxy to Navidrome |
 | Federation        | `/federation/*` | Ed25519-signed (see [federation-api.md](federation-api.md))      | Peer-to-peer only                         |
 | Admin             | `/admin/*`      | JWT (see [authentication.md](authentication.md))                 | Users CRUD, peers, sync, cache, instance  |
 | Health            | `/api/health`   | None                                                             | `{ status, appVersion, apiVersion }`      |
@@ -48,6 +49,29 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 ## Auth
 
 See [authentication.md](authentication.md) for the full auth reference: JWT flow, Subsonic dual-auth, token refresh, owner seeding, frontend token management.
+
+## /proxy/*
+
+Transparent authenticated proxy to the local Navidrome. Introduced in Phase 1 (issue #50).
+
+**Auth** — unified preHandler in `hub/src/proxy/auth.ts`, tried in order:
+
+1. **Ed25519** — all four `x-poutine-*` headers present → validated against `peers.yaml` registry (same logic as federation). `request.proxyAuth.kind = "peer"`.
+2. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param → verified with `verifyToken`. `request.proxyAuth.kind = "jwt"`.
+3. **Subsonic u+p** — `u` + `p` query params (plaintext or `enc:<hex>`), verified via Argon2id. `request.proxyAuth.kind = "subsonic"`. Note: `u+t+s` (MD5 token auth) is not supported — Poutine stores Argon2id hashes, not plaintext.
+
+Returns `401` if all three methods fail.
+
+**Forwarding** — `hub/src/routes/proxy.ts`:
+
+- Strips incoming Subsonic auth params (`u`, `p`, `t`, `s`) then injects Navidrome credentials via fresh `u+t+s` token per request (salt = `crypto.randomBytes(8)`, token = `MD5(password + salt)`).
+- Forwarded request headers: `range`, `accept`, `if-none-match`, `if-modified-since`, `cache-control`, `content-type`, `content-length`. `accept-encoding` is intentionally excluded — the proxy does not transcode; forwarding it causes Navidrome to return compressed bytes while the proxy strips `content-encoding`, leaving callers with undecodable data.
+- All Navidrome response headers forwarded except `set-cookie` (Navidrome session cookies must not propagate to callers under the hub's domain).
+- Response streamed via `reply.hijack()` + `pipeline(upstreamResponse, reply.raw)` — no buffering.
+- HTTP agent: `keepAlive: true`, `maxSockets: Infinity` — supports ≥12 concurrent streams.
+- Client disconnects (`ERR_STREAM_PREMATURE_CLOSE`) are swallowed as non-fatal.
+
+**Ed25519 signing note:** The signing payload uses `request.url` as seen inside the Fastify plugin — this includes the `/proxy` prefix (e.g. `/proxy/rest/stream?id=...`). Callers must sign the full path, not just the suffix.
 
 ## Album art
 
@@ -62,16 +86,19 @@ See [authentication.md](authentication.md) for the full auth reference: JWT flow
 Contract: [federation-api.md](federation-api.md). Read before modifying `/federation/*`. Increment `FEDERATION_API_VERSION` in `hub/src/version.ts` on any breaking change and update the doc.
 
 - **Peers:** `peers.yaml`, loaded at boot, reloaded on SIGHUP via `hub/src/federation/peers.ts`. Entries whose `id` matches `POUTINE_INSTANCE_ID` are skipped, so all cluster nodes can share one file (used by both the federation test and the local cluster).
-- **`federatedFetch(peer, path, opts)`:** `path` must include the `/federation` prefix — the fetcher concatenates `peer.url + path`.
-- **`track_sources`** has `source_kind` (`'local'` | `'peer'`) and `peer_id`. Streaming and art routes branch on `source_kind`.
+- **`peers.yaml` schema**: each peer entry has `id`, `url` (hub base URL), `public_key`, and optional `proxy_url` (defaults to `url`). `proxy_url` is the base used to reach the peer's `/proxy/*` endpoint (for catalog sync and streaming).
+- **`federatedFetch(peer, path, opts)`:** `path` must include the appropriate prefix (`/federation` or `/proxy`) — the fetcher concatenates `peer.url + path`. For proxy calls, use a synthetic peer with `url = peer.proxyUrl`.
+- **`track_sources`** has `source_kind` (`'local'` | `'peer'`) and `peer_id`. Streaming and art routes branch on `source_kind`. TODO(phase-5): `source_kind` may become a Navidrome instance ID.
 - **`selectBestSource()`** (`hub/src/library/source-selection.ts`) scores sources by format quality → bitrate → local tie-break. Single decision point for stream routing.
-- **Cover-art encoding on import:** federation export emits raw `coverArtId` (no prefix); importing peers encode as `{peerId}:{coverArtId}` during `merge.ts`.
-- **Peer `track_sources.remote_id` is the peer's `unified_track_id`,** not its Navidrome song ID. When A syncs B, A's `track_sources.remote_id` holds B's unified ID. A calls `/federation/stream/<B-unified-id>`; B looks that up in its own `track_sources` to get the real Navidrome remote_id. Two-hop indirection is intentional.
+- **Catalog sync flow (Phase 2+):**
+  - `syncLocal` (`sync-local.ts`) reads the local Navidrome directly via `SubsonicClient`. TODO(phase-5): route through `/proxy/*` once the hub URL is in config.
+  - `syncPeer` (`sync-peer.ts`) reads a peer's Navidrome via the peer's `/proxy/rest/*` using Ed25519-signed requests (`createFederationFetcher`). The signing path includes `/proxy` prefix as seen by the peer's Fastify router.
+  - Both funnel through `readNavidromeViaProxy` (`sync-instance.ts`) which calls `getArtists` → `getArtist` (per-artist) → `getAlbum` (per-album), upserts into `instance_*` tables, and prunes stale rows on success.
 - **Track dedup across hubs** requires: (1) matching normalized title + `track_number` + duration (±3 s); AND (2) falling under the same `unified_release`, which requires their parent albums share normalized artist name, normalized album name, AND `track_count`. Mismatched `track_count` creates a separate release even within the same release group.
 - **`seedSyntheticInstances()`** is idempotent — called at startup and before every `syncAll()` to ensure instance rows exist for local Navidrome and each peer.
 - **`syncAll()`** (`sync.ts`) is the main entry: local Navidrome + all peers → merge. Returns `{ local: SyncResult, peers: SyncResult[] }` where `SyncResult.trackCount` (not `tracks`). The admin `POST /admin/sync` response shape matches.
-- **`syncPeer`** on success sets `status = 'online'` + `last_seen` + `last_synced_at` + `track_count`. On error: `status = 'offline'` only — never update `last_seen` (false "just now" in UI). On success, also prunes stale `instance_*` rows for the peer (tracks/albums/artists no longer present in the export) using temp-table NOT IN deletes — prevents stale accumulation across syncs.
-- **Federation export is local-only**: `GET /federation/library/export` only exports `unified_tracks` that have a local source (`source_kind = 'local'`), and sources are filtered the same way. This prevents fan-out re-export loops where hub A's tracks travel A→B→C→A.
+- **`syncPeer`** on success sets `status = 'online'` + `last_seen` + `last_synced_at` + `track_count`. On error: `status = 'offline'` only — never update `last_seen` (false "just now" in UI). On success, also prunes stale `instance_*` rows for the peer (tracks/albums/artists no longer returned by the peer's Navidrome) using temp-table NOT IN deletes — prevents stale accumulation across syncs.
+- **Catalogs may diverge between hubs** — each hub builds its own catalog by reading Navidrome instances directly. No fan-out re-export risk.
 - **`GET /admin/peers`** does live health checks: parallel `fetch` to each peer's `/api/health` with a 5 s `AbortController` timeout. `status` from live reachability; `lastSeen` from DB.
 - **`AutoSyncService`** (`hub/src/services/auto-sync.ts`) polls Navidrome every 30 s. When Navidrome's `lastScan` > `instances.last_synced_at` for `'local'`, runs `syncLocal` + `mergeLibraries`. Skips when already running (boolean lock) or when Navidrome is scanning. Wired via `onReady`/`onClose` in `server.ts`.
 
