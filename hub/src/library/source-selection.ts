@@ -2,8 +2,7 @@ export interface SelectableSource {
   remoteId: string;
   format: string | null;
   bitrate: number | null;
-  sourceKind: "local" | "peer";
-  peerId: string | null;
+  instanceId: string;
 }
 
 const FORMAT_QUALITY: Record<string, number> = {
@@ -38,7 +37,7 @@ function scoreSource(
   score += (source.bitrate ?? 0) / 10;
 
   // Small tie-break bonus for local sources to avoid unnecessary peer hops
-  if (source.sourceKind === "local") score += 5;
+  if (source.instanceId === "local") score += 5;
 
   return score;
 }

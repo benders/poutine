@@ -174,12 +174,9 @@ CREATE TABLE IF NOT EXISTS track_sources (
   unified_track_id TEXT NOT NULL REFERENCES unified_tracks(id) ON DELETE CASCADE,
   instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
   instance_track_id TEXT NOT NULL REFERENCES instance_tracks(id) ON DELETE CASCADE,
-  remote_id TEXT NOT NULL,            -- Subsonic track ID for streaming
   format TEXT,
   bitrate INTEGER,
   size INTEGER,
-  source_kind TEXT NOT NULL DEFAULT 'local', -- 'local' | 'peer'
-  peer_id TEXT,                       -- peer registry ID when source_kind = 'peer'
   UNIQUE(unified_track_id, instance_track_id)
 );
 

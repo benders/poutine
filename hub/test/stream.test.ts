@@ -425,11 +425,10 @@ describe("stream — peer source", () => {
     // Confirm A sees it as a peer source
     const source = appA.db
       .prepare(
-        "SELECT source_kind, peer_id FROM track_sources WHERE unified_track_id = ?",
+        "SELECT instance_id FROM track_sources WHERE unified_track_id = ?",
       )
-      .get(track.id) as { source_kind: string; peer_id: string } | undefined;
-    expect(source?.source_kind).toBe("peer");
-    expect(source?.peer_id).toBe("poutine-b");
+      .get(track.id) as { instance_id: string } | undefined;
+    expect(source?.instance_id).toBe("poutine-b");
 
     const res = await appA.inject({
       method: "GET",
@@ -543,8 +542,7 @@ async function buildSharedTrackSetup(opts: {
   const appA = await buildApp(configA);
   await appA.ready();
 
-  // Seed A's local library: MP3 @ 320 kbps (direct DB insert — local sync not via proxy yet)
-  // TODO(phase-5): replace with syncLocal() once local reads go through /proxy/*.
+  // Seed A's local library: MP3 @ 320 kbps via direct DB insert (local sync reads Navidrome directly).
   appA.db.prepare(
     `INSERT OR IGNORE INTO instance_artists
      (id, instance_id, remote_id, name, album_count)
@@ -616,10 +614,10 @@ describe("stream — identical track on local and peer → local source preferre
 
     const sources = setup.appA.db
       .prepare(
-        "SELECT source_kind FROM track_sources WHERE unified_track_id = ? ORDER BY source_kind",
+        "SELECT instance_id FROM track_sources WHERE unified_track_id = ? ORDER BY instance_id",
       )
-      .all(tracks[0].id) as { source_kind: string }[];
-    expect(sources.map((s) => s.source_kind)).toEqual(["local", "peer"]);
+      .all(tracks[0].id) as { instance_id: string }[];
+    expect(sources.map((s) => s.instance_id)).toEqual(["local", "poutine-b"]);
   });
 
   it("streams from local Navidrome (local tie-break beats equal-quality peer)", async () => {
@@ -663,13 +661,13 @@ describe("stream — peer has higher-quality recording → peer source preferred
 
     const sources = setup.appA.db
       .prepare(
-        "SELECT source_kind, format FROM track_sources WHERE unified_track_id = ? ORDER BY source_kind",
+        "SELECT instance_id, format FROM track_sources WHERE unified_track_id = ? ORDER BY instance_id",
       )
-      .all(tracks[0].id) as { source_kind: string; format: string }[];
-    expect(sources.map((s) => s.source_kind)).toEqual(["local", "peer"]);
+      .all(tracks[0].id) as { instance_id: string; format: string }[];
+    expect(sources.map((s) => s.instance_id)).toEqual(["local", "poutine-b"]);
 
-    const localSrc = sources.find((s) => s.source_kind === "local");
-    const peerSrc  = sources.find((s) => s.source_kind === "peer");
+    const localSrc = sources.find((s) => s.instance_id === "local");
+    const peerSrc  = sources.find((s) => s.instance_id === "poutine-b");
     expect(localSrc?.format).toBe("mp3");
     expect(peerSrc?.format).toBe("flac");
   });

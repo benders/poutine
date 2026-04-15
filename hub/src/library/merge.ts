@@ -321,8 +321,8 @@ export function mergeLibraries(db: Database.Database): void {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertTrackSource = db.prepare(`
-      INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, remote_id, format, bitrate, size, source_kind, peer_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, bitrate, size)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
     // Group tracks by release
@@ -379,18 +379,14 @@ export function mergeLibraries(db: Database.Database): void {
         );
 
         for (const track of group) {
-          const isLocal = (track.instance_id as string) === "local";
           insertTrackSource.run(
             crypto.randomUUID(),
             id,
             track.instance_id as string,
             track.id as string,
-            track.remote_id as string,
             track.format as string | null,
             track.bitrate as number | null,
             track.size as number | null,
-            isLocal ? "local" : "peer",
-            isLocal ? null : (track.instance_id as string),
           );
         }
 
@@ -417,18 +413,14 @@ export function mergeLibraries(db: Database.Database): void {
             durationWithinTolerance(existing.durationMs, durationMs, 3000)
           ) {
             // Add as additional source
-            const isLocalM = (track.instance_id as string) === "local";
             insertTrackSource.run(
               crypto.randomUUID(),
               existing.unifiedId,
               track.instance_id as string,
               track.id as string,
-              track.remote_id as string,
               track.format as string | null,
               track.bitrate as number | null,
               track.size as number | null,
-              isLocalM ? "local" : "peer",
-              isLocalM ? null : (track.instance_id as string),
             );
             matched = true;
             break;
@@ -453,18 +445,14 @@ export function mergeLibraries(db: Database.Database): void {
             track.genre as string | null,
           );
 
-          const isLocalU = (track.instance_id as string) === "local";
           insertTrackSource.run(
             crypto.randomUUID(),
             id,
             track.instance_id as string,
             track.id as string,
-            track.remote_id as string,
             track.format as string | null,
             track.bitrate as number | null,
             track.size as number | null,
-            isLocalU ? "local" : "peer",
-            isLocalU ? null : (track.instance_id as string),
           );
 
           createdTracks.push({

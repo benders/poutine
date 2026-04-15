@@ -332,7 +332,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         COUNT(DISTINCT ut.release_id)       AS album_count
       FROM track_sources ts
       JOIN unified_tracks ut ON ts.unified_track_id = ut.id
-      WHERE ts.peer_id = ?
+      WHERE ts.instance_id = ?
     `);
 
     return peers.map((peer, i) => {

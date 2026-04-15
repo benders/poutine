@@ -299,7 +299,7 @@ describe("sync-peer (via /proxy/*)", () => {
     expect(tracks.length).toBeGreaterThan(0);
   });
 
-  it("after mergeLibraries, track_sources has source_kind=peer and peer_id=poutine-b", async () => {
+  it("after mergeLibraries, track_sources are keyed by instance_id=poutine-b", async () => {
     const peerB = appA.peerRegistry.peers.get("poutine-b");
     await syncPeer(appA.db, peerB!, appA.federatedFetch, "alice");
 
@@ -307,13 +307,12 @@ describe("sync-peer (via /proxy/*)", () => {
 
     const peerSources = appA.db
       .prepare(
-        `SELECT * FROM track_sources WHERE source_kind = 'peer' AND peer_id = 'poutine-b'`,
+        `SELECT * FROM track_sources WHERE instance_id = 'poutine-b'`,
       )
-      .all() as Array<{ source_kind: string; peer_id: string }>;
+      .all() as Array<{ instance_id: string }>;
 
     expect(peerSources.length).toBeGreaterThan(0);
-    expect(peerSources[0].source_kind).toBe("peer");
-    expect(peerSources[0].peer_id).toBe("poutine-b");
+    expect(peerSources[0].instance_id).toBe("poutine-b");
   });
 
   it("second sync prunes stale tracks removed from peer Navidrome", async () => {

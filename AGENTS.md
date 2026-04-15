@@ -25,9 +25,10 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
    - Touching hub internals, conventions, or anything with a known gotcha: check `docs/hub-internals.md`.
    - Architectural changes: read `docs/system-architecture.md`.
 3. Write tests alongside code. Run `pnpm test` + `pnpm typecheck` before declaring done.
-4. Update documentation and check for any outdated or inconsistent information.
-5. Commit only when the user approves.
-6. Close the issue immediately after committing.
+4. After any DB migration (changes to `hub/src/db/client.ts` or `hub/src/db/schema.sql`): run `./update-schema.sh` to regenerate `docs/schema.sql` and include it in the commit.
+5. Update documentation and check for any outdated or inconsistent information.
+6. Commit only when the user approves.
+7. Close the issue immediately after committing.
 
 ## Documentation rules
 
@@ -47,4 +48,6 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 | `docs/authentication.md`             | **Auth reference** — JWT, Subsonic dual-auth, token refresh      |
 | `docs/federation-api.md`             | **Federation protocol contract** — read before `/federation/*`   |
 | `docs/hub-internals.md`              | Conventions, env vars, gotchas, lessons learned, Docker          |
+| `docs/schema.sql`                    | Live DB schema snapshot — regenerate with `./update-schema.sh`   |
 | `docs/system-architecture.md`        | Current system architecture                                      |
+| `update-schema.sh`                   | Dumps live DB schema to `docs/schema.sql`; pass `-p <project>`  |

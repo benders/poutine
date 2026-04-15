@@ -214,8 +214,6 @@ describe("multi-instance merge via proxy", () => {
       instance_id: string;
       format: string;
       bitrate: number;
-      source_kind: string;
-      peer_id: string | null;
     }>;
     expect(sources).toHaveLength(2);
 
@@ -224,16 +222,12 @@ describe("multi-instance merge via proxy", () => {
     expect(localSrc).toBeDefined();
     expect(localSrc?.format).toBe("mp3");
     expect(localSrc?.bitrate).toBe(320);
-    expect(localSrc?.source_kind).toBe("local");
-    expect(localSrc?.peer_id).toBeNull();
 
     // Peer source
     const peerSrc = sources.find((s) => s.instance_id === "peer-hub");
     expect(peerSrc).toBeDefined();
     expect(peerSrc?.format).toBe("flac");
     expect(peerSrc?.bitrate).toBe(1000);
-    expect(peerSrc?.source_kind).toBe("peer");
-    expect(peerSrc?.peer_id).toBe("peer-hub");
   });
 
   it("local-only instance results in one unified track with one local source", async () => {
@@ -244,11 +238,9 @@ describe("multi-instance merge via proxy", () => {
     expect(tracks).toHaveLength(1);
 
     const sources = db.prepare("SELECT * FROM track_sources").all() as Array<{
-      source_kind: string;
-      peer_id: string | null;
+      instance_id: string;
     }>;
     expect(sources).toHaveLength(1);
-    expect(sources[0].source_kind).toBe("local");
-    expect(sources[0].peer_id).toBeNull();
+    expect(sources[0].instance_id).toBe("local");
   });
 });
