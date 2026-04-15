@@ -217,4 +217,70 @@ export function updateCacheSettings(data: { artCacheMaxBytes?: number }) {
 export function clearArtCache() {
   return apiFetch("/admin/cache", { method: "DELETE" });
 }
+// Activity API
+
+export interface SyncOperation {
+  id: string;
+  type: "manual" | "auto";
+  scope: "local" | "peer";
+  scopeId: string | null;
+  status: "running" | "complete" | "failed";
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  artistCount: number | null;
+  albumCount: number | null;
+  trackCount: number | null;
+  errors: string[] | null;
+}
+
+export interface StreamOperation {
+  id: string;
+  username: string;
+  trackId: string;
+  trackTitle: string;
+  artistName: string;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  bytesTransferred: number;
+}
+
+export interface ActivitySummary {
+  activeStreams: number;
+  runningSyncs: number;
+  recentSyncCount: number;
+  recentStreamCount: number;
+  lastSync: SyncOperation | null;
+  lastStream: StreamOperation | null;
+}
+
+export function getRecentSyncOperations(limit = 100) {
+  return apiFetch<SyncOperation[]>(`/admin/activity/sync?limit=${limit}`);
+}
+
+export function getRunningSyncOperations() {
+  return apiFetch<SyncOperation[]>(`/admin/activity/sync/running`);
+}
+
+export function clearSyncHistory() {
+  return apiFetch<{ cleared: boolean }>(`/admin/activity/sync`, { method: "DELETE" });
+}
+
+export function getRecentStreamOperations(limit = 100) {
+  return apiFetch<StreamOperation[]>(`/admin/activity/streams?limit=${limit}`);
+}
+
+export function getActiveStreams() {
+  return apiFetch<StreamOperation[]>(`/admin/activity/streams/active`);
+}
+
+export function clearStreamHistory() {
+  return apiFetch<{ cleared: boolean }>(`/admin/activity/streams`, { method: "DELETE" });
+}
+
+export function getActivitySummary() {
+  return apiFetch<ActivitySummary>(`/admin/activity/summary`);
+}
+
 

@@ -3,6 +3,7 @@ import type { Config } from "../config.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { syncLocal } from "../library/sync-local.js";
 import { mergeLibraries } from "../library/merge.js";
+import { SyncOperationService } from "./sync-operations.js";
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -14,6 +15,7 @@ export class AutoSyncService {
     private readonly db: Database.Database,
     private readonly config: Config,
     private readonly log: { info: (msg: string) => void; error: (msg: string) => void },
+    private readonly syncOpService?: SyncOperationService,
   ) {}
 
   start(): void {
@@ -32,6 +34,8 @@ export class AutoSyncService {
   private async poll(): Promise<void> {
     if (this.running) return;
     this.running = true;
+
+    const operationId = this.syncOpService?.start("auto", "local") || null;
 
     try {
       const client = new SubsonicClient({
@@ -70,8 +74,14 @@ export class AutoSyncService {
         this.log.info(
           `AutoSync complete: ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks`,
         );
+        if (operationId && this.syncOpService) {
+          this.syncOpService.complete(operationId, result.artistCount, result.albumCount, result.trackCount, result.errors);
+        }
       } catch (err) {
         this.log.error(`AutoSync failed: ${String(err)}`);
+        if (operationId && this.syncOpService) {
+          this.syncOpService.fail(operationId, [`AutoSync failed: ${String(err)}`]);
+        }
       }
     } finally {
       this.running = false;

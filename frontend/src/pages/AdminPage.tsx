@@ -12,8 +12,14 @@ import {
   clearArtCache,
   getInstanceInfo,
   triggerNavidromeScan,
+  getActivitySummary,
+  getRecentSyncOperations,
+  getActiveStreams,
+  clearSyncHistory,
+  getRecentStreamOperations,
+  clearStreamHistory,
 } from "@/lib/api";
-import type { User, Peer, CacheStats } from "@/lib/api";
+import type { User, Peer, CacheStats, SyncOperation, StreamOperation, ActivitySummary } from "@/lib/api";
 import { formatTimeAgo } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import {
@@ -364,6 +370,16 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+function formatDuration(ms: number | null): string {
+  if (ms === null) return "—";
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
 function CacheSection() {
   const queryClient = useQueryClient();
   const { data: stats, isLoading } = useQuery({
@@ -472,6 +488,265 @@ function CacheSection() {
           {saveMutation.error instanceof Error ? saveMutation.error.message : "Failed to save settings"}
         </p>
       )}
+    </div>
+  );
+}
+
+function ActivitySection() {
+  const queryClient = useQueryClient();
+
+  const { data: summary, isLoading: summaryLoading } = useQuery({
+    queryKey: ["admin-activity-summary"],
+    queryFn: getActivitySummary,
+    refetchInterval: 10_000,
+  });
+
+  const { data: activeStreams, isLoading: streamsLoading } = useQuery({
+    queryKey: ["admin-active-streams"],
+    queryFn: getActiveStreams,
+    refetchInterval: 5_000,
+  });
+
+  const { data: recentSyncs, isLoading: syncsLoading } = useQuery({
+    queryKey: ["admin-recent-syncs"],
+    queryFn: () => getRecentSyncOperations(20),
+    refetchInterval: 15_000,
+  });
+
+  const { data: recentStreams, isLoading: recentStreamsLoading } = useQuery({
+    queryKey: ["admin-recent-streams"],
+    queryFn: () => getRecentStreamOperations(20),
+    refetchInterval: 10_000,
+  });
+
+  const clearSyncMutation = useMutation({
+    mutationFn: clearSyncHistory,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-recent-syncs"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-activity-summary"] });
+    },
+  });
+
+  const clearStreamMutation = useMutation({
+    mutationFn: clearStreamHistory,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-recent-streams"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-activity-summary"] });
+    },
+  });
+
+  if (summaryLoading) {
+    return (
+      <div className="bg-surface border border-border rounded-lg px-4 py-3">
+        <p className="text-sm text-text-muted">Loading activity data...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-4">
+      {/* Activity Summary */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4 text-text-muted" />
+          <span className="text-sm font-medium text-text-primary">Activity Summary</span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-surface-hover border border-border rounded-lg p-3">
+            <p className="text-xs text-text-muted mb-1">Active Streams</p>
+            <p className="text-lg font-semibold text-text-primary">{summary?.activeStreams ?? 0}</p>
+          </div>
+          <div className="bg-surface-hover border border-border rounded-lg p-3">
+            <p className="text-xs text-text-muted mb-1">Running Syncs</p>
+            <p className="text-lg font-semibold text-text-primary">{summary?.runningSyncs ?? 0}</p>
+          </div>
+          <div className="bg-surface-hover border border-border rounded-lg p-3">
+            <p className="text-xs text-text-muted mb-1">Recent Syncs</p>
+            <p className="text-lg font-semibold text-text-primary">{summary?.recentSyncCount ?? 0}</p>
+          </div>
+          <div className="bg-surface-hover border border-border rounded-lg p-3">
+            <p className="text-xs text-text-muted mb-1">Recent Streams</p>
+            <p className="text-lg font-semibold text-text-primary">{summary?.recentStreamCount ?? 0}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+          <div>
+            <p className="text-xs text-text-muted mb-0.5">Last Sync</p>
+            <p className="text-text-primary">
+              {summary?.lastSync ? formatTimeAgo(summary.lastSync.startedAt) : "Never"}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-text-muted mb-0.5">Last Stream</p>
+            <p className="text-text-primary">
+              {summary?.lastStream ? formatTimeAgo(summary.lastStream.startedAt) : "Never"}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="border-t border-border" />
+
+      {/* Currently Playing Streams */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Activity className="w-4 h-4 text-text-muted" />
+            <span className="text-sm font-medium text-text-primary">Currently Playing</span>
+          </div>
+          {activeStreams && activeStreams.length > 0 && (
+            <button
+              onClick={() => {
+                if (window.confirm("Clear all stream history?")) {
+                  clearStreamMutation.mutate();
+                }
+              }}
+              disabled={clearStreamMutation.isPending}
+              className="px-2 py-1 text-xs bg-surface border border-border hover:bg-error/10 hover:border-error/40 hover:text-error rounded transition-colors disabled:opacity-50"
+            >
+              {clearStreamMutation.isPending ? "Clearing..." : "Clear Streams"}
+            </button>
+          )}
+        </div>
+
+        {streamsLoading ? (
+          <p className="text-sm text-text-muted py-2">Loading streams...</p>
+        ) : activeStreams && activeStreams.length > 0 ? (
+          <div className="space-y-2">
+            {activeStreams.map((stream) => (
+              <div key={stream.id} className="bg-surface-hover border border-border rounded-lg p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary truncate">{stream.trackTitle}</p>
+                    <p className="text-xs text-text-muted truncate">{stream.artistName} • {stream.username}</p>
+                  </div>
+                  <span className="text-xs text-text-secondary shrink-0">
+                    {formatDuration(stream.durationMs)}
+                  </span>
+                </div>
+                <p className="text-xs text-text-muted mt-1">
+                  {formatBytes(stream.bytesTransferred)} transferred
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-text-muted py-2">No active streams</p>
+        )}
+      </div>
+
+      <div className="border-t border-border" />
+
+      {/* Sync Operations History */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <RefreshCw className="w-4 h-4 text-text-muted" />
+            <span className="text-sm font-medium text-text-primary">Sync History</span>
+          </div>
+          {recentSyncs && recentSyncs.length > 0 && (
+            <button
+              onClick={() => {
+                if (window.confirm("Clear sync history?")) {
+                  clearSyncMutation.mutate();
+                }
+              }}
+              disabled={clearSyncMutation.isPending}
+              className="px-2 py-1 text-xs bg-surface border border-border hover:bg-error/10 hover:border-error/40 hover:text-error rounded transition-colors disabled:opacity-50"
+            >
+              {clearSyncMutation.isPending ? "Clearing..." : "Clear History"}
+            </button>
+          )}
+        </div>
+
+        {syncsLoading ? (
+          <p className="text-sm text-text-muted py-2">Loading sync history...</p>
+        ) : recentSyncs && recentSyncs.length > 0 ? (
+          <div className="space-y-2">
+            {recentSyncs.slice(0, 10).map((sync) => {
+              const statusConfig =
+                sync.status === "complete"
+                  ? { class: "bg-success/10 text-success", label: "Complete" }
+                  : sync.status === "failed"
+                  ? { class: "bg-error/10 text-error", label: "Failed" }
+                  : { class: "bg-warning/10 text-warning", label: "Running" };
+
+              return (
+                <div key={sync.id} className="bg-surface-hover border border-border rounded-lg p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-text-primary">
+                          {sync.type === "manual" ? "Manual" : "Auto"} {sync.scope === "peer" ? `Peer: ${sync.scopeId}` : "Local"}
+                        </span>
+                        <span className={cn("inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium", statusConfig.class)}>
+                          {statusConfig.label}
+                        </span>
+                      </div>
+                      <p className="text-xs text-text-muted mt-1">
+                        Started {formatTimeAgo(sync.startedAt)}
+                      </p>
+                      {sync.artistCount !== null && (
+                        <p className="text-xs text-text-secondary mt-1">
+                          {sync.artistCount} artists, {sync.albumCount} albums, {sync.trackCount} tracks
+                        </p>
+                      )}
+                    </div>
+                    <span className="text-xs text-text-secondary shrink-0">
+                      {formatDuration(sync.durationMs)}
+                    </span>
+                  </div>
+                  {sync.errors && sync.errors.length > 0 && (
+                    <p className="text-xs text-error mt-2 truncate">{sync.errors[0]}</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-sm text-text-muted py-2">No sync history</p>
+        )}
+      </div>
+
+      <div className="border-t border-border" />
+
+      {/* Stream Operations History */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4 text-text-muted" />
+          <span className="text-sm font-medium text-text-primary">Stream History</span>
+        </div>
+
+        {recentStreamsLoading ? (
+          <p className="text-sm text-text-muted py-2">Loading stream history...</p>
+        ) : recentStreams && recentStreams.length > 0 ? (
+          <div className="space-y-2">
+            {recentStreams.slice(0, 10).map((stream) => (
+              <div key={stream.id} className="bg-surface-hover border border-border rounded-lg p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary truncate">{stream.trackTitle}</p>
+                    <p className="text-xs text-text-muted truncate">{stream.artistName} • {stream.username}</p>
+                    <p className="text-xs text-text-secondary mt-1">
+                      {formatBytes(stream.bytesTransferred)} transferred
+                    </p>
+                  </div>
+                  <span className="text-xs text-text-secondary shrink-0">
+                    {formatDuration(stream.durationMs)}
+                  </span>
+                </div>
+                <p className="text-xs text-text-muted mt-1">
+                  Started {formatTimeAgo(stream.startedAt)}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-text-muted py-2">No stream history</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -587,6 +862,12 @@ export function AdminPage() {
       <section>
         <h2 className="text-xl font-bold text-text-primary mb-4">Cache</h2>
         <CacheSection />
+      </section>
+
+      {/* Activity */}
+      <section>
+        <h2 className="text-xl font-bold text-text-primary mb-4">Activity</h2>
+        <ActivitySection />
       </section>
     </div>
   );

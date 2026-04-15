@@ -225,3 +225,38 @@ CREATE TABLE IF NOT EXISTS art_cache (
   cached_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_accessed TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ============================================================
+-- Activity Tracking: Sync Operations
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS sync_operations (
+  id TEXT PRIMARY KEY,              -- UUID
+  type TEXT NOT NULL,               -- 'manual' | 'auto'
+  scope TEXT NOT NULL,              -- 'local' | 'peer'
+  scope_id TEXT,                    -- peer id when scope = 'peer'
+  status TEXT NOT NULL,             -- 'running' | 'complete' | 'failed'
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT,
+  duration_ms INTEGER,              -- milliseconds
+  artist_count INTEGER DEFAULT 0,
+  album_count INTEGER DEFAULT 0,
+  track_count INTEGER DEFAULT 0,
+  errors TEXT                       -- JSON array of error strings
+);
+
+-- ============================================================
+-- Activity Tracking: Stream Operations
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS stream_operations (
+  id TEXT PRIMARY KEY,              -- UUID
+  username TEXT NOT NULL,           -- Subsonic username
+  track_id TEXT NOT NULL,           -- unified_tracks.id
+  track_title TEXT NOT NULL,
+  artist_name TEXT NOT NULL,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT,
+  duration_ms INTEGER,              -- playback duration in milliseconds
+  bytes_transferred INTEGER         -- bytes streamed
+);

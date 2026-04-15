@@ -12,7 +12,14 @@ import {
 import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { selectBestSource } from "../library/source-selection.js";
+import type { StreamTrackingService } from "../services/stream-tracking.js";
 
+// Extend Fastify app type for stream tracking
+declare module "fastify" {
+  interface FastifyInstance {
+    streamTracking: StreamTrackingService;
+  }
+}
 // ── Content-type helpers ──────────────────────────────────────────────────────
 
 const FORMAT_CONTENT_TYPE: Record<string, string> = {
@@ -750,94 +757,135 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
   // ── stream ──────────────────────────────────────────────────────────────────
 
-  async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
-    const q = request.query as Record<string, string>;
+async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
+  const q = request.query as Record<string, string>;
 
-    let trackId: string;
-    try {
-      trackId = decodeId(q.id ?? "", "t");
-    } catch {
-      sendBinaryError(reply, 400, "Invalid track ID");
-      return;
-    }
-
-    const rawSources = app.db
-      .prepare(
-        `SELECT ts.remote_id, ts.format, ts.bitrate, ts.source_kind, ts.peer_id
-        FROM track_sources ts
-        WHERE ts.unified_track_id = ?`,
-      )
-      .all(trackId) as TrackSourceRow[];
-
-    const best = selectBestSource(
-      rawSources.map((s) => ({
-        remoteId: s.remote_id,
-        format: s.format,
-        bitrate: s.bitrate,
-        sourceKind: s.source_kind,
-        peerId: s.peer_id,
-      })),
-      q.format,
-    );
-
-    if (!best) {
-      sendBinaryError(reply, 404, "Track not found");
-      return;
-    }
-
-    let response: Response;
-
-    if (best.sourceKind === "local") {
-      const client = new SubsonicClient({
-        url: app.config.navidromeUrl,
-        username: app.config.navidromeUsername,
-        password: app.config.navidromePassword,
-      });
-      try {
-        const streamParams: { format?: string; maxBitRate?: number } = {};
-        if (q.format) streamParams.format = q.format;
-        if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
-        response = await client.stream(best.remoteId, streamParams);
-      } catch {
-        sendBinaryError(reply, 502, "Stream error");
-        return;
-      }
-    } else {
-      // Peer routing
-      const peer = app.peerRegistry.peers.get(best.peerId!);
-      if (!peer) {
-        sendBinaryError(reply, 502, "Peer not available");
-        return;
-      }
-      try {
-        response = await app.federatedFetch(
-          peer,
-          `/federation/stream/${encodeURIComponent(best.remoteId)}`,
-          { asUser: request.subsonicUser.username },
-        );
-      } catch {
-        sendBinaryError(reply, 502, "Peer stream error");
-        return;
-      }
-    }
-
-    if (!response.body) {
-      sendBinaryError(reply, 502, "Empty response from upstream");
-      return;
-    }
-
-    const headers: Record<string, string> = {
-      "content-type": response.headers.get("content-type") || "audio/mpeg",
-    };
-    const contentLength = response.headers.get("content-length");
-    if (contentLength) headers["content-length"] = contentLength;
-
-    reply.raw.writeHead(response.status, headers);
-    const nodeStream = Readable.fromWeb(
-      response.body as import("node:stream/web").ReadableStream,
-    );
-    nodeStream.pipe(reply.raw);
+  let trackId: string;
+  try {
+    trackId = decodeId(q.id ?? "", "t");
+  } catch {
+    sendBinaryError(reply, 400, "Invalid track ID");
+    return;
   }
+
+  // Get track info for streaming
+  const trackRow = app.db
+    .prepare(
+      `SELECT ut.id, ut.title, ut.artist_id, ua.name AS artist_name, ut.duration_ms
+       FROM unified_tracks ut
+       JOIN unified_artists ua ON ua.id = ut.artist_id
+       WHERE ut.id = ?`,
+    )
+    .get(trackId) as { id: string; title: string; artist_name: string; duration_ms: number | null } | undefined;
+
+  // Start stream tracking
+  let streamOpId: string | undefined;
+  if (trackRow) {
+    streamOpId = app.streamTracking.start(
+      request.subsonicUser.username,
+      trackRow.id,
+      trackRow.title,
+      trackRow.artist_name,
+    );
+  }
+
+  const rawSources = app.db
+    .prepare(
+      `SELECT ts.remote_id, ts.format, ts.bitrate, ts.source_kind, ts.peer_id
+      FROM track_sources ts
+      WHERE ts.unified_track_id = ?`,
+    )
+    .all(trackId) as TrackSourceRow[];
+
+  const best = selectBestSource(
+    rawSources.map((s) => ({
+      remoteId: s.remote_id,
+      format: s.format,
+      bitrate: s.bitrate,
+      sourceKind: s.source_kind,
+      peerId: s.peer_id,
+    })),
+    q.format,
+  );
+
+  if (!best) {
+    sendBinaryError(reply, 404, "Track not found");
+    return;
+  }
+
+  let response: Response;
+  let bytesTransferred = 0;
+
+  if (best.sourceKind === "local") {
+    const client = new SubsonicClient({
+      url: app.config.navidromeUrl,
+      username: app.config.navidromeUsername,
+      password: app.config.navidromePassword,
+    });
+    try {
+      const streamParams: { format?: string; maxBitRate?: number } = {};
+      if (q.format) streamParams.format = q.format;
+      if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
+      response = await client.stream(best.remoteId, streamParams);
+    } catch {
+      sendBinaryError(reply, 502, "Stream error");
+      return;
+    }
+  } else {
+    // Peer routing
+    const peer = app.peerRegistry.peers.get(best.peerId!);
+    if (!peer) {
+      sendBinaryError(reply, 502, "Peer not available");
+      return;
+    }
+    try {
+      response = await app.federatedFetch(
+        peer,
+        `/federation/stream/${encodeURIComponent(best.remoteId)}`,
+        { asUser: request.subsonicUser.username },
+      );
+    } catch {
+      sendBinaryError(reply, 502, "Peer stream error");
+      return;
+    }
+  }
+
+  if (!response.body) {
+    sendBinaryError(reply, 502, "Empty response from upstream");
+    return;
+  }
+
+  const headers: Record<string, string> = {
+    "content-type": response.headers.get("content-type") || "audio/mpeg",
+  };
+  const contentLength = response.headers.get("content-length");
+  if (contentLength) headers["content-length"] = contentLength;
+
+  reply.raw.writeHead(response.status, headers);
+  const nodeStream = Readable.fromWeb(
+    response.body as import("node:stream/web").ReadableStream,
+  );
+  
+  // Track bytes transferred
+  nodeStream.on("data", (chunk) => {
+    bytesTransferred += chunk.length;
+  });
+  
+  // Finish tracking when stream ends or errors
+  nodeStream.on("end", () => {
+    if (streamOpId) {
+      app.streamTracking.finish(streamOpId, null, bytesTransferred);
+    }
+  });
+  
+  nodeStream.on("error", () => {
+    if (streamOpId) {
+      app.streamTracking.finish(streamOpId, null, bytesTransferred);
+    }
+  });
+  
+  nodeStream.pipe(reply.raw);
+}
 
   binaryRoute("/stream", handleStream);
   binaryRoute("/download", handleStream); // alias — clients use interchangeably

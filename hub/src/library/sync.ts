@@ -8,6 +8,8 @@ import { syncPeer } from "./sync-peer.js";
 import type { FederationFetcher } from "./sync-peer.js";
 import { mergeLibraries } from "./merge.js";
 import { seedSyntheticInstances } from "./seed-instances.js";
+import { SyncOperationService } from "../services/sync-operations.js";
+import type { SyncOperationType } from "../services/sync-operations.js";
 
 /** Minimal instance descriptor used by syncInstance. */
 export interface Instance {
@@ -273,17 +275,37 @@ export async function syncAll(
   peerRegistry: PeerRegistry,
   federatedFetch: FederationFetcher,
   ownerUsername: string,
+  syncOpService?: SyncOperationService,
+  operationType: SyncOperationType = "manual",
 ): Promise<{ local: SyncResult; peers: SyncResult[] }> {
+  const operationId = syncOpService?.start(operationType, "local") || null;
+  let localResult: SyncResult;
+  
   // Ensure synthetic instance rows exist (idempotent)
   seedSyntheticInstances(db, config, peerRegistry);
 
-  const local = await syncLocal(db, config);
+  try {
+    localResult = await syncLocal(db, config);
+  } catch (err) {
+    if (operationId) {
+      syncOpService!.fail(operationId, [`Local sync failed: ${String(err)}`]);
+    }
+    throw err;
+  }
 
   const peers: SyncResult[] = [];
   for (const peer of peerRegistry.peers.values()) {
+    let peerOperationId: string | null = null;
+    if (syncOpService) {
+      peerOperationId = syncOpService.start(operationType, "peer", peer.id);
+    }
+    
     try {
       const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername);
       peers.push(peerResult);
+      if (peerOperationId && syncOpService) {
+        syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);
+      }
     } catch (err) {
       peers.push({
         instanceId: peer.id,
@@ -292,11 +314,18 @@ export async function syncAll(
         trackCount: 0,
         errors: [`Peer sync failed: ${String(err)}`],
       });
+      if (peerOperationId && syncOpService) {
+        syncOpService.fail(peerOperationId, [`Peer sync failed: ${String(err)}`]);
+      }
     }
   }
 
   mergeLibraries(db);
 
-  return { local, peers };
+  if (operationId && syncOpService) {
+    syncOpService.complete(operationId, localResult.artistCount, localResult.albumCount, localResult.trackCount, localResult.errors);
+  }
+
+  return { local: localResult, peers };
 }
 
