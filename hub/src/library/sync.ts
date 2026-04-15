@@ -152,7 +152,7 @@ export async function syncInstance(
   // Flatten artist indexes
   const allArtists = artistIndexes.flatMap((idx) => idx.artist ?? []);
 
-  // Step 2: For each artist, fetch albums
+  // Step 2: For each artist, fetch albums and artist info
   interface ArtistAlbumPair {
     artistId: string;
     artistRemoteId: string;
@@ -167,6 +167,22 @@ export async function syncInstance(
           const artistDetail = await client.getArtist(artist.id);
           const artistCompositeId = `${instance.id}:${artist.id}`;
 
+          // Fetch artist info for image URLs from Last.fm/MusicBrainz
+          let artistImageUrl: string | null = null;
+          try {
+            const artistInfo = await client.getArtistInfo(artist.id);
+            // Prefer large image URL, fall back to medium, then small
+            artistImageUrl = 
+              artistInfo.largeImageUrl ?? 
+              artistInfo.mediumImageUrl ?? 
+              artistInfo.smallImageUrl ?? 
+              null;
+          } catch {
+            // getArtistInfo2 may not be supported by all servers
+            // Fall back to coverArt ID from getArtist
+            artistImageUrl = artistDetail.coverArt ?? artist.coverArt ?? null;
+          }
+
           upsertArtist.run(
             artistCompositeId,
             instance.id,
@@ -174,7 +190,7 @@ export async function syncInstance(
             artistDetail.name ?? artist.name,
             artistDetail.musicBrainzId ?? artist.musicBrainzId ?? null,
             artistDetail.albumCount ?? artist.albumCount ?? 0,
-            artistDetail.coverArt ?? artist.coverArt ?? null,
+            artistImageUrl,
           );
           result.artistCount++;
 

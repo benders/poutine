@@ -319,8 +319,8 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const artist = app.db
-      .prepare("SELECT id, name FROM unified_artists WHERE id = ?")
-      .get(artistId) as { id: string; name: string } | undefined;
+      .prepare("SELECT id, name, image_url FROM unified_artists WHERE id = ?")
+      .get(artistId) as { id: string; name: string; image_url: string | null } | undefined;
 
     if (!artist) {
       sendSubsonicError(reply, 70, "Artist not found", q);
@@ -347,7 +347,57 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         id: encodeId("ar", artist.id),
         name: artist.name,
         albumCount: albums.length,
+        coverArt: artist.image_url ?? undefined,
         album: albums.map(buildAlbum),
+      },
+    });
+  });
+
+// ── getArtistInfo2 ────────────────────────────────────────────────────────
+
+  route("/getArtistInfo2", async (request, reply) => {
+    const q = request.query as Record<string, string>;
+
+    let artistId: string;
+    try {
+      artistId = decodeId(q.id ?? "", "ar");
+    } catch {
+      sendSubsonicError(reply, 70, "Artist not found", q);
+      return;
+    }
+
+    const artistRow = app.db
+      .prepare("SELECT id, name, musicbrainz_id, image_url FROM unified_artists WHERE id = ?")
+      .get(artistId) as { id: string; name: string; musicbrainz_id: string | null; image_url: string | null } | undefined;
+
+    if (!artistRow) {
+      sendSubsonicError(reply, 70, "Artist not found", q);
+      return;
+    }
+
+    // Get image URL from unified_artists (may be Last.fm URL or encoded cover art ID)
+    let imageUrl: string | undefined;
+    if (artistRow.image_url) {
+      if (artistRow.image_url.startsWith("https://")) {
+        // It's a Last.fm URL, return directly
+        imageUrl = artistRow.image_url;
+      } else {
+        // It's an encoded cover art ID, return as-is for client to resolve
+        imageUrl = artistRow.image_url;
+      }
+    }
+
+    sendSubsonicOk(reply, q, {
+      artistInfo2: {
+        artist: {
+          id: encodeId("ar", artistRow.id),
+          name: artistRow.name,
+          musicBrainzId: artistRow.musicbrainz_id ?? undefined,
+        },
+        smallImageUrl: imageUrl,
+        mediumImageUrl: imageUrl,
+        largeImageUrl: imageUrl,
+        musicBrainzId: artistRow.musicbrainz_id ?? undefined,
       },
     });
   });
