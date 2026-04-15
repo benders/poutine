@@ -794,7 +794,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         password: app.config.navidromePassword,
       });
       try {
-        const streamParams: { format?: string; maxBitRate?: number } = {};
+        const streamParams: { format?: string; maxBitRate?: number; estimateContentLength?: boolean } = {
+          estimateContentLength: true,
+        };
         if (q.format) streamParams.format = q.format;
         if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
         response = await client.stream(best.remoteId, streamParams);
