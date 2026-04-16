@@ -92,6 +92,9 @@ export function ReleaseGroupPage() {
             <tr className="border-b border-border text-xs text-text-muted uppercase tracking-wider">
               <th className="py-2.5 px-4 text-left w-12">#</th>
               <th className="py-2.5 px-4 text-left">Title</th>
+              <th className="py-2.5 px-4 text-left w-20">Format</th>
+              <th className="py-2.5 px-4 text-left w-24">Bitrate</th>
+              <th className="py-2.5 px-4 text-left w-40">Source</th>
               <th className="py-2.5 px-4 text-right w-24">Duration</th>
               <th className="py-2.5 px-4 text-right w-20"></th>
             </tr>
@@ -137,6 +140,15 @@ function SongRow({
       </td>
       <td className="py-2.5 px-4">
         <p className="text-sm text-text-primary">{song.title}</p>
+      </td>
+      <td className="py-2.5 px-4 text-sm text-text-muted">
+        {song.suffix && <span className="uppercase">{song.suffix}</span>}
+      </td>
+      <td className="py-2.5 px-4 text-sm text-text-muted">
+        {song.bitRate ? `${song.bitRate} kbps` : ""}
+      </td>
+      <td className="py-2.5 px-4 text-sm text-text-muted">
+        {song.sourceInstance || ""}
       </td>
       <td className="py-2.5 px-4 text-sm text-text-muted text-right">
         {formatDuration(song.durationMs)}
