@@ -1,8 +1,9 @@
 import type { FastifyReply } from "fastify";
+import { APP_VERSION } from "../version.js";
 
 export const SUBSONIC_VERSION = "1.16.1";
 export const SERVER_TYPE = "poutine";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = APP_VERSION;
 
 export type Format = "json" | "xml";
 

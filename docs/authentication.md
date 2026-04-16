@@ -75,7 +75,7 @@ The body token goes into `localStorage` for `Authorization` header use. The cook
 Subsonic endpoints accept two auth methods, tried in order:
 
 1. **JWT** — same extraction as admin (header → cookie → query param). If a valid JWT is found, the user is authenticated. If the JWT is invalid/expired, falls through to method 2.
-2. **Legacy Subsonic params** — `u` (username) + `p` (password) query parameters. Supports `enc:<hex>` prefix for hex-encoded passwords (Subsonic client convention). Verifies against the stored Argon2id hash.
+2. **Legacy Subsonic params** — `u` (username) + `p` (password) query parameters. Supports `enc:<hex>` prefix for hex-encoded passwords (Subsonic client convention). Verifies against the stored Argon2id hash. Note: `u+t+s` (MD5 token auth) is NOT supported — see [opensubsonic.md](opensubsonic.md).
 
 This dual auth lets the Poutine SPA use its JWT seamlessly while third-party Subsonic clients (DSub, Symfonium, etc.) work with username + password.
 
