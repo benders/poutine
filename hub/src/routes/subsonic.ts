@@ -796,7 +796,7 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
 
   const rawSources = app.db
     .prepare(
-      `SELECT ts.remote_id, ts.format, ts.bitrate, ts.source_kind, ts.peer_id
+      `SELECT ts.instance_track_id, ts.format, ts.bitrate, ts.instance_id
       FROM track_sources ts
       WHERE ts.unified_track_id = ?`,
     )
@@ -804,11 +804,11 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
 
   const best = selectBestSource(
     rawSources.map((s) => ({
-      remoteId: s.remote_id,
+      remoteId: s.instance_track_id,
       format: s.format,
       bitrate: s.bitrate,
-      sourceKind: s.source_kind,
-      peerId: s.peer_id,
+      sourceKind: s.instance_id === "local" ? "local" : "peer",
+      peerId: s.instance_id !== "local" ? s.instance_id : undefined,
     })),
     q.format,
   );
