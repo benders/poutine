@@ -765,9 +765,6 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
   const q = request.query as Record<string, string>;
 
-async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
-  const q = request.query as Record<string, string>;
-
   let trackId: string;
   try {
     trackId = decodeId(q.id ?? "", "t");
