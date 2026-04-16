@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, RouteHandlerMethod } from "fastify";
 import { Readable } from "node:stream";
 import { readFileSync } from "node:fs";
+import type { Peer } from "../federation/peers.js";
 import { requireSubsonicAuth, requireSubsonicAuthBinary } from "../auth/subsonic-auth.js";
 import {
   sendSubsonicOk,
@@ -82,7 +83,7 @@ interface GenreRow {
 }
 
 interface TrackSourceRow {
-  remote_id: string;
+  instance_track_id: string;
   format: string | null;
   bitrate: number | null;
   instance_id: string;
@@ -807,8 +808,7 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
       remoteId: s.instance_track_id,
       format: s.format,
       bitrate: s.bitrate,
-      sourceKind: s.instance_id === "local" ? "local" : "peer",
-      peerId: s.instance_id !== "local" ? s.instance_id : undefined,
+      instanceId: s.instance_id,
     })),
     q.format,
   );
@@ -821,7 +821,7 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
   let response: Response;
   let bytesTransferred = 0;
 
-  if (best.sourceKind === "local") {
+  if (best.instanceId === "local") {
     const client = new SubsonicClient({
       url: app.config.navidromeUrl,
       username: app.config.navidromeUsername,
@@ -838,7 +838,7 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
     }
   } else {
     // Peer routing
-    const peer = app.peerRegistry.peers.get(best.peerId!);
+    const peer = app.peerRegistry.peers.get(best.instanceId);
     if (!peer) {
       sendBinaryError(reply, 502, "Peer not available");
       return;

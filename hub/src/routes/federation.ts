@@ -31,7 +31,7 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
 
   // Stream audio from local Navidrome to peer
   app.get("/stream/:id", async (request, reply) => {
-    const trackId = request.params.id as string;
+    const { id: trackId } = request.params as { id: string };
     
     // Build the stream URL for local Navidrome
     const targetBase = config.navidromeUrl.replace(/\/+$/, "");
