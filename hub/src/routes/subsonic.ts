@@ -82,13 +82,6 @@ interface GenreRow {
   songCount: number;
 }
 
-interface TrackSourceRow {
-  instance_track_id: string;
-  format: string | null;
-  bitrate: number | null;
-  instance_id: string;
-}
-
 // ── Source selection subquery ─────────────────────────────────────────────────
 // Returns the best source for a track (highest bitrate). Used for format,
 // bitrate, size, and instance_name. Copy-pasted 3x in getAlbum, getSong,
@@ -797,15 +790,21 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
 
   const rawSources = app.db
     .prepare(
-      `SELECT ts.instance_track_id, ts.format, ts.bitrate, ts.instance_id
+      `SELECT ts.format, ts.bitrate, ts.instance_id, it.remote_id
       FROM track_sources ts
+      JOIN instance_tracks it ON it.id = ts.instance_track_id
       WHERE ts.unified_track_id = ?`,
     )
-    .all(trackId) as TrackSourceRow[];
+    .all(trackId) as Array<{
+      format: string | null;
+      bitrate: number | null;
+      instance_id: string;
+      remote_id: string;
+    }>;
 
   const best = selectBestSource(
     rawSources.map((s) => ({
-      remoteId: s.instance_track_id,
+      remoteId: s.remote_id,
       format: s.format,
       bitrate: s.bitrate,
       instanceId: s.instance_id,
