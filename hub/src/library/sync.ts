@@ -301,20 +301,18 @@ export async function syncAll(
 
   const peers: SyncResult[] = [];
   for (const peer of peerRegistry.peers.values()) {
-<<<<<<< HEAD
     let peerOperationId: string | null = null;
     if (syncOpService) {
       peerOperationId = syncOpService.start(operationType, "peer", peer.id);
     }
     
     try {
-      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername, { log });
+      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername);
       peers.push(peerResult);
       if (peerOperationId && syncOpService) {
         syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);
       }
     } catch (err) {
-      log?.error(`syncAll: peer ${peer.id} threw — ${String(err)}`);
       const syncMessage = `Peer sync failed: ${String(err)}`;
       db.prepare(
         "UPDATE instances SET status = 'offline', last_sync_ok = 0, last_sync_message = ?, updated_at = datetime('now') WHERE id = ?",
