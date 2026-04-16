@@ -50,11 +50,14 @@ export function PlayerBar() {
     ? streamUrl(currentTrack.id, "opus", 192)
     : null;
 
-  // Reset error/retry state when track changes
+  // Reset error/retry state and seed duration from metadata when track changes
   useEffect(() => {
     retryAttemptedRef.current = false;
     setStreamError(null);
-  }, [currentStreamUrl]);
+    if (currentTrack) {
+      setDuration(currentTrack.durationMs / 1000);
+    }
+  }, [currentStreamUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Update audio element when track changes
   useEffect(() => {
@@ -92,7 +95,7 @@ export function PlayerBar() {
   }, [setCurrentTime]);
 
   const handleLoadedMetadata = useCallback(() => {
-    if (audioRef.current) {
+    if (audioRef.current && isFinite(audioRef.current.duration)) {
       setDuration(audioRef.current.duration);
     }
   }, [setDuration]);

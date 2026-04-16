@@ -86,8 +86,7 @@ interface TrackSourceRow {
   remote_id: string;
   format: string | null;
   bitrate: number | null;
-  source_kind: "local" | "peer";
-  peer_id: string | null;
+  instance_id: string;
 }
 
 // ── Source selection subquery ─────────────────────────────────────────────────
@@ -692,18 +691,22 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     let response: Response;
 
     if (instanceId !== "local") {
-      // Peer art routing
+      // Peer art routing via /proxy/rest/getCoverArt — Ed25519-signed request to the peer's proxy.
+      // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
       const peer = app.peerRegistry.peers.get(instanceId);
       if (!peer) {
         sendBinaryError(reply, 404, "Peer not found");
         return;
       }
-      // Peers serve their own art as local:<coverArtId>
-      const peerEncoded = `local:${coverArtId}`;
       try {
+        const artParams = new URLSearchParams({ id: coverArtId });
+        if (size) artParams.set("size", size);
+        const signingPath = `/proxy/rest/getCoverArt?${artParams.toString()}`;
+        // Substitute peer.proxyUrl as the base so the HTTP request goes to the correct host.
+        const proxyPeer: Peer = { ...peer, url: peer.proxyUrl };
         response = await app.federatedFetch(
-          peer,
-          `/federation/art/${encodeURIComponent(peerEncoded)}`,
+          proxyPeer,
+          signingPath,
           { asUser: request.subsonicUser.username },
         );
       } catch {
@@ -711,7 +714,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         return;
       }
     } else {
-      // Local Navidrome
+      // Local Navidrome art.
+      // TODO(phase-5): route through /proxy/rest/getCoverArt (internal inject) once local
+      // reads are uniformly proxied. SubsonicClient hits Navidrome directly for now.
       const client = new SubsonicClient({
         url: app.config.navidromeUrl,
         username: app.config.navidromeUsername,
@@ -762,12 +767,108 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
   const q = request.query as Record<string, string>;
 
+<<<<<<< HEAD
   let trackId: string;
   try {
     trackId = decodeId(q.id ?? "", "t");
   } catch {
     sendBinaryError(reply, 400, "Invalid track ID");
     return;
+=======
+    let trackId: string;
+    try {
+      trackId = decodeId(q.id ?? "", "t");
+    } catch {
+      sendBinaryError(reply, 400, "Invalid track ID");
+      return;
+    }
+
+    const rawSources = app.db
+      .prepare(
+        `SELECT it.remote_id, ts.format, ts.bitrate, ts.instance_id
+        FROM track_sources ts
+        JOIN instance_tracks it ON ts.instance_track_id = it.id
+        WHERE ts.unified_track_id = ?`,
+      )
+      .all(trackId) as TrackSourceRow[];
+
+    const best = selectBestSource(
+      rawSources.map((s) => ({
+        remoteId: s.remote_id,
+        format: s.format,
+        bitrate: s.bitrate,
+        instanceId: s.instance_id,
+      })),
+      q.format,
+    );
+
+    if (!best) {
+      sendBinaryError(reply, 404, "Track not found");
+      return;
+    }
+
+    let response: Response;
+
+    if (best.instanceId === "local") {
+      const client = new SubsonicClient({
+        url: app.config.navidromeUrl,
+        username: app.config.navidromeUsername,
+        password: app.config.navidromePassword,
+      });
+      try {
+        const streamParams: { format?: string; maxBitRate?: number; estimateContentLength?: boolean } = {
+          estimateContentLength: true,
+        };
+        if (q.format) streamParams.format = q.format;
+        if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
+        response = await client.stream(best.remoteId, streamParams);
+      } catch {
+        sendBinaryError(reply, 502, "Stream error");
+        return;
+      }
+    } else {
+      // Peer routing via /proxy/rest/stream — Ed25519-signed request to the peer's proxy endpoint.
+      // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
+      const peer = app.peerRegistry.peers.get(best.instanceId);
+      if (!peer) {
+        sendBinaryError(reply, 502, "Peer not available");
+        return;
+      }
+      try {
+        const proxyParams = new URLSearchParams({ id: best.remoteId });
+        if (q.format) proxyParams.set("format", q.format);
+        if (q.maxBitRate) proxyParams.set("maxBitRate", q.maxBitRate);
+        const signingPath = `/proxy/rest/stream?${proxyParams.toString()}`;
+        // Substitute peer.proxyUrl as the base so the HTTP request goes to the correct host.
+        const proxyPeer: Peer = { ...peer, url: peer.proxyUrl };
+        response = await app.federatedFetch(
+          proxyPeer,
+          signingPath,
+          { asUser: request.subsonicUser.username },
+        );
+      } catch {
+        sendBinaryError(reply, 502, "Peer stream error");
+        return;
+      }
+    }
+
+    if (!response.body) {
+      sendBinaryError(reply, 502, "Empty response from upstream");
+      return;
+    }
+
+    const headers: Record<string, string> = {
+      "content-type": response.headers.get("content-type") || "audio/mpeg",
+    };
+    const contentLength = response.headers.get("content-length");
+    if (contentLength) headers["content-length"] = contentLength;
+
+    reply.raw.writeHead(response.status, headers);
+    const nodeStream = Readable.fromWeb(
+      response.body as import("node:stream/web").ReadableStream,
+    );
+    nodeStream.pipe(reply.raw);
+>>>>>>> upstream/main
   }
 
   // Get track info for streaming

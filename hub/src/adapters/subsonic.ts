@@ -313,6 +313,7 @@ export class SubsonicClient {
       format?: string;
       maxBitRate?: number;
       timeOffset?: number;
+      estimateContentLength?: boolean;
     },
   ): Promise<Response> {
     const extra: Record<string, string> = { id };
@@ -321,6 +322,8 @@ export class SubsonicClient {
       extra.maxBitRate = String(params.maxBitRate);
     if (params?.timeOffset !== undefined)
       extra.timeOffset = String(params.timeOffset);
+    if (params?.estimateContentLength)
+      extra.estimateContentLength = "true";
 
     return this.rawRequest("/rest/stream", extra);
   }

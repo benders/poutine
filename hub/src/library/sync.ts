@@ -6,6 +6,7 @@ import type { PeerRegistry } from "../federation/peers.js";
 import { syncLocal } from "./sync-local.js";
 import { syncPeer } from "./sync-peer.js";
 import type { FederationFetcher } from "./sync-peer.js";
+import type { SyncLogger } from "./sync-instance.js";
 import { mergeLibraries } from "./merge.js";
 import { seedSyntheticInstances } from "./seed-instances.js";
 import { SyncOperationService } from "../services/sync-operations.js";
@@ -90,6 +91,7 @@ export async function syncInstance(
     errors: [],
   };
 
+  const startMs = Date.now();
   const sem = new Semaphore(config.concurrency);
 
   // Prepared statements for upserts
@@ -258,9 +260,13 @@ export async function syncInstance(
   );
 
   // Update instance sync timestamp, track count, and mark online
+  const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(1);
+  const syncMessage = result.errors.length === 0
+    ? `Synced ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks in ${elapsedSec} seconds`
+    : result.errors.join("; ");
   db.prepare(
-    "UPDATE instances SET status = 'online', last_seen = datetime('now'), last_synced_at = datetime('now'), track_count = ?, updated_at = datetime('now') WHERE id = ?",
-  ).run(result.trackCount, instance.id);
+    "UPDATE instances SET status = 'online', last_seen = datetime('now'), last_synced_at = datetime('now'), last_sync_ok = 1, last_sync_message = ?, track_count = ?, updated_at = datetime('now') WHERE id = ?",
+  ).run(syncMessage, result.trackCount, instance.id);
 
   return result;
 }
@@ -307,12 +313,17 @@ export async function syncAll(
         syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);
       }
     } catch (err) {
+      log?.error(`syncAll: peer ${peer.id} threw — ${String(err)}`);
+      const syncMessage = `Peer sync failed: ${String(err)}`;
+      db.prepare(
+        "UPDATE instances SET status = 'offline', last_sync_ok = 0, last_sync_message = ?, updated_at = datetime('now') WHERE id = ?",
+      ).run(syncMessage, peer.id);
       peers.push({
         instanceId: peer.id,
         artistCount: 0,
         albumCount: 0,
         trackCount: 0,
-        errors: [`Peer sync failed: ${String(err)}`],
+        errors: [syncMessage],
       });
       if (peerOperationId && syncOpService) {
         syncOpService.fail(peerOperationId, [`Peer sync failed: ${String(err)}`]);

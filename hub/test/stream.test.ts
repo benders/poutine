@@ -36,15 +36,130 @@ const FAKE_AUDIO = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00])
 const FAKE_AUDIO_LOCAL = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0xaa, 0xbb, 0xcc, 0xdd]);
 const FAKE_AUDIO_PEER  = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x11, 0x22, 0x33, 0x44]);
 
-function startFakeNavidrome(): Promise<{ server: http.Server; port: number }> {
-  return new Promise((resolve) => {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, {
-        "content-type": "audio/mpeg",
-        "content-length": String(FAKE_AUDIO.length),
+// ── Subsonic JSON helpers ─────────────────────────────────────────────────────
+
+function subsonicOk(data: Record<string, unknown>): string {
+  return JSON.stringify({
+    "subsonic-response": {
+      status: "ok",
+      version: "1.16.1",
+      ...data,
+    },
+  });
+}
+
+/**
+ * Build a fake Navidrome that handles Subsonic catalog API calls (getArtists,
+ * getArtist, getAlbum) with a single artist/album/song, and serves audio bytes
+ * for all other requests (stream, getCoverArt, etc.).
+ *
+ * trackData controls the song metadata returned by getAlbum (format/bitrate).
+ * audioPayload is what gets served for stream requests.
+ */
+function buildFakeNavidromeHandler(opts: {
+  trackId?: string;
+  albumId?: string;
+  artistId?: string;
+  format?: string;
+  bitrate?: number;
+  audioPayload?: Buffer;
+  audioContentType?: string;
+}): http.RequestListener {
+  const {
+    trackId = "trk-1",
+    albumId = "alb-1",
+    artistId = "art-1",
+    format = "mp3",
+    bitrate = 320,
+    audioPayload = FAKE_AUDIO,
+    audioContentType = "audio/mpeg",
+  } = opts;
+
+  return (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
+
+    if (path.includes("getArtists")) {
+      const body = subsonicOk({
+        artists: {
+          index: [
+            {
+              name: "S",
+              artist: [{ id: artistId, name: "Shared Artist", albumCount: 1 }],
+            },
+          ],
+        },
       });
-      res.end(FAKE_AUDIO);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(body);
+      return;
+    }
+
+    if (path.includes("getArtist")) {
+      const body = subsonicOk({
+        artist: {
+          id: artistId,
+          name: "Shared Artist",
+          albumCount: 1,
+          album: [{ id: albumId, name: "Shared Album", songCount: 1, duration: 200 }],
+        },
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(body);
+      return;
+    }
+
+    if (path.includes("getAlbum")) {
+      const body = subsonicOk({
+        album: {
+          id: albumId,
+          name: "Shared Album",
+          artist: "Shared Artist",
+          artistId,
+          songCount: 1,
+          duration: 200,
+          song: [
+            {
+              id: trackId,
+              title: "Shared Track",
+              artist: "Shared Artist",
+              track: 1,
+              duration: 200,
+              bitRate: bitrate,
+              suffix: format,
+            },
+          ],
+        },
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(body);
+      return;
+    }
+
+    // All other requests (stream, getCoverArt, ping, etc.) → audio bytes
+    res.writeHead(200, {
+      "content-type": audioContentType,
+      "content-length": String(audioPayload.length),
     });
+    res.end(audioPayload);
+  };
+}
+
+function startFakeNavidrome(opts: {
+  format?: string;
+  bitrate?: number;
+  audioPayload?: Buffer;
+  audioContentType?: string;
+} = {}): Promise<{ server: http.Server; port: number }> {
+  return new Promise((resolve) => {
+    const server = http.createServer(
+      buildFakeNavidromeHandler({
+        audioPayload: opts.audioPayload ?? FAKE_AUDIO,
+        audioContentType: opts.audioContentType ?? "audio/mpeg",
+        format: opts.format ?? "mp3",
+        bitrate: opts.bitrate ?? 320,
+      }),
+    );
     server.listen(0, "127.0.0.1", () => {
       resolve({ server, port: (server.address() as AddressInfo).port });
     });
@@ -217,8 +332,13 @@ describe("stream — peer source", () => {
   let peersYamlB: string;
 
   beforeEach(async () => {
-    // Start fake Navidrome (serves B's audio)
-    ({ server: navidrome, port: navidromePort } = await startFakeNavidrome());
+    // Start fake Navidrome B — responds to Subsonic JSON catalog API + audio stream
+    ({ server: navidrome, port: navidromePort } = await startFakeNavidrome({
+      format: "flac",
+      bitrate: 1000,
+      audioPayload: FAKE_AUDIO,
+      audioContentType: "audio/mpeg",
+    }));
 
     keyPathA = tmpPath("key-a.pem");
     keyPathB = tmpPath("key-b.pem");
@@ -277,31 +397,7 @@ describe("stream — peer source", () => {
     appA = await buildApp(configA);
     await appA.ready();
 
-    // Seed B's library and merge it so B has a real unified track + local source
-    appB.db
-      .prepare(
-        `INSERT OR IGNORE INTO instance_artists
-         (id, instance_id, remote_id, name, album_count)
-         VALUES ('local:art-1', 'local', 'art-1', 'Remote Artist', 1)`,
-      )
-      .run();
-    appB.db
-      .prepare(
-        `INSERT OR IGNORE INTO instance_albums
-         (id, instance_id, remote_id, name, artist_id, artist_name, track_count, cover_art_id)
-         VALUES ('local:alb-1', 'local', 'alb-1', 'Remote Album', 'local:art-1', 'Remote Artist', 1, NULL)`,
-      )
-      .run();
-    appB.db
-      .prepare(
-        `INSERT OR IGNORE INTO instance_tracks
-         (id, instance_id, remote_id, album_id, title, artist_name, track_number, duration_ms, format, bitrate)
-         VALUES ('local:trk-1', 'local', 'trk-1', 'local:alb-1', 'Remote Track', 'Remote Artist', 1, 200000, 'flac', 1000)`,
-      )
-      .run();
-    mergeLibraries(appB.db);
-
-    // A syncs B, then merges — this gives A a peer track_source pointing to B
+    // A syncs B via /proxy/* — reads catalog from B's fake Navidrome, then merges
     const peerB = appA.peerRegistry.peers.get("poutine-b");
     await syncPeer(appA.db, peerB!, appA.federatedFetch, "tester");
     mergeLibraries(appA.db);
@@ -329,11 +425,10 @@ describe("stream — peer source", () => {
     // Confirm A sees it as a peer source
     const source = appA.db
       .prepare(
-        "SELECT source_kind, peer_id FROM track_sources WHERE unified_track_id = ?",
+        "SELECT instance_id FROM track_sources WHERE unified_track_id = ?",
       )
-      .get(track.id) as { source_kind: string; peer_id: string } | undefined;
-    expect(source?.source_kind).toBe("peer");
-    expect(source?.peer_id).toBe("poutine-b");
+      .get(track.id) as { instance_id: string } | undefined;
+    expect(source?.instance_id).toBe("poutine-b");
 
     const res = await appA.inject({
       method: "GET",
@@ -373,25 +468,27 @@ async function buildSharedTrackSetup(opts: {
   peersYamlA: string;
   peersYamlB: string;
 }> {
-  // Fake Navidrome A — always serves local audio as audio/mpeg
-  const navA = http.createServer((_req, res) => {
-    res.writeHead(200, {
-      "content-type": "audio/mpeg",
-      "content-length": String(FAKE_AUDIO_LOCAL.length),
-    });
-    res.end(FAKE_AUDIO_LOCAL);
-  });
+  // Fake Navidrome A — serves local audio as audio/mpeg + Subsonic JSON for catalog
+  const navA = http.createServer(
+    buildFakeNavidromeHandler({
+      audioPayload: FAKE_AUDIO_LOCAL,
+      audioContentType: "audio/mpeg",
+      format: "mp3",
+      bitrate: 320,
+    }),
+  );
   await new Promise<void>((resolve) => navA.listen(0, "127.0.0.1", () => resolve()));
   const navAPort = (navA.address() as AddressInfo).port;
 
-  // Fake Navidrome B — serves peer audio with the caller-specified content-type
-  const navB = http.createServer((_req, res) => {
-    res.writeHead(200, {
-      "content-type": opts.bContentType,
-      "content-length": String(FAKE_AUDIO_PEER.length),
-    });
-    res.end(FAKE_AUDIO_PEER);
-  });
+  // Fake Navidrome B — serves peer audio + Subsonic JSON for catalog
+  const navB = http.createServer(
+    buildFakeNavidromeHandler({
+      audioPayload: FAKE_AUDIO_PEER,
+      audioContentType: opts.bContentType,
+      format: opts.bFormat,
+      bitrate: opts.bBitrate,
+    }),
+  );
   await new Promise<void>((resolve) => navB.listen(0, "127.0.0.1", () => resolve()));
   const navBPort = (navB.address() as AddressInfo).port;
 
@@ -445,7 +542,7 @@ async function buildSharedTrackSetup(opts: {
   const appA = await buildApp(configA);
   await appA.ready();
 
-  // Seed A's local library: MP3 @ 320 kbps
+  // Seed A's local library: MP3 @ 320 kbps via direct DB insert (local sync reads Navidrome directly).
   appA.db.prepare(
     `INSERT OR IGNORE INTO instance_artists
      (id, instance_id, remote_id, name, album_count)
@@ -462,25 +559,8 @@ async function buildSharedTrackSetup(opts: {
      VALUES ('local:trk-1', 'local', 'trk-1', 'local:alb-1', 'Shared Track', 'Shared Artist', 1, 200000, 'mp3', 320)`,
   ).run();
 
-  // Seed B's local library: same track, caller-specified quality
-  appB.db.prepare(
-    `INSERT OR IGNORE INTO instance_artists
-     (id, instance_id, remote_id, name, album_count)
-     VALUES ('local:art-1', 'local', 'art-1', 'Shared Artist', 1)`,
-  ).run();
-  appB.db.prepare(
-    `INSERT OR IGNORE INTO instance_albums
-     (id, instance_id, remote_id, name, artist_id, artist_name, track_count, cover_art_id)
-     VALUES ('local:alb-1', 'local', 'alb-1', 'Shared Album', 'local:art-1', 'Shared Artist', 1, NULL)`,
-  ).run();
-  appB.db.prepare(
-    `INSERT OR IGNORE INTO instance_tracks
-     (id, instance_id, remote_id, album_id, title, artist_name, track_number, duration_ms, format, bitrate)
-     VALUES (?, 'local', 'trk-1', 'local:alb-1', 'Shared Track', 'Shared Artist', 1, 200000, ?, ?)`,
-  ).run("local:trk-1", opts.bFormat, opts.bBitrate);
-  mergeLibraries(appB.db);
-
-  // A syncs B → imports B's track as a peer source, then merges
+  // A syncs B → reads B's catalog via /proxy/rest/* (fake navB responds to Subsonic JSON queries)
+  // This populates A's instance_* tables with poutine-b rows, then merges into unified_*.
   const peerB = appA.peerRegistry.peers.get("poutine-b");
   await syncPeer(appA.db, peerB!, appA.federatedFetch, "tester");
   mergeLibraries(appA.db);
@@ -534,10 +614,10 @@ describe("stream — identical track on local and peer → local source preferre
 
     const sources = setup.appA.db
       .prepare(
-        "SELECT source_kind FROM track_sources WHERE unified_track_id = ? ORDER BY source_kind",
+        "SELECT instance_id FROM track_sources WHERE unified_track_id = ? ORDER BY instance_id",
       )
-      .all(tracks[0].id) as { source_kind: string }[];
-    expect(sources.map((s) => s.source_kind)).toEqual(["local", "peer"]);
+      .all(tracks[0].id) as { instance_id: string }[];
+    expect(sources.map((s) => s.instance_id)).toEqual(["local", "poutine-b"]);
   });
 
   it("streams from local Navidrome (local tie-break beats equal-quality peer)", async () => {
@@ -581,13 +661,13 @@ describe("stream — peer has higher-quality recording → peer source preferred
 
     const sources = setup.appA.db
       .prepare(
-        "SELECT source_kind, format FROM track_sources WHERE unified_track_id = ? ORDER BY source_kind",
+        "SELECT instance_id, format FROM track_sources WHERE unified_track_id = ? ORDER BY instance_id",
       )
-      .all(tracks[0].id) as { source_kind: string; format: string }[];
-    expect(sources.map((s) => s.source_kind)).toEqual(["local", "peer"]);
+      .all(tracks[0].id) as { instance_id: string; format: string }[];
+    expect(sources.map((s) => s.instance_id)).toEqual(["local", "poutine-b"]);
 
-    const localSrc = sources.find((s) => s.source_kind === "local");
-    const peerSrc  = sources.find((s) => s.source_kind === "peer");
+    const localSrc = sources.find((s) => s.instance_id === "local");
+    const peerSrc  = sources.find((s) => s.instance_id === "poutine-b");
     expect(localSrc?.format).toBe("mp3");
     expect(peerSrc?.format).toBe("flac");
   });

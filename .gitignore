@@ -7,6 +7,9 @@ peers.yaml
 *.db
 *.db-wal
 *.db-shm
+*.pem
+*.data.json
+artists.json
 coverage/
 .turbo/
 .claude/
