@@ -12,15 +12,13 @@
 # Generate this instance's keypair by starting Poutine once — it will create
 # POUTINE_PRIVATE_KEY_PATH if missing and log the matching public key.
 
-# Short, stable identifier for THIS instance. Must match POUTINE_INSTANCE_ID
-# in .env.
-instance_id: "poutine-example"
-
-peers: []
-#   - id: "poutine-bob"
-#     url: "https://music.bob.example"
+peers:
+#   - id: poutine-bob
+#     url: https://music.bob.example
+#     # proxy_url: https://music.bob.example  # optional; defaults to url
 #     public_key: "ed25519:BASE64PUBLICKEY=="
 #
-#   - id: "poutine-carol"
-#     url: "https://music.carol.example"
+#   - id: poutine-carol
+#     url: https://music.carol.example
+#     # proxy_url: https://music.carol.example  # optional; defaults to url
 #     public_key: "ed25519:BASE64PUBLICKEY=="
