@@ -1,6 +1,6 @@
 # Poutine Federation API
 
-Peer-to-peer protocol used by Poutine instances to share library metadata and proxy audio streams. All federation endpoints require Ed25519 request signing.
+Peer-to-peer protocol used by Poutine instances for hub authentication and future federation surfaces. All federation endpoints require Ed25519 request signing.
 
 ---
 
@@ -11,8 +11,6 @@ Two version identifiers are carried on every federation response:
 | Header                | Type    | Description                                                                       |
 |-----------------------|---------|-----------------------------------------------------------------------------------|
 | `Poutine-Api-Version` | Integer | Protocol version. Incremented on breaking changes to request/response contracts.  |
-
-The protocol version is also embedded in `/library/export` response bodies as `apiVersion`.
 
 All outgoing HTTP requests from the hub carry:
 
@@ -26,8 +24,8 @@ Peers report both versions through `/api/health`, which `GET /admin/peers` reads
 
 | Field                              | Value            |
 |------------------------------------|------------------|
-| Protocol (`Poutine-Api-Version`)   | `2`              |
-| Application (`User-Agent`)         | `Poutine/0.1.0`  |
+| Protocol (`Poutine-Api-Version`)   | `3`              |
+| Application (`User-Agent`)         | `Poutine/0.2.0`  |
 
 ---
 
@@ -71,146 +69,24 @@ All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header i
 
 ## Endpoints
 
-### GET /federation/library/export
+**v3 has no content endpoints under `/federation/*`.**
 
-Exports the instance's local library as paginated JSON. Importing peers call this to sync metadata.
-
-**Query parameters**
-
-| Parameter | Default | Max    | Description                                            |
-|-----------|---------|--------|--------------------------------------------------------|
-| `limit`   | `500`   | `2000` | Tracks per page                                        |
-| `offset`  | `0`     | —      | Zero-based track offset                                |
-| `since`   | —       | —      | Reserved for incremental sync (not yet implemented)    |
-
-**Response `200 OK`**
-
-```json
-{
-  "instanceId": "poutine-alice",
-  "apiVersion": 1,
-  "page": {
-    "limit": 500,
-    "offset": 0,
-    "total": 1234
-  },
-  "artists": [
-    {
-      "id": "<uuid>",
-      "name": "Artist Name",
-      "musicbrainzId": "<mbid or null>",
-      "imageUrl": "<url or null>"
-    }
-  ],
-  "releaseGroups": [
-    {
-      "id": "<uuid>",
-      "name": "Album Title",
-      "artistId": "<uuid>",
-      "musicbrainzId": "<mbid or null>",
-      "year": 2001,
-      "genre": "Rock",
-      "coverArtId": "<navidrome cover art id or null>"
-    }
-  ],
-  "releases": [
-    {
-      "id": "<uuid>",
-      "releaseGroupId": "<uuid>",
-      "name": "Album Title",
-      "musicbrainzId": "<mbid or null>",
-      "edition": null,
-      "trackCount": 12
-    }
-  ],
-  "tracks": [
-    {
-      "id": "<uuid>",
-      "releaseId": "<uuid>",
-      "artistId": "<uuid>",
-      "title": "Track Title",
-      "musicbrainzId": "<mbid or null>",
-      "trackNumber": 1,
-      "discNumber": 1,
-      "durationMs": 245000,
-      "genre": "Rock",
-      "sources": [
-        {
-          "remoteId": "<navidrome song id>",
-          "format": "flac",
-          "bitrate": 900,
-          "size": 38000000
-        }
-      ]
-    }
-  ]
-}
-```
-
-**Notes**
-
-- `coverArtId` in `releaseGroups` is the raw Navidrome cover art ID — **no peer prefix**. Importing peers must encode it as `{peerId}:{coverArtId}` before storing or serving it.
-- `sources` contains only local sources. Peer-imported sources are never re-exported to prevent fan-out loops.
-- Pagination is over tracks. `artists`, `releaseGroups`, and `releases` contain only rows referenced by the current page of tracks.
-
----
-
-### GET /federation/stream/:trackId
-
-Proxies audio from the local Navidrome for the given unified track ID.
-
-**Path parameters**
-
-| Parameter | Description                                       |
-|-----------|---------------------------------------------------|
-| `trackId` | The sender's `unified_track_id` (no `t` prefix)   |
-
-**Response `200 OK`**
-
-Raw audio bytes. `Content-Type` and `Content-Length` are forwarded from the upstream Navidrome response.
-
-**Error responses**
-
-| Status | Condition                                           |
-|--------|-----------------------------------------------------|
-| `404`  | Track not found or has no local source              |
-| `502`  | Upstream Navidrome stream error or empty response   |
-
----
-
-### GET /federation/art/:encodedId
-
-Serves local cover art. Fetches from Navidrome and caches on disk.
-
-**Path parameters**
-
-| Parameter   | Description                                                                            |
-|-------------|----------------------------------------------------------------------------------------|
-| `encodedId` | Cover art ID in `{instanceId}:{coverArtId}` format. `instanceId` must be `"local"`.    |
-
-**Query parameters**
-
-| Parameter | Description                          |
-|-----------|--------------------------------------|
-| `size`    | Optional thumbnail width in pixels   |
-
-**Response `200 OK`**
-
-Raw image bytes. `Content-Type` is forwarded from Navidrome. `Cache-Control: public, max-age=2592000` is set. `X-Cache: HIT` or `X-Cache: MISS` indicates whether the disk cache was used.
-
-**Error responses**
-
-| Status | Condition                                              |
-|--------|--------------------------------------------------------|
-| `404`  | `encodedId` has no `:` separator                       |
-| `404`  | `instanceId` is not `"local"`                          |
-| `502`  | Upstream Navidrome art fetch error or empty response   |
+Content (audio streams, cover art) and library metadata now travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
 
 ---
 
 ## Changelog
 
-### Version 2 (current)
+### Version 3 (current)
+
+- **Removed** `GET /federation/library/export` — library metadata sync is superseded by the `/proxy/*` tier.
+- **Removed** `GET /federation/stream/:trackId` — audio proxying now handled by `/proxy/*`.
+- **Removed** `GET /federation/art/:encodedId` — cover art proxying now handled by `/proxy/*`.
+- Ed25519 signing scheme, `Poutine-Api-Version` response header, and peer registry (`peers.yaml`) are all retained and reused by `/proxy/*`.
+
+**Rationale:** The old federation content routes created a tight coupling between the exporting hub's Navidrome and the importing peer. The `/proxy/*` architecture (issue #49) decouples content delivery from library metadata, allows token-scoped access, and removes fan-out re-export risk. See issue #49 for full design rationale.
+
+### Version 2
 
 - **`/library/export`**: Only locally-sourced tracks are exported. Peer-imported tracks are excluded to prevent fan-out re-export loops. The `total` field in `page` and the tracks array reflect this filtered set. Sources are also filtered to `source_kind = 'local'` only.
 
@@ -230,6 +106,7 @@ Initial protocol version.
 ## Implementation notes
 
 - **Do not modify federation routes without updating this document and incrementing `FEDERATION_API_VERSION`** in `hub/src/version.ts`.
-- Contract tests live in `hub/test/federation-routes.test.ts`.
+- Ed25519 signing is exercised in `hub/test/federation-signing.test.ts` and `hub/test/proxy.test.ts`.
 - Signing helpers: `hub/src/federation/signing.ts`, `hub/src/federation/sign-request.ts`.
+- Peer auth middleware: `hub/src/federation/peer-auth.ts`.
 - Peer registry: `hub/src/federation/peers.ts` (loaded from `peers.yaml`, reloaded on SIGHUP).

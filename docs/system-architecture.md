@@ -11,6 +11,7 @@ Every participant runs their own hub. Each hub is a single Docker Compose stack 
 │  Poutine Hub (one container)             │
 │    ├─ React SPA (static files)           │
 │    ├─ Subsonic API     /rest/*           │
+│    ├─ Proxy tier       /proxy/*          │
 │    ├─ Federation API   /federation/*     │
 │    ├─ Admin API        /admin/*          │
 │    └─ SQLite (data + art cache)          │
@@ -39,8 +40,8 @@ Fastify + better-sqlite3. Four concerns:
 | Concern            | Responsibility                                                                                                     |
 |--------------------|---------------------------------------------------------------------------------------------------------------------|
 | Client API         | Serve the SPA and the Subsonic `/rest/*` surface over a unified library view                                        |
-| Sync + merge       | Pull from local Navidrome (`syncLocal`) and each peer's `/federation/library/export`; merge into unified tables; dedup across instances |
-| Stream / art proxy | Route stream and cover-art requests to the correct source (local Navidrome vs. peer federation)                     |
+| Sync + merge       | Pull from local Navidrome (`syncLocal`) and each peer's Navidrome via `/proxy/rest/*`; merge into unified tables; dedup across instances |
+| Stream / art proxy | Route stream and cover-art requests to the correct source (local Navidrome via `/proxy/*`, or peer Navidrome via peer's `/proxy/*`) |
 | Admin              | Owner-only management: sync trigger, peer list, cache stats, instance identity                                      |
 
 Engineering details (directory layout, service classes, env vars) live in [hub-internals.md](hub-internals.md).
@@ -51,22 +52,21 @@ Per-hub private music server. Bundled in Docker Compose, reachable only over the
 
 ## Federation model
 
-Hubs are peers listed in each other's `peers.yaml`, authenticated by Ed25519 public keys. Every `/federation/*` request is signed by the sender. Peer-to-peer means:
+Hubs are peers listed in each other's `peers.yaml`, authenticated by Ed25519 public keys. Every `/federation/*` (and `/proxy/*`) request is signed by the sender. Peer-to-peer means:
 
 - No central registry or directory.
 - Small, trusted networks (4–12 participants).
 - Each hub has a stable instance ID and a long-lived Ed25519 keypair.
-- Adding a peer is a two-sided manual config change (both hubs edit their `peers.yaml`).
+- Adding a peer is a two-sided manual config change (both hubs edit their `peers.yaml`, exchanging public keys and reachable `proxy_url`s).
 
-The federation surface has exactly three routes:
+The `/federation/*` surface carries only peer identity/auth in v3. Content (audio streams, cover art) and catalog metadata travel through `/proxy/*`:
 
-| Route                             | Purpose                                                        |
-|-----------------------------------|----------------------------------------------------------------|
-| `GET /federation/library/export`  | Paginated library dump. Importing peers call this to sync.     |
-| `GET /federation/stream/:trackId` | Audio proxy for a local track, by the peer's unified track ID. |
-| `GET /federation/art/:encodedId`  | Cover-art proxy (disk-cached) for local art.                   |
+| Route              | Purpose                                                                                   |
+|--------------------|-------------------------------------------------------------------------------------------|
+| `/federation/*`    | Peer identity and signing only — no content endpoints in v3 (see [federation-api.md](federation-api.md)) |
+| `/proxy/rest/*`    | Authenticated transparent proxy to local Navidrome — used by both local clients and peers for catalog sync and streaming |
 
-Contract details (headers, signing payload, error codes, pagination): [federation-api.md](federation-api.md).
+Contract details (headers, signing payload, error codes): [federation-api.md](federation-api.md). `/proxy/*` auth modes: [hub-internals.md#proxy](hub-internals.md#proxy).
 
 ## Data model
 
@@ -78,10 +78,10 @@ instance_albums     ─┼─ merge.ts ─> unified_artists
 instance_tracks     ─┘              unified_release_groups
                                     unified_releases
                                     unified_tracks
-                                    track_sources   (source_kind = 'local' | 'peer')
+                                    track_sources   (keyed by instance_id)
 ```
 
-`track_sources` is the branching point for streaming: each row records where a copy of a unified track physically lives (local Navidrome or a specific peer). `selectBestSource()` scores sources by format quality → bitrate → local tie-break. Deduplication rules, encoding conventions, and the two-hop remote-id indirection used for peer streams are documented in [hub-internals.md#federation](hub-internals.md#federation).
+`track_sources` is the branching point for streaming: each row records which instance (local or peer) holds a copy of a unified track. `instance_id = 'local'` means the bundled Navidrome; a peer's instance ID means that peer's Navidrome. `selectBestSource()` scores sources by format quality → bitrate → local tie-break. Deduplication rules and encoding conventions are documented in [hub-internals.md#federation](hub-internals.md#federation).
 
 ## Play flow (source selection)
 
@@ -89,10 +89,10 @@ instance_tracks     ─┘              unified_release_groups
 1. Client POSTs play for unified track ID <uuid>
 2. Hub looks up track_sources for the unified track
 3. selectBestSource picks the winning source
-4. If source_kind = 'local':
-     proxy /rest/stream from the bundled Navidrome
-   If source_kind = 'peer':
-     sign & GET /federation/stream/<peer-unified-id> on the chosen peer
+4. If source.instance_id === 'local':
+     proxy /proxy/rest/stream from the bundled Navidrome (JWT auth)
+   If source.instance_id === <peer-id>:
+     sign & GET /proxy/rest/stream on the chosen peer's proxy_url (Ed25519 auth)
 5. Response is piped to the client (no buffering in the hub)
 ```
 
@@ -104,11 +104,12 @@ Transcoding happens on whichever Navidrome owns the bytes, never on the hub.
 |-----------------|----------------------------------------------------------------------|
 | User passwords  | Argon2id                                                             |
 | Session tokens  | JWT: 15 min access (cookie + header) + 7 d refresh (cookie, path-scoped) |
-| Peer auth       | Ed25519 signature on every `/federation/*` request                   |
+| Peer auth       | Ed25519 signature on every `/federation/*` and `/proxy/*` request    |
+| Proxy auth      | Unified: Ed25519 (peers) → JWT (SPA) → Subsonic u+p (3rd-party clients) |
 | Navidrome auth  | Env-var creds, never in DB; internal network only                    |
 | Transport       | HTTPS required in prod for peer-to-peer reachability                 |
 
-Flow details: [hub-internals.md#auth-flow](hub-internals.md#auth-flow).
+Flow details: [authentication.md](authentication.md). `/proxy/*` auth detail: [hub-internals.md#proxy](hub-internals.md#proxy).
 
 ## Scale envelope
 

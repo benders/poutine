@@ -129,6 +129,8 @@ export interface Peer {
   publicKey: string;
   status: string;
   lastSeen: string | null;
+  lastSyncOk: boolean | null;
+  lastSyncMessage: string | null;
   trackCount: number;
   artistCount: number;
   albumCount: number;
@@ -146,6 +148,8 @@ export interface InstanceInfo {
     trackCount: number;
     lastSynced: string | null;
     lastSeen: string | null;
+    lastSyncOk: boolean | null;
+    lastSyncMessage: string | null;
   };
 }
 

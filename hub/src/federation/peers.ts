@@ -5,7 +5,8 @@ import type { KeyObject } from "node:crypto";
 
 export interface Peer {
   id: string;
-  url: string; // base URL, no trailing slash
+  url: string;      // hub base URL, no trailing slash
+  proxyUrl: string; // base URL for /proxy/* calls (defaults to url)
   publicKey: KeyObject;
   publicKeySpec: string; // original "ed25519:..." string for logging
 }
@@ -20,6 +21,7 @@ interface PeersYaml {
   peers?: Array<{
     id?: string;
     url?: string;
+    proxy_url?: string; // optional; defaults to url
     public_key?: string;
   }>;
 }
@@ -78,9 +80,15 @@ function parseYamlFile(
         continue;
       }
 
+      const hubUrl = entry.url.trim().replace(/\/+$/, "");
+      const proxyUrl = (typeof entry.proxy_url === "string" && entry.proxy_url.trim())
+        ? entry.proxy_url.trim().replace(/\/+$/, "")
+        : hubUrl;
+
       peers.set(peerId, {
         id: peerId,
-        url: entry.url.trim().replace(/\/+$/, ""),
+        url: hubUrl,
+        proxyUrl,
         publicKey,
         publicKeySpec: entry.public_key,
       });

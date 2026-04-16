@@ -85,8 +85,7 @@ interface TrackSourceRow {
   remote_id: string;
   format: string | null;
   bitrate: number | null;
-  source_kind: "local" | "peer";
-  peer_id: string | null;
+  instance_id: string;
 }
 
 // ── Source selection subquery ─────────────────────────────────────────────────
@@ -690,18 +689,22 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     let response: Response;
 
     if (instanceId !== "local") {
-      // Peer art routing
+      // Peer art routing via /proxy/rest/getCoverArt — Ed25519-signed request to the peer's proxy.
+      // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
       const peer = app.peerRegistry.peers.get(instanceId);
       if (!peer) {
         sendBinaryError(reply, 404, "Peer not found");
         return;
       }
-      // Peers serve their own art as local:<coverArtId>
-      const peerEncoded = `local:${coverArtId}`;
       try {
+        const artParams = new URLSearchParams({ id: coverArtId });
+        if (size) artParams.set("size", size);
+        const signingPath = `/proxy/rest/getCoverArt?${artParams.toString()}`;
+        // Substitute peer.proxyUrl as the base so the HTTP request goes to the correct host.
+        const proxyPeer: Peer = { ...peer, url: peer.proxyUrl };
         response = await app.federatedFetch(
-          peer,
-          `/federation/art/${encodeURIComponent(peerEncoded)}`,
+          proxyPeer,
+          signingPath,
           { asUser: request.subsonicUser.username },
         );
       } catch {
@@ -709,7 +712,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         return;
       }
     } else {
-      // Local Navidrome
+      // Local Navidrome art.
+      // TODO(phase-5): route through /proxy/rest/getCoverArt (internal inject) once local
+      // reads are uniformly proxied. SubsonicClient hits Navidrome directly for now.
       const client = new SubsonicClient({
         url: app.config.navidromeUrl,
         username: app.config.navidromeUsername,
@@ -756,6 +761,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ── stream ──────────────────────────────────────────────────────────────────
+
+async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
+  const q = request.query as Record<string, string>;
 
 async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
   const q = request.query as Record<string, string>;

@@ -1,14 +1,4 @@
--- Poutine Hub Database Schema
--- SQLite with WAL mode for concurrent reads
-
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
--- ============================================================
--- Authentication & Users
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE users (
   id TEXT PRIMARY KEY,                -- UUID
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,        -- Argon2id
@@ -16,12 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
--- ============================================================
--- Federation: Instance Registry
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS instances (
+CREATE TABLE instances (
   id TEXT PRIMARY KEY,                -- UUID
   name TEXT NOT NULL,                 -- Human-readable label
   url TEXT NOT NULL UNIQUE,           -- Base URL of the Navidrome instance
@@ -38,12 +23,7 @@ CREATE TABLE IF NOT EXISTS instances (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
--- ============================================================
--- Raw Instance Data (per-instance mirror)
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS instance_artists (
+CREATE TABLE instance_artists (
   id TEXT PRIMARY KEY,                -- composite: instanceId:remoteId
   instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
   remote_id TEXT NOT NULL,            -- Artist ID on the remote instance
@@ -53,8 +33,7 @@ CREATE TABLE IF NOT EXISTS instance_artists (
   image_url TEXT,
   UNIQUE(instance_id, remote_id)
 );
-
-CREATE TABLE IF NOT EXISTS instance_albums (
+CREATE TABLE instance_albums (
   id TEXT PRIMARY KEY,                -- composite: instanceId:remoteId
   instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
   remote_id TEXT NOT NULL,            -- Album ID on the remote instance
@@ -71,8 +50,7 @@ CREATE TABLE IF NOT EXISTS instance_albums (
   created_at TEXT,
   UNIQUE(instance_id, remote_id)
 );
-
-CREATE TABLE IF NOT EXISTS instance_tracks (
+CREATE TABLE instance_tracks (
   id TEXT PRIMARY KEY,                -- composite: instanceId:remoteId
   instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
   remote_id TEXT NOT NULL,            -- Track ID on the remote instance
@@ -90,12 +68,7 @@ CREATE TABLE IF NOT EXISTS instance_tracks (
   genre TEXT,
   UNIQUE(instance_id, remote_id)
 );
-
--- ============================================================
--- Unified / Merged Library
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS unified_artists (
+CREATE TABLE unified_artists (
   id TEXT PRIMARY KEY,                -- UUID
   name TEXT NOT NULL,
   name_normalized TEXT NOT NULL,      -- Lowercased, stripped for matching
@@ -104,18 +77,15 @@ CREATE TABLE IF NOT EXISTS unified_artists (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE INDEX IF NOT EXISTS idx_unified_artists_normalized ON unified_artists(name_normalized);
-CREATE INDEX IF NOT EXISTS idx_unified_artists_mbid ON unified_artists(musicbrainz_id);
-
-CREATE TABLE IF NOT EXISTS unified_artist_sources (
+CREATE INDEX idx_unified_artists_normalized ON unified_artists(name_normalized);
+CREATE INDEX idx_unified_artists_mbid ON unified_artists(musicbrainz_id);
+CREATE TABLE unified_artist_sources (
   unified_artist_id TEXT NOT NULL REFERENCES unified_artists(id) ON DELETE CASCADE,
   instance_artist_id TEXT NOT NULL REFERENCES instance_artists(id) ON DELETE CASCADE,
   instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
   PRIMARY KEY (unified_artist_id, instance_artist_id)
 );
-
-CREATE TABLE IF NOT EXISTS unified_release_groups (
+CREATE TABLE unified_release_groups (
   id TEXT PRIMARY KEY,                -- UUID
   name TEXT NOT NULL,
   name_normalized TEXT NOT NULL,
@@ -127,12 +97,10 @@ CREATE TABLE IF NOT EXISTS unified_release_groups (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE INDEX IF NOT EXISTS idx_unified_rg_artist ON unified_release_groups(artist_id);
-CREATE INDEX IF NOT EXISTS idx_unified_rg_mbid ON unified_release_groups(musicbrainz_id);
-CREATE INDEX IF NOT EXISTS idx_unified_rg_normalized ON unified_release_groups(name_normalized);
-
-CREATE TABLE IF NOT EXISTS unified_releases (
+CREATE INDEX idx_unified_rg_artist ON unified_release_groups(artist_id);
+CREATE INDEX idx_unified_rg_mbid ON unified_release_groups(musicbrainz_id);
+CREATE INDEX idx_unified_rg_normalized ON unified_release_groups(name_normalized);
+CREATE TABLE unified_releases (
   id TEXT PRIMARY KEY,                -- UUID
   release_group_id TEXT NOT NULL REFERENCES unified_release_groups(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -141,17 +109,14 @@ CREATE TABLE IF NOT EXISTS unified_releases (
   track_count INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE INDEX IF NOT EXISTS idx_unified_releases_rg ON unified_releases(release_group_id);
-
-CREATE TABLE IF NOT EXISTS unified_release_sources (
+CREATE INDEX idx_unified_releases_rg ON unified_releases(release_group_id);
+CREATE TABLE unified_release_sources (
   unified_release_id TEXT NOT NULL REFERENCES unified_releases(id) ON DELETE CASCADE,
   instance_album_id TEXT NOT NULL REFERENCES instance_albums(id) ON DELETE CASCADE,
   instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
   PRIMARY KEY (unified_release_id, instance_album_id)
 );
-
-CREATE TABLE IF NOT EXISTS unified_tracks (
+CREATE TABLE unified_tracks (
   id TEXT PRIMARY KEY,                -- UUID
   title TEXT NOT NULL,
   title_normalized TEXT NOT NULL,
@@ -164,38 +129,14 @@ CREATE TABLE IF NOT EXISTS unified_tracks (
   genre TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE INDEX IF NOT EXISTS idx_unified_tracks_release ON unified_tracks(release_id);
-CREATE INDEX IF NOT EXISTS idx_unified_tracks_artist ON unified_tracks(artist_id);
-CREATE INDEX IF NOT EXISTS idx_unified_tracks_mbid ON unified_tracks(musicbrainz_id);
-
-CREATE TABLE IF NOT EXISTS track_sources (
-  id TEXT PRIMARY KEY,                -- UUID
-  unified_track_id TEXT NOT NULL REFERENCES unified_tracks(id) ON DELETE CASCADE,
-  instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
-  instance_track_id TEXT NOT NULL REFERENCES instance_tracks(id) ON DELETE CASCADE,
-  format TEXT,
-  bitrate INTEGER,
-  size INTEGER,
-  UNIQUE(unified_track_id, instance_track_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_track_sources_track ON track_sources(unified_track_id);
-
--- ============================================================
--- Settings (key-value store)
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS settings (
+CREATE INDEX idx_unified_tracks_release ON unified_tracks(release_id);
+CREATE INDEX idx_unified_tracks_artist ON unified_tracks(artist_id);
+CREATE INDEX idx_unified_tracks_mbid ON unified_tracks(musicbrainz_id);
+CREATE TABLE settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-
--- ============================================================
--- Playlists
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS playlists (
+CREATE TABLE playlists (
   id TEXT PRIMARY KEY,                -- UUID
   owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -204,58 +145,28 @@ CREATE TABLE IF NOT EXISTS playlists (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE TABLE IF NOT EXISTS playlist_tracks (
+CREATE TABLE playlist_tracks (
   playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
   position INTEGER NOT NULL,
   unified_track_id TEXT NOT NULL REFERENCES unified_tracks(id) ON DELETE CASCADE,
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (playlist_id, position)
 );
-
--- ============================================================
--- Art Cache Metadata
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS art_cache (
+CREATE TABLE art_cache (
   id TEXT PRIMARY KEY,              -- cache key: encodedCoverArtId or encodedCoverArtId:size
   content_type TEXT NOT NULL,
   size INTEGER NOT NULL,            -- file size in bytes
   cached_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_accessed TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
--- ============================================================
--- Activity Tracking: Sync Operations
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS sync_operations (
-  id TEXT PRIMARY KEY,              -- UUID
-  type TEXT NOT NULL,               -- 'manual' | 'auto'
-  scope TEXT NOT NULL,              -- 'local' | 'peer'
-  scope_id TEXT,                    -- peer id when scope = 'peer'
-  status TEXT NOT NULL,             -- 'running' | 'complete' | 'failed'
-  started_at TEXT NOT NULL DEFAULT (datetime('now')),
-  finished_at TEXT,
-  duration_ms INTEGER,              -- milliseconds
-  artist_count INTEGER DEFAULT 0,
-  album_count INTEGER DEFAULT 0,
-  track_count INTEGER DEFAULT 0,
-  errors TEXT                       -- JSON array of error strings
-);
-
--- ============================================================
--- Activity Tracking: Stream Operations
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS stream_operations (
-  id TEXT PRIMARY KEY,              -- UUID
-  username TEXT NOT NULL,           -- Subsonic username
-  track_id TEXT NOT NULL,           -- unified_tracks.id
-  track_title TEXT NOT NULL,
-  artist_name TEXT NOT NULL,
-  started_at TEXT NOT NULL DEFAULT (datetime('now')),
-  finished_at TEXT,
-  duration_ms INTEGER,              -- playback duration in milliseconds
-  bytes_transferred INTEGER         -- bytes streamed
-);
+CREATE TABLE track_sources (
+      id TEXT PRIMARY KEY,
+      unified_track_id TEXT NOT NULL REFERENCES unified_tracks(id) ON DELETE CASCADE,
+      instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      instance_track_id TEXT NOT NULL REFERENCES instance_tracks(id) ON DELETE CASCADE,
+      format TEXT,
+      bitrate INTEGER,
+      size INTEGER,
+      UNIQUE(unified_track_id, instance_track_id)
+    );
+CREATE INDEX idx_track_sources_track ON track_sources(unified_track_id);
