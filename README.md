@@ -12,13 +12,14 @@ Designed for small groups (4–12 people) who want to share music without giving
 ├────────────────────────────────────────────┤
 │  Poutine Hub (Fastify + SQLite)            │
 │    /rest/*         — Subsonic API          │
-│    /federation/*   — peer-to-peer (Ed25519)│
+│    /proxy/*        — auth proxy to Navidrome (Ed25519 / JWT / u+p) │
+│    /federation/*   — peer identity (Ed25519)│
 │    /admin/*        — owner management      │
 ├────────────────────────────────────────────┤
 │  Bundled Navidrome (internal network only) │
 └────────────────────────────────────────────┘
          ▲                     ▲
-         │ Subsonic clients    │ Ed25519-signed federation
+         │ Subsonic clients    │ Ed25519-signed /proxy/* + /federation/*
          ▼                     ▼
    Web / mobile            Other hubs (peers)
 ```
@@ -41,7 +42,7 @@ Serves on `http://localhost:3000` (frontend and API on one port). SQLite and cov
 2. Put your music on disk and bind-mount it into the `navidrome` service in `docker-compose.yml`.
 3. `docker compose up --build`. Navidrome scans on startup; the hub's `AutoSyncService` picks up the scan and populates the unified library.
 4. Log in to `http://localhost:3000/admin` with the owner credentials.
-5. To federate with peers, edit `peers.yaml` on both sides and reload (`docker compose kill -s HUP hub`).
+5. To federate with peers, edit `peers.yaml` on both sides — each peer entry needs `id`, `url`, `public_key`, and `proxy_url` (the reachable base URL for `/proxy/*`) — then reload (`docker compose kill -s HUP hub`).
 
 Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-internals.md#environment-variables).
 

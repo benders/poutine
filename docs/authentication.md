@@ -9,6 +9,7 @@ Poutine has three authentication mechanisms, each scoped to a different API surf
 | Admin             | `/admin/*`      | JWT (cookie + `Authorization: Bearer` header)                                         |
 | Subsonic (JSON)   | `/rest/*`       | JWT **or** legacy Subsonic `u`+`p` query params                                       |
 | Subsonic (binary) | `/rest/stream`, `/rest/getCoverArt` | Same as Subsonic JSON, but errors use HTTP status codes, not Subsonic envelopes |
+| Proxy             | `/proxy/*`      | Unified: Ed25519 (peers) → JWT (SPA) → Subsonic `u`+`p` (3rd-party), tried in order |
 | Federation        | `/federation/*` | Ed25519-signed HTTP (see [federation-api.md](federation-api.md))                      |
 | Health            | `/api/health`   | None                                                                                  |
 
@@ -101,6 +102,16 @@ Routes register via `binaryRoute()` in `subsonic.ts` to get the binary variant.
 `seedOwner()` runs in `buildApp()` only when the `users` table is empty. Reads `POUTINE_OWNER_USERNAME` / `POUTINE_OWNER_PASSWORD` from env vars.
 
 Argon2 hashing is async, so seeding cannot live in the synchronous `createDatabase()`. If env credentials change after first boot, reset the password directly in the DB using `hashPassword` from `hub/dist/auth/passwords.js`.
+
+## Proxy auth (`/proxy/*`)
+
+`/proxy/*` is a transparent authenticated proxy to the local Navidrome. Three auth modes tried in order by `hub/src/proxy/auth.ts`:
+
+1. **Ed25519** — all four `x-poutine-*` headers present → validated against `peers.yaml` registry. `request.proxyAuth.kind = "peer"`. Used by peer hubs during catalog sync and streaming.
+2. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param → verified with `verifyToken`. `request.proxyAuth.kind = "jwt"`. Used by the SPA.
+3. **Subsonic u+p** — `u` + `p` query params (plaintext or `enc:<hex>`), verified via Argon2id. `request.proxyAuth.kind = "subsonic"`. Note: `u+t+s` (MD5 token auth) is not supported — Poutine stores Argon2id hashes, not plaintext.
+
+Returns `401` if all three fail. Implementation detail: the forwarded request always uses fresh Navidrome `u+t+s` credentials — the incoming auth is consumed at the proxy tier and never forwarded.
 
 ## Federation auth
 

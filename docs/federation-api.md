@@ -25,7 +25,7 @@ Peers report both versions through `/api/health`, which `GET /admin/peers` reads
 | Field                              | Value            |
 |------------------------------------|------------------|
 | Protocol (`Poutine-Api-Version`)   | `3`              |
-| Application (`User-Agent`)         | `Poutine/0.1.1`  |
+| Application (`User-Agent`)         | `Poutine/0.2.0`  |
 
 ---
 
@@ -106,7 +106,7 @@ Initial protocol version.
 ## Implementation notes
 
 - **Do not modify federation routes without updating this document and incrementing `FEDERATION_API_VERSION`** in `hub/src/version.ts`.
-- Contract tests live in `hub/test/federation-routes.test.ts`.
+- Ed25519 signing is exercised in `hub/test/federation-signing.test.ts` and `hub/test/proxy.test.ts`.
 - Signing helpers: `hub/src/federation/signing.ts`, `hub/src/federation/sign-request.ts`.
 - Peer auth middleware: `hub/src/federation/peer-auth.ts`.
 - Peer registry: `hub/src/federation/peers.ts` (loaded from `peers.yaml`, reloaded on SIGHUP).

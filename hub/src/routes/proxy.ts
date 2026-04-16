@@ -13,6 +13,7 @@ import { pipeline } from "node:stream/promises";
 import type { FastifyPluginAsync } from "fastify";
 import type { PeerRegistry } from "../federation/peers.js";
 import { createRequireProxyAuth } from "../proxy/auth.js";
+import { FEDERATION_API_VERSION } from "../version.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -166,6 +167,8 @@ export const proxyRoutes: FastifyPluginAsync<ProxyRoutesOptions> = async (
           : val;
       }
     }
+
+    responseHeaders["poutine-api-version"] = String(FEDERATION_API_VERSION);
 
     reply.hijack();
     const raw = reply.raw;

@@ -7,12 +7,10 @@ import { APP_VERSION, FEDERATION_API_VERSION } from "./version.js";
 import { createDatabase } from "./db/client.js";
 import { adminRoutes } from "./routes/admin.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
-import { federationRoutes } from "./routes/federation.js";
 import { proxyRoutes } from "./routes/proxy.js";
 import { ArtCache } from "./services/art-cache.js";
 import { loadOrCreatePrivateKey } from "./federation/signing.js";
 import { loadPeerRegistry } from "./federation/peers.js";
-import { createRequirePeerAuth } from "./federation/peer-auth.js";
 import { createFederationFetcher } from "./federation/sign-request.js";
 import { seedSyntheticInstances } from "./library/seed-instances.js";
 import { hashPassword } from "./auth/passwords.js";
@@ -142,12 +140,6 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(adminRoutes, { prefix: "/admin" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
 
-  const requirePeerAuth = createRequirePeerAuth({ registry: peerRegistry });
-  await app.register(federationRoutes, {
-    prefix: "/federation",
-    requirePeerAuth,
-  });
-
   await app.register(proxyRoutes, {
     prefix: "/proxy",
     registry: peerRegistry,
@@ -168,13 +160,12 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
     // SPA fallback: serve index.html for any unmatched non-API route.
     // /admin and /admin/ are SPA routes (the React admin page); only sub-paths
-    // like /admin/login are API. /rest/*, /api/*, /federation/* are always API.
+    // like /admin/login are API. /rest/*, /api/*, /proxy/* are always API.
     app.setNotFoundHandler(async (req, reply) => {
       const urlPath = req.url.split("?")[0];
       const isApiRoute =
         (urlPath.startsWith("/admin/") && urlPath !== "/admin/") ||
         urlPath.startsWith("/rest") ||
-        urlPath.startsWith("/federation") ||
         urlPath.startsWith("/api") ||
         urlPath.startsWith("/proxy");
       if (isApiRoute) {

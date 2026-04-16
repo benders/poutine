@@ -18,7 +18,7 @@ function tmpKeyPath(suffix = "") {
 const samplePayload = () =>
   canonicalSigningPayload({
     method: "GET",
-    path: "/federation/library/export",
+    path: "/proxy/rest/getArtists",
     bodyHash: "-",
     timestamp: String(Date.now()),
     instanceId: "poutine-test",
