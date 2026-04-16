@@ -47,5 +47,6 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 | `docs/authentication.md`             | **Auth reference** — JWT, Subsonic dual-auth, token refresh      |
 | `docs/federation-api.md`             | **Federation protocol contract** — read before `/federation/*`   |
 | `docs/hub-internals.md`              | Conventions, env vars, gotchas, lessons learned, Docker          |
+| `docs/opensubsonic.md`               | OpenSubsonic endpoint compatibility table and caveats            |
 | `hub/src/db/schema.sql`              | Canonical DB schema — source of truth                            |
 | `docs/system-architecture.md`        | Current system architecture                                      |
