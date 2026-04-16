@@ -282,6 +282,7 @@ export async function syncAll(
   federatedFetch: FederationFetcher,
   ownerUsername: string,
   syncOpService?: SyncOperationService,
+  log?: SyncLogger,
   operationType: SyncOperationType = "manual",
 ): Promise<{ local: SyncResult; peers: SyncResult[] }> {
   const operationId = syncOpService?.start(operationType, "local") || null;
@@ -296,6 +297,7 @@ export async function syncAll(
     if (operationId) {
       syncOpService!.fail(operationId, [`Local sync failed: ${String(err)}`]);
     }
+    log?.error(`syncAll: local sync failed — ${String(err)}`);
     throw err;
   }
 
@@ -312,6 +314,7 @@ export async function syncAll(
       if (peerOperationId && syncOpService) {
         syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);
       }
+      log?.info(`syncAll: peer ${peer.id} done — ${peerResult.artistCount} artists, ${peerResult.albumCount} albums, ${peerResult.trackCount} tracks`);
     } catch (err) {
       log?.error(`syncAll: peer ${peer.id} threw — ${String(err)}`);
       const syncMessage = `Peer sync failed: ${String(err)}`;

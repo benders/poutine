@@ -117,7 +117,7 @@ export class StreamTrackingService {
         `SELECT id, username, track_id, track_title, artist_name, started_at, finished_at,
                 duration_ms, bytes_transferred
          FROM stream_operations
-         ORDER BY started_at DESC
+         ORDER BY started_at DESC, id DESC
          LIMIT ?`,
       )
       .all(limit) as Array<{

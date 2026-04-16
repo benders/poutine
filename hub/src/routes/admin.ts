@@ -374,6 +374,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       app.federatedFetch,
       request.adminUsername,
       app.syncOpService,
+      log,
       "manual",
     );
   });

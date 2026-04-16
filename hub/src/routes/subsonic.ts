@@ -13,6 +13,7 @@ import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { selectBestSource } from "../library/source-selection.js";
 import type { StreamTrackingService } from "../services/stream-tracking.js";
+import type { Peer } from "../federation/peers.js";
 
 // Extend Fastify app type for stream tracking
 declare module "fastify" {
