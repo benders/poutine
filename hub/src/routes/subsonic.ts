@@ -12,6 +12,7 @@ import {
 import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { selectBestSource } from "../library/source-selection.js";
+import type { Peer } from "../federation/peers.js";
 
 // ── Content-type helpers ──────────────────────────────────────────────────────
 
@@ -78,8 +79,7 @@ interface TrackSourceRow {
   remote_id: string;
   format: string | null;
   bitrate: number | null;
-  source_kind: "local" | "peer";
-  peer_id: string | null;
+  instance_id: string;
 }
 
 // ── Source selection subquery ─────────────────────────────────────────────────
@@ -683,18 +683,22 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     let response: Response;
 
     if (instanceId !== "local") {
-      // Peer art routing
+      // Peer art routing via /proxy/rest/getCoverArt — Ed25519-signed request to the peer's proxy.
+      // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
       const peer = app.peerRegistry.peers.get(instanceId);
       if (!peer) {
         sendBinaryError(reply, 404, "Peer not found");
         return;
       }
-      // Peers serve their own art as local:<coverArtId>
-      const peerEncoded = `local:${coverArtId}`;
       try {
+        const artParams = new URLSearchParams({ id: coverArtId });
+        if (size) artParams.set("size", size);
+        const signingPath = `/proxy/rest/getCoverArt?${artParams.toString()}`;
+        // Substitute peer.proxyUrl as the base so the HTTP request goes to the correct host.
+        const proxyPeer: Peer = { ...peer, url: peer.proxyUrl };
         response = await app.federatedFetch(
-          peer,
-          `/federation/art/${encodeURIComponent(peerEncoded)}`,
+          proxyPeer,
+          signingPath,
           { asUser: request.subsonicUser.username },
         );
       } catch {
@@ -702,7 +706,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         return;
       }
     } else {
-      // Local Navidrome
+      // Local Navidrome art.
+      // TODO(phase-5): route through /proxy/rest/getCoverArt (internal inject) once local
+      // reads are uniformly proxied. SubsonicClient hits Navidrome directly for now.
       const client = new SubsonicClient({
         url: app.config.navidromeUrl,
         username: app.config.navidromeUsername,
@@ -763,8 +769,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const rawSources = app.db
       .prepare(
-        `SELECT ts.remote_id, ts.format, ts.bitrate, ts.source_kind, ts.peer_id
+        `SELECT it.remote_id, ts.format, ts.bitrate, ts.instance_id
         FROM track_sources ts
+        JOIN instance_tracks it ON ts.instance_track_id = it.id
         WHERE ts.unified_track_id = ?`,
       )
       .all(trackId) as TrackSourceRow[];
@@ -774,8 +781,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         remoteId: s.remote_id,
         format: s.format,
         bitrate: s.bitrate,
-        sourceKind: s.source_kind,
-        peerId: s.peer_id,
+        instanceId: s.instance_id,
       })),
       q.format,
     );
@@ -787,14 +793,16 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     let response: Response;
 
-    if (best.sourceKind === "local") {
+    if (best.instanceId === "local") {
       const client = new SubsonicClient({
         url: app.config.navidromeUrl,
         username: app.config.navidromeUsername,
         password: app.config.navidromePassword,
       });
       try {
-        const streamParams: { format?: string; maxBitRate?: number } = {};
+        const streamParams: { format?: string; maxBitRate?: number; estimateContentLength?: boolean } = {
+          estimateContentLength: true,
+        };
         if (q.format) streamParams.format = q.format;
         if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
         response = await client.stream(best.remoteId, streamParams);
@@ -803,16 +811,23 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         return;
       }
     } else {
-      // Peer routing
-      const peer = app.peerRegistry.peers.get(best.peerId!);
+      // Peer routing via /proxy/rest/stream — Ed25519-signed request to the peer's proxy endpoint.
+      // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
+      const peer = app.peerRegistry.peers.get(best.instanceId);
       if (!peer) {
         sendBinaryError(reply, 502, "Peer not available");
         return;
       }
       try {
+        const proxyParams = new URLSearchParams({ id: best.remoteId });
+        if (q.format) proxyParams.set("format", q.format);
+        if (q.maxBitRate) proxyParams.set("maxBitRate", q.maxBitRate);
+        const signingPath = `/proxy/rest/stream?${proxyParams.toString()}`;
+        // Substitute peer.proxyUrl as the base so the HTTP request goes to the correct host.
+        const proxyPeer: Peer = { ...peer, url: peer.proxyUrl };
         response = await app.federatedFetch(
-          peer,
-          `/federation/stream/${encodeURIComponent(best.remoteId)}`,
+          proxyPeer,
+          signingPath,
           { asUser: request.subsonicUser.username },
         );
       } catch {

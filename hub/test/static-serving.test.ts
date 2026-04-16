@@ -4,7 +4,7 @@
  * When PUBLIC_DIR / config.staticDir is set, the hub should:
  * - Serve static files (JS, CSS, images) from the directory
  * - Return index.html for any unmatched frontend route (SPA fallback)
- * - Return JSON 404 for unmatched API routes (/admin/*, /rest/*, /federation/*, /api/*)
+ * - Return JSON 404 for unmatched API routes (/admin/*, /rest/*, /proxy/*, /api/*)
  * - Not interfere with existing API routes
  */
 
@@ -126,15 +126,6 @@ describe("static serving — enabled (staticDir set)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/rest/nonexistent",
-    });
-    expect(res.statusCode).toBe(404);
-    expect(res.headers["content-type"]).toMatch(/application\/json/);
-  });
-
-  it("unmatched /federation/* returns JSON 404, not index.html", async () => {
-    const res = await app.inject({
-      method: "GET",
-      url: "/federation/nonexistent",
     });
     expect(res.statusCode).toBe(404);
     expect(res.headers["content-type"]).toMatch(/application\/json/);

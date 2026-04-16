@@ -1,3 +1,10 @@
+/**
+ * sync-local.ts
+ *
+ * Syncs the bundled local Navidrome into instance_* tables.
+ * Reads Navidrome directly via SubsonicClient (bypasses /proxy/*).
+ */
+
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
