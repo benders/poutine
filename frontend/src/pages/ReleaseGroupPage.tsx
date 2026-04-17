@@ -4,7 +4,8 @@ import { getAlbum, artUrl } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
-import { Play, Plus, ChevronRight, Disc } from "lucide-react";
+import { Play, Plus, ChevronRight, Disc, ChevronDown, ChevronUp, FileAudio, Info } from "lucide-react";
+import { useState } from "react";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -18,6 +19,8 @@ function hashColor(name: string): string {
 export function ReleaseGroupPage() {
   const { id } = useParams<{ id: string }>();
   const { playTracks, addToQueue } = usePlayer();
+  const [expandedTrackId, setExpandedTrackId] = useState<string | null>(null);
+  const [showAlbumMetadata, setShowAlbumMetadata] = useState(false);
 
   const { data: album, isLoading } = useQuery({
     queryKey: ["album", id],
@@ -32,6 +35,10 @@ export function ReleaseGroupPage() {
   if (!album) {
     return <div className="text-text-muted text-center py-20">Album not found.</div>;
   }
+
+  const toggleTrackMetadata = (trackId: string) => {
+    setExpandedTrackId(expandedTrackId === trackId ? null : trackId);
+  };
 
   return (
     <div className="space-y-8">
@@ -69,8 +76,8 @@ export function ReleaseGroupPage() {
             >
               {album.artist}
             </Link>
-            {album.year ? ` \u00B7 ${album.year}` : ""}
-            {album.genre ? ` \u00B7 ${album.genre}` : ""}
+            {album.year ? ` · ${album.year}` : ""}
+            {album.genre ? ` · ${album.genre}` : ""}
           </p>
 
           {album.songs.length > 0 && (
@@ -82,8 +89,40 @@ export function ReleaseGroupPage() {
               Play All
             </button>
           )}
+
+          {/* Album metadata toggle */}
+          <button
+            onClick={() => setShowAlbumMetadata(!showAlbumMetadata)}
+            className="mt-3 inline-flex items-center gap-2 px-4 py-1.5 bg-surface-hover hover:bg-surface text-text-primary rounded-full text-sm font-medium transition-colors cursor-pointer"
+          >
+            {showAlbumMetadata ? (
+              <ChevronUp className="w-4 h-4" />
+            ) : (
+              <ChevronDown className="w-4 h-4" />
+            )}
+            <Info className="w-4 h-4" />
+            {showAlbumMetadata ? "Hide" : "Show"} Album Metadata
+          </button>
         </div>
       </div>
+
+      {/* Album metadata section */}
+      {showAlbumMetadata && (
+        <div className="bg-surface rounded-lg p-6 space-y-4">
+          <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+            <FileAudio className="w-5 h-5" />
+            Album Metadata
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <MetadataField label="Album Name" value={album.name} />
+            <MetadataField label="Artist" value={album.artist} />
+            {album.year && <MetadataField label="Year" value={album.year.toString()} />}
+            {album.genre && <MetadataField label="Genre" value={album.genre} />}
+            <MetadataField label="Song Count" value={album.songCount.toString()} />
+            {album.coverArt && <MetadataField label="Cover Art ID" value={album.coverArt} />}
+          </div>
+        </div>
+      )}
 
       {/* Track list */}
       <div className="bg-surface rounded-lg overflow-hidden">
@@ -107,6 +146,8 @@ export function ReleaseGroupPage() {
                 index={index}
                 onPlay={() => playTracks(album.songs, index)}
                 onAddToQueue={() => addToQueue(song)}
+                isExpanded={expandedTrackId === song.id}
+                onToggleMetadata={() => toggleTrackMetadata(song.id)}
               />
             ))}
           </tbody>
@@ -116,52 +157,102 @@ export function ReleaseGroupPage() {
   );
 }
 
+function MetadataField({ label, value }: { label: string; value: string | undefined }) {
+  if (!value) return null;
+  return (
+    <div className="flex flex-col">
+      <span className="text-text-muted text-xs uppercase tracking-wide">{label}</span>
+      <span className="text-text-primary font-mono text-xs break-all">{value}</span>
+    </div>
+  );
+}
+
 function SongRow({
   song,
   index,
   onPlay,
   onAddToQueue,
+  isExpanded,
+  onToggleMetadata,
 }: {
   song: SubsonicSong;
   index: number;
   onPlay: () => void;
   onAddToQueue: () => void;
+  isExpanded: boolean;
+  onToggleMetadata: () => void;
 }) {
   return (
-    <tr className="group border-b border-border/50 last:border-0 hover:bg-surface-hover transition-colors">
-      <td className="py-2.5 px-4 text-sm text-text-muted">
-        <span className="group-hover:hidden">{song.track ?? index + 1}</span>
-        <button
-          onClick={onPlay}
-          className="hidden group-hover:block text-text-primary hover:text-accent cursor-pointer"
-        >
-          <Play className="w-3.5 h-3.5 fill-current" />
-        </button>
-      </td>
-      <td className="py-2.5 px-4">
-        <p className="text-sm text-text-primary">{song.title}</p>
-      </td>
-      <td className="py-2.5 px-4 text-sm text-text-muted">
-        {song.suffix && <span className="uppercase">{song.suffix}</span>}
-      </td>
-      <td className="py-2.5 px-4 text-sm text-text-muted">
-        {song.bitRate ? `${song.bitRate} kbps` : ""}
-      </td>
-      <td className="py-2.5 px-4 text-sm text-text-muted">
-        {song.sourceInstance || ""}
-      </td>
-      <td className="py-2.5 px-4 text-sm text-text-muted text-right">
-        {formatDuration(song.durationMs)}
-      </td>
-      <td className="py-2.5 px-4 text-right">
-        <button
-          onClick={onAddToQueue}
-          className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary transition-all cursor-pointer"
-          title="Add to queue"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
-      </td>
-    </tr>
+    <>
+      <tr className="group border-b border-border/50 last:border-0 hover:bg-surface-hover transition-colors">
+        <td className="py-2.5 px-4 text-sm text-text-muted">
+          <span className="group-hover:hidden">{song.track ?? index + 1}</span>
+          <button
+            onClick={onPlay}
+            className="hidden group-hover:block text-text-primary hover:text-accent cursor-pointer"
+          >
+            <Play className="w-3.5 h-3.5 fill-current" />
+          </button>
+        </td>
+        <td className="py-2.5 px-4">
+          <p className="text-sm text-text-primary">{song.title}</p>
+        </td>
+        <td className="py-2.5 px-4 text-sm text-text-muted">
+          {song.suffix && <span className="uppercase">{song.suffix}</span>}
+        </td>
+        <td className="py-2.5 px-4 text-sm text-text-muted">
+          {song.bitRate ? `${song.bitRate} kbps` : ""}
+        </td>
+        <td className="py-2.5 px-4 text-sm text-text-muted">
+          {song.sourceInstance || ""}
+        </td>
+        <td className="py-2.5 px-4 text-sm text-text-muted text-right">
+          {formatDuration(song.durationMs)}
+        </td>
+        <td className="py-2.5 px-4 text-right">
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={onAddToQueue}
+              className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary transition-all cursor-pointer"
+              title="Add to queue"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onToggleMetadata}
+              className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary transition-all cursor-pointer"
+              title="View metadata"
+            >
+              {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </button>
+          </div>
+        </td>
+      </tr>
+      {isExpanded && (
+        <tr>
+          <td colSpan={7} className="px-4 py-4 bg-surface-hover">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 text-sm">
+              <MetadataField label="Title" value={song.title} />
+              <MetadataField label="Artist" value={song.artist} />
+              {song.album && <MetadataField label="Album" value={song.album} />}
+              {song.track && <MetadataField label="Track" value={song.track.toString()} />}
+              {song.discNumber && <MetadataField label="Disc" value={song.discNumber.toString()} />}
+              {song.year && <MetadataField label="Year" value={song.year.toString()} />}
+              {song.genre && <MetadataField label="Genre" value={song.genre} />}
+              {song.bitRate && <MetadataField label="Bit Rate" value={`${song.bitRate} kbps`} />}
+              {song.suffix && <MetadataField label="Format" value={song.suffix.toUpperCase()} />}
+              {song.contentType && <MetadataField label="Content Type" value={song.contentType} />}
+              {song.size && <MetadataField label="Size" value={`${(song.size / (1024 * 1024)).toFixed(2)} MB`} />}
+              {song.durationMs && <MetadataField label="Duration" value={formatDuration(song.durationMs)} />}
+              {song.sortName && <MetadataField label="Sort Name" value={song.sortName} />}
+              {song.musicBrainzId && <MetadataField label="MusicBrainz ID" value={song.musicBrainzId} />}
+              {song.path && <MetadataField label="Path" value={song.path} />}
+              {song.comment && <MetadataField label="Comment" value={song.comment} />}
+              {song.bpm && <MetadataField label="BPM" value={song.bpm.toString()} />}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }

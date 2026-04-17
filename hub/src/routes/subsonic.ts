@@ -12,8 +12,15 @@ import {
 import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { selectBestSource } from "../library/source-selection.js";
+import type { StreamTrackingService } from "../services/stream-tracking.js";
 import type { Peer } from "../federation/peers.js";
 
+// Extend Fastify app type for stream tracking
+declare module "fastify" {
+  interface FastifyInstance {
+    streamTracking: StreamTrackingService;
+  }
+}
 // ── Content-type helpers ──────────────────────────────────────────────────────
 
 const FORMAT_CONTENT_TYPE: Record<string, string> = {
@@ -67,6 +74,7 @@ interface TrackRow {
   bitrate: number | null;
   size: number | null;
   instance_name: string | null;
+  musicbrainz_id: string | null;
 }
 
 interface GenreRow {
@@ -123,6 +131,7 @@ function buildSong(row: TrackRow) {
     artistId: encodeId("ar", row.artist_id),
     discNumber: row.disc_number ?? undefined,
     sourceInstance: row.instance_name ?? undefined,
+    musicBrainzId: row.musicbrainz_id ?? undefined,
   };
 }
 
@@ -471,7 +480,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           .prepare(
             `SELECT
               ut.id, ut.title, ut.track_number, ut.disc_number,
-              ut.duration_ms, ut.genre,
+              ut.duration_ms, ut.genre, ut.musicbrainz_id,
               ut.artist_id, ua.name AS artist_name,
               urg.id AS rg_id, urg.name AS rg_name,
               urg.year AS rg_year, urg.image_url AS rg_image_url,
@@ -530,7 +539,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       .prepare(
         `SELECT
           ut.id, ut.title, ut.track_number, ut.disc_number,
-          ut.duration_ms, ut.genre,
+          ut.duration_ms, ut.genre, ut.musicbrainz_id,
           ut.artist_id, ua.name AS artist_name,
           urg.id AS rg_id, urg.name AS rg_name,
           urg.year AS rg_year, urg.image_url AS rg_image_url,
@@ -602,7 +611,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       .prepare(
         `SELECT
           ut.id, ut.title, ut.track_number, ut.disc_number,
-          ut.duration_ms, ut.genre,
+          ut.duration_ms, ut.genre, ut.musicbrainz_id,
           ut.artist_id, ua.name AS artist_name,
           urg.id AS rg_id, urg.name AS rg_name,
           urg.year AS rg_year, urg.image_url AS rg_image_url,
@@ -756,103 +765,103 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
   // ── stream ──────────────────────────────────────────────────────────────────
 
-  async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
-    const q = request.query as Record<string, string>;
+async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
+  const q = request.query as Record<string, string>;
 
-    let trackId: string;
-    try {
-      trackId = decodeId(q.id ?? "", "t");
-    } catch {
-      sendBinaryError(reply, 400, "Invalid track ID");
-      return;
-    }
-
-    const rawSources = app.db
-      .prepare(
-        `SELECT it.remote_id, ts.format, ts.bitrate, ts.instance_id
-        FROM track_sources ts
-        JOIN instance_tracks it ON ts.instance_track_id = it.id
-        WHERE ts.unified_track_id = ?`,
-      )
-      .all(trackId) as TrackSourceRow[];
-
-    const best = selectBestSource(
-      rawSources.map((s) => ({
-        remoteId: s.remote_id,
-        format: s.format,
-        bitrate: s.bitrate,
-        instanceId: s.instance_id,
-      })),
-      q.format,
-    );
-
-    if (!best) {
-      sendBinaryError(reply, 404, "Track not found");
-      return;
-    }
-
-    let response: Response;
-
-    if (best.instanceId === "local") {
-      const client = new SubsonicClient({
-        url: app.config.navidromeUrl,
-        username: app.config.navidromeUsername,
-        password: app.config.navidromePassword,
-      });
-      try {
-        const streamParams: { format?: string; maxBitRate?: number; estimateContentLength?: boolean } = {
-          estimateContentLength: true,
-        };
-        if (q.format) streamParams.format = q.format;
-        if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
-        response = await client.stream(best.remoteId, streamParams);
-      } catch {
-        sendBinaryError(reply, 502, "Stream error");
-        return;
-      }
-    } else {
-      // Peer routing via /proxy/rest/stream — Ed25519-signed request to the peer's proxy endpoint.
-      // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
-      const peer = app.peerRegistry.peers.get(best.instanceId);
-      if (!peer) {
-        sendBinaryError(reply, 502, "Peer not available");
-        return;
-      }
-      try {
-        const proxyParams = new URLSearchParams({ id: best.remoteId });
-        if (q.format) proxyParams.set("format", q.format);
-        if (q.maxBitRate) proxyParams.set("maxBitRate", q.maxBitRate);
-        const signingPath = `/proxy/rest/stream?${proxyParams.toString()}`;
-        // Substitute peer.proxyUrl as the base so the HTTP request goes to the correct host.
-        const proxyPeer: Peer = { ...peer, url: peer.proxyUrl };
-        response = await app.federatedFetch(
-          proxyPeer,
-          signingPath,
-          { asUser: request.subsonicUser.username },
-        );
-      } catch {
-        sendBinaryError(reply, 502, "Peer stream error");
-        return;
-      }
-    }
-
-    if (!response.body) {
-      sendBinaryError(reply, 502, "Empty response from upstream");
-      return;
-    }
-
-    const headers: Record<string, string> = {
-      "content-type": response.headers.get("content-type") || "audio/mpeg",
-    };
-    const contentLength = response.headers.get("content-length");
-    if (contentLength) headers["content-length"] = contentLength;
-
-    reply.raw.writeHead(response.status, headers);
-    const nodeStream = Readable.fromWeb(
-      response.body as import("node:stream/web").ReadableStream,
-    );
-    nodeStream.pipe(reply.raw);
+  let trackId: string;
+  try {
+    trackId = decodeId(q.id ?? "", "t");
+  } catch {
+    sendBinaryError(reply, 400, "Invalid track ID");
+    return;
   }
+
+  const rawSources = app.db
+    .prepare(
+      `SELECT it.remote_id, ts.format, ts.bitrate, ts.instance_id
+      FROM track_sources ts
+      JOIN instance_tracks it ON ts.instance_track_id = it.id
+      WHERE ts.unified_track_id = ?`,
+    )
+    .all(trackId) as TrackSourceRow[];
+
+  const best = selectBestSource(
+    rawSources.map((s) => ({
+      remoteId: s.remote_id,
+      format: s.format,
+      bitrate: s.bitrate,
+      instanceId: s.instance_id,
+    })),
+    q.format,
+  );
+
+  if (!best) {
+    sendBinaryError(reply, 404, "Track not found");
+    return;
+  }
+
+  let response: Response;
+
+  if (best.instanceId === "local") {
+    const client = new SubsonicClient({
+      url: app.config.navidromeUrl,
+      username: app.config.navidromeUsername,
+      password: app.config.navidromePassword,
+    });
+    try {
+      const streamParams: { format?: string; maxBitRate?: number; estimateContentLength?: boolean } = {
+        estimateContentLength: true,
+      };
+      if (q.format) streamParams.format = q.format;
+      if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
+      response = await client.stream(best.remoteId, streamParams);
+    } catch {
+      sendBinaryError(reply, 502, "Stream error");
+      return;
+    }
+  } else {
+    // Peer routing via /proxy/rest/stream — Ed25519-signed request to the peer's proxy endpoint.
+    // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
+    const peer = app.peerRegistry.peers.get(best.instanceId);
+    if (!peer) {
+      sendBinaryError(reply, 502, "Peer not available");
+      return;
+    }
+    try {
+      const proxyParams = new URLSearchParams({ id: best.remoteId });
+      if (q.format) proxyParams.set("format", q.format);
+      if (q.maxBitRate) proxyParams.set("maxBitRate", q.maxBitRate);
+      const signingPath = `/proxy/rest/stream?${proxyParams.toString()}`;
+      // Substitute peer.proxyUrl as the base so the HTTP request goes to the correct host.
+      const proxyPeer: Peer = { ...peer, url: peer.proxyUrl };
+      response = await app.federatedFetch(
+        proxyPeer,
+        signingPath,
+        { asUser: request.subsonicUser.username },
+      );
+    } catch {
+      sendBinaryError(reply, 502, "Peer stream error");
+      return;
+    }
+  }
+
+  if (!response.body) {
+    sendBinaryError(reply, 502, "Empty response from upstream");
+    return;
+  }
+
+  const headers: Record<string, string> = {
+    "content-type": response.headers.get("content-type") || "audio/mpeg",
+  };
+  const contentLength = response.headers.get("content-length");
+  if (contentLength) headers["content-length"] = contentLength;
+
+  reply.raw.writeHead(response.status, headers);
+  const nodeStream = Readable.fromWeb(
+    response.body as import("node:stream/web").ReadableStream,
+  );
+  nodeStream.pipe(reply.raw);
+}
 
   binaryRoute("/stream", handleStream);
   binaryRoute("/download", handleStream); // alias — clients use interchangeably

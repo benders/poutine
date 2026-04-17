@@ -15,6 +15,8 @@ import { createFederationFetcher } from "./federation/sign-request.js";
 import { seedSyntheticInstances } from "./library/seed-instances.js";
 import { hashPassword } from "./auth/passwords.js";
 import { AutoSyncService } from "./services/auto-sync.js";
+import { SyncOperationService } from "./services/sync-operations.js";
+import { StreamTrackingService } from "./services/stream-tracking.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -27,11 +29,13 @@ declare module "fastify" {
     config: Config;
     db: Database.Database;
     artCache: ArtCache;
-    peerRegistry: PeerRegistry;
-    privateKey: KeyObject;
-    publicKeySpec: string;
-    federatedFetch: ReturnType<typeof FetcherFactory>;
-  }
+  peerRegistry: PeerRegistry;
+  privateKey: KeyObject;
+  publicKeySpec: string;
+  federatedFetch: ReturnType<typeof FetcherFactory>;
+  syncOpService: SyncOperationService;
+  streamTracking: StreamTrackingService;
+}
 }
 
 /**
@@ -114,10 +118,15 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   seedSyntheticInstances(db, config, peerRegistry);
 
   // Auto-sync: polls Navidrome every 30s and syncs when a new scan has completed
+  const syncOpService = new SyncOperationService(db);
+  const streamTracking = new StreamTrackingService(db);
+  app.decorate("syncOpService", syncOpService);
+  app.decorate("streamTracking", streamTracking);
+
   const autoSync = new AutoSyncService(db, config, {
     info: (msg) => app.log.info(msg),
     error: (msg) => app.log.error(msg),
-  });
+  }, syncOpService);
 
   // SIGHUP handler to reload peer registry without restart
   const sighupHandler = () => {

@@ -9,6 +9,8 @@ import type { FederationFetcher } from "./sync-peer.js";
 import type { SyncLogger } from "./sync-instance.js";
 import { mergeLibraries } from "./merge.js";
 import { seedSyntheticInstances } from "./seed-instances.js";
+import { SyncOperationService } from "../services/sync-operations.js";
+import type { SyncOperationType } from "../services/sync-operations.js";
 
 /** Minimal instance descriptor used by syncInstance. */
 export interface Instance {
@@ -279,24 +281,40 @@ export async function syncAll(
   peerRegistry: PeerRegistry,
   federatedFetch: FederationFetcher,
   ownerUsername: string,
+  syncOpService?: SyncOperationService,
   log?: SyncLogger,
+  operationType: SyncOperationType = "manual",
 ): Promise<{ local: SyncResult; peers: SyncResult[] }> {
+  const operationId = syncOpService?.start(operationType, "local") || null;
+  let localResult: SyncResult;
+  
   // Ensure synthetic instance rows exist (idempotent)
   seedSyntheticInstances(db, config, peerRegistry);
 
-  const local = await syncLocal(db, config);
+  try {
+    localResult = await syncLocal(db, config);
+  } catch (err) {
+    if (operationId) {
+      syncOpService!.fail(operationId, [`Local sync failed: ${String(err)}`]);
+    }
+    log?.error(`syncAll: local sync failed — ${String(err)}`);
+    throw err;
+  }
 
   const peers: SyncResult[] = [];
   for (const peer of peerRegistry.peers.values()) {
-    log?.info(`syncAll: starting peer ${peer.id} (url=${peer.url} proxyUrl=${peer.proxyUrl})`);
+    let peerOperationId: string | null = null;
+    if (syncOpService) {
+      peerOperationId = syncOpService.start(operationType, "peer", peer.id);
+    }
+    
     try {
-      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername, { log });
+      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername);
       peers.push(peerResult);
-      if (peerResult.errors.length === 0) {
-        log?.info(`syncAll: peer ${peer.id} done — ${peerResult.artistCount} artists, ${peerResult.albumCount} albums, ${peerResult.trackCount} tracks`);
-      } else {
-        log?.error(`syncAll: peer ${peer.id} finished with errors — ${peerResult.errors.join("; ")}`);
+      if (peerOperationId && syncOpService) {
+        syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);
       }
+      log?.info(`syncAll: peer ${peer.id} done — ${peerResult.artistCount} artists, ${peerResult.albumCount} albums, ${peerResult.trackCount} tracks`);
     } catch (err) {
       log?.error(`syncAll: peer ${peer.id} threw — ${String(err)}`);
       const syncMessage = `Peer sync failed: ${String(err)}`;
@@ -310,11 +328,18 @@ export async function syncAll(
         trackCount: 0,
         errors: [syncMessage],
       });
+      if (peerOperationId && syncOpService) {
+        syncOpService.fail(peerOperationId, [`Peer sync failed: ${String(err)}`]);
+      }
     }
   }
 
   mergeLibraries(db);
 
-  return { local, peers };
+  if (operationId && syncOpService) {
+    syncOpService.complete(operationId, localResult.artistCount, localResult.albumCount, localResult.trackCount, localResult.errors);
+  }
+
+  return { local: localResult, peers };
 }
 

@@ -2,6 +2,8 @@ import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { verifyPassword, hashPassword } from "../auth/passwords.js";
 import { createAccessToken, createRefreshToken, verifyRefreshToken, verifyToken } from "../auth/jwt.js";
 import { syncAll } from "../library/sync.js";
+import { SyncOperationService } from "../services/sync-operations.js";
+import { StreamTrackingService } from "../services/stream-tracking.js";
 import { mergeLibraries } from "../library/merge.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { USER_AGENT } from "../version.js";
@@ -371,7 +373,9 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       app.peerRegistry,
       app.federatedFetch,
       request.adminUsername,
+      app.syncOpService,
       log,
+      "manual",
     );
   });
 
@@ -464,5 +468,56 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.delete("/cache", { preHandler: requireOwner }, async (_request, reply) => {
     app.artCache.clear();
     return reply.code(204).send();
+  });
+
+  // GET /admin/activity/sync — get recent sync operations
+  app.get("/activity/sync", { preHandler: requireOwner }, async (request) => {
+    const limit = parseInt((request.query as Record<string, string>).limit ?? "100", 10);
+    return app.syncOpService.getRecent(Math.min(limit, 500));
+  });
+
+  // GET /admin/activity/sync/running — get currently running sync operations
+  app.get("/activity/sync/running", { preHandler: requireOwner }, async () => {
+    return app.syncOpService.getRunning();
+  });
+
+  // DELETE /admin/activity/sync — clear sync operation history
+  app.delete("/activity/sync", { preHandler: requireOwner }, async () => {
+    app.syncOpService.clearAll();
+    return { cleared: true };
+  });
+
+  // GET /admin/activity/streams — get recent stream operations
+  app.get("/activity/streams", { preHandler: requireOwner }, async (request) => {
+    const limit = parseInt((request.query as Record<string, string>).limit ?? "100", 10);
+    return app.streamTracking.getRecent(Math.min(limit, 500));
+  });
+
+  // GET /admin/activity/streams/active — get currently active streams
+  app.get("/admin/activity/streams/active", { preHandler: requireOwner }, async () => {
+    return app.streamTracking.getActive();
+  });
+
+  // DELETE /admin/activity/streams — clear stream operation history
+  app.delete("/activity/streams", { preHandler: requireOwner }, async () => {
+    app.streamTracking.clearAll();
+    return { cleared: true };
+  });
+
+  // GET /admin/activity/summary — get activity summary
+  app.get("/activity/summary", { preHandler: requireOwner }, async () => {
+    const activeStreams = app.streamTracking.getActiveCount();
+    const runningSyncs = app.syncOpService.getRunning().length;
+    const recentSyncs = app.syncOpService.getRecent(10);
+    const recentStreams = app.streamTracking.getRecent(10);
+    
+    return {
+      activeStreams,
+      runningSyncs,
+      recentSyncCount: recentSyncs.length,
+      recentStreamCount: recentStreams.length,
+      lastSync: recentSyncs[0] ?? null,
+      lastStream: recentStreams[0] ?? null,
+    };
   });
 };
