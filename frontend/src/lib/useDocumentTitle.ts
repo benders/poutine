@@ -6,10 +6,10 @@ import { getInstanceInfo, type InstanceInfo } from "./api";
 /**
  * Manages the document title dynamically based on:
  * - Current playing track (if any)
- * - Instance ID from the server
+ * - Instance ID from the server (for fallback when not playing)
  * 
- * Format when playing: "Poutine {instanceId}: {artist} - {song}"
- * Format when not playing: "Poutine"
+ * Format when playing: "{artist} - {song}"
+ * Format when not playing: "Poutine {instanceId}"
  * Fallback: "Poutine"
  */
 export function useDocumentTitle() {
@@ -51,10 +51,12 @@ export function useDocumentTitle() {
       : null;
 
     if (currentTrack && isPlaying) {
-      const prefix = instanceIdRef.current ? `Poutine ${instanceIdRef.current}` : "Poutine";
-      document.title = `${prefix}: ${currentTrack.artist} - ${currentTrack.title}`;
+      // When playing: just "{artist} - {song}"
+      document.title = `${currentTrack.artist} - ${currentTrack.title}`;
     } else {
-      document.title = "Poutine";
+      // Not playing: "Poutine {instanceId}" or just "Poutine" as fallback
+      const instanceId = instanceIdRef.current;
+      document.title = instanceId ? `Poutine ${instanceId}` : "Poutine";
     }
   }
 }
