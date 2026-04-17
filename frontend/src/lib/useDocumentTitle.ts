@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { usePlayer } from "@/stores/player";
 import { getInstanceInfo, type InstanceInfo } from "./api";
 
@@ -13,46 +13,37 @@ import { getInstanceInfo, type InstanceInfo } from "./api";
  */
 export function useDocumentTitle() {
   const { currentTrack, isPlaying } = usePlayer();
+  const instanceIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    let instanceId: string | null = null;
-    let mounted = true;
-
     // Fetch instance info on mount
     getInstanceInfo()
       .then((info: InstanceInfo) => {
-        if (mounted) {
-          instanceId = info.instanceId;
-          updateTitle();
-        }
+        instanceIdRef.current = info.instanceId;
+        updateTitle();
       })
       .catch(() => {
         // If instance info is unavailable, use fallback
-        if (mounted) {
-          instanceId = null;
-          updateTitle();
-        }
+        instanceIdRef.current = null;
+        updateTitle();
       });
+  }, []);
 
-    // Update title whenever track or playing state changes
-    function updateTitle() {
-      if (!mounted) return;
-
-      if (currentTrack && isPlaying) {
-        // Format: "Poutine {instanceId}: {artist} - {song}"
-        const prefix = instanceId ? `Poutine ${instanceId}` : "Poutine";
-        document.title = `${prefix}: ${currentTrack.artist} - ${currentTrack.title}`;
-      } else {
-        // Not playing: just "Poutine"
-        document.title = "Poutine";
-      }
-    }
-
-    // Initial title update
+  // Update title whenever track or playing state changes
+  useEffect(() => {
     updateTitle();
+  }, [currentTrack, isPlaying]);
 
-    return () => {
-      mounted = false;
-    };
-  }, [currentTrack, isPlaying, instanceId]);
+  function updateTitle() {
+    const instanceId = instanceIdRef.current;
+
+    if (currentTrack && isPlaying) {
+      // Format: "Poutine {instanceId}: {artist} - {song}"
+      const prefix = instanceId ? `Poutine ${instanceId}` : "Poutine";
+      document.title = `${prefix}: ${currentTrack.artist} - ${currentTrack.title}`;
+    } else {
+      // Not playing: just "Poutine"
+      document.title = "Poutine";
+    }
+  }
 }
