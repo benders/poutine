@@ -31,7 +31,10 @@ export function App() {
   useDocumentTitle();
 
   useEffect(() => {
-    checkAuth();
+    // Skip auth check on login page to avoid redirect loop
+    if (window.location.pathname !== '/login') {
+      checkAuth();
+    }
   }, [checkAuth]);
 
   return (
