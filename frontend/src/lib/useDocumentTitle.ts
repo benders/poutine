@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import { usePlayer } from "@/stores/player";
 import { getInstanceInfo, type InstanceInfo } from "./api";
 
@@ -12,8 +12,20 @@ import { getInstanceInfo, type InstanceInfo } from "./api";
  * Fallback: "Poutine"
  */
 export function useDocumentTitle() {
-  const { currentTrack, isPlaying } = usePlayer();
+  // Subscribe to the underlying state values that determine currentTrack
+  // (not the computed getter, which won't trigger re-renders properly)
+  const queue = usePlayer((state) => state.queue);
+  const currentIndex = usePlayer((state) => state.currentIndex);
+  const isPlaying = usePlayer((state) => state.isPlaying);
+  
   const instanceIdRef = useRef<string | null>(null);
+
+  // Compute currentTrack from the subscribed state values
+  const currentTrack = useMemo(() => {
+    return currentIndex >= 0 && currentIndex < queue.length
+      ? queue[currentIndex]
+      : null;
+  }, [queue, currentIndex]);
 
   useEffect(() => {
     // Fetch instance info on mount
