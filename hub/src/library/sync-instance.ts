@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import { USER_AGENT } from "../version.js";
 import type { SyncResult } from "./sync.js";
+import type { LastFmClient } from "../services/lastfm.js";
 
 // ── Subsonic JSON envelope types (minimal) ────────────────────────────────────
 
@@ -178,13 +179,13 @@ const noopLogger: SyncLogger = { info: () => {}, error: () => {} };
  * @param db         Hub SQLite database
  * @param instanceId Row key in `instances` table (e.g. "local" or peer id)
  * @param proxyFetch Pre-configured fetch function (local or signed peer)
- * @param config     Concurrency limit and optional logger
+ * @param config     Concurrency limit, optional logger, and optional Last.fm client
  */
 export async function readNavidromeViaProxy(
   db: Database.Database,
   instanceId: string,
   proxyFetch: ProxyFetch,
-  config: { concurrency?: number; log?: SyncLogger } = {},
+  config: { concurrency?: number; log?: SyncLogger; lastFmClient?: LastFmClient | null } = {},
 ): Promise<SyncResult> {
   const concurrency = config.concurrency ?? 3;
   const log = config.log ?? noopLogger;
@@ -310,6 +311,27 @@ export async function readNavidromeViaProxy(
           const detail = data.artist as NavidromeArtistDetail;
           const artistCompositeId = `${instanceId}:${artist.id}`;
 
+          // Get image from Navidrome first
+          let artistImageUrl: string | null = detail.coverArt ?? artist.coverArt ?? null;
+
+          // If no image and Last.fm is enabled, try to fetch from Last.fm
+          if (!artistImageUrl && config.lastFmClient?.isEnabled()) {
+            try {
+              const lastFmInfo = await config.lastFmClient.getArtistInfo(
+                detail.name ?? artist.name,
+                detail.musicBrainzId ?? artist.musicBrainzId ?? undefined
+              );
+              if (lastFmInfo) {
+                const bestImage = config.lastFmClient.getBestImage(lastFmInfo);
+                if (bestImage) {
+                  artistImageUrl = bestImage;
+                }
+              }
+            } catch {
+              // Last.fm fetch failed, keep existing image URL (or null)
+            }
+          }
+
           upsertArtist.run(
             artistCompositeId,
             instanceId,
@@ -317,7 +339,7 @@ export async function readNavidromeViaProxy(
             detail.name ?? artist.name,
             detail.musicBrainzId ?? artist.musicBrainzId ?? null,
             detail.albumCount ?? artist.albumCount ?? 0,
-            detail.coverArt ?? artist.coverArt ?? null,
+            artistImageUrl,
           );
           seenArtistRemoteIds.add(artist.id);
           result.artistCount++;

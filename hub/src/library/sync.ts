@@ -11,6 +11,7 @@ import { mergeLibraries } from "./merge.js";
 import { seedSyntheticInstances } from "./seed-instances.js";
 import { SyncOperationService } from "../services/sync-operations.js";
 import type { SyncOperationType } from "../services/sync-operations.js";
+import type { LastFmClient } from "../services/lastfm.js";
 
 /** Minimal instance descriptor used by syncInstance. */
 export interface Instance {
@@ -81,7 +82,7 @@ export async function syncInstance(
   db: Database.Database,
   instance: Instance,
   client: SubsonicClient,
-  config: { concurrency: number } = { concurrency: 3 },
+  config: { concurrency: number; lastFmClient?: LastFmClient | null } = { concurrency: 3 },
 ): Promise<SyncResult> {
   const result: SyncResult = {
     instanceId: instance.id,
@@ -181,6 +182,25 @@ export async function syncInstance(
             // getArtistInfo2 may not be supported by all servers
             // Fall back to coverArt ID from getArtist
             artistImageUrl = artistDetail.coverArt ?? artist.coverArt ?? null;
+          }
+
+          // If still no image and we have a MusicBrainz ID, try Last.fm directly
+          // This handles the case where the Subsonic server doesn't have Last.fm configured
+          if (!artistImageUrl && config.lastFmClient?.isEnabled()) {
+            try {
+              const lastFmInfo = await config.lastFmClient.getArtistInfo(
+                artistDetail.name ?? artist.name,
+                artistDetail.musicBrainzId ?? artist.musicBrainzId ?? undefined
+              );
+              if (lastFmInfo) {
+                const bestImage = config.lastFmClient.getBestImage(lastFmInfo);
+                if (bestImage) {
+                  artistImageUrl = bestImage;
+                }
+              }
+            } catch {
+              // Last.fm fetch failed, keep existing image URL (or null)
+            }
           }
 
           upsertArtist.run(
@@ -300,6 +320,7 @@ export async function syncAll(
   syncOpService?: SyncOperationService,
   log?: SyncLogger,
   operationType: SyncOperationType = "manual",
+  lastFmClient?: LastFmClient | null,
 ): Promise<{ local: SyncResult; peers: SyncResult[] }> {
   const operationId = syncOpService?.start(operationType, "local") || null;
   let localResult: SyncResult;
@@ -308,7 +329,7 @@ export async function syncAll(
   seedSyntheticInstances(db, config, peerRegistry);
 
   try {
-    localResult = await syncLocal(db, config);
+    localResult = await syncLocal(db, config, lastFmClient ?? null);
   } catch (err) {
     if (operationId) {
       syncOpService!.fail(operationId, [`Local sync failed: ${String(err)}`]);
@@ -325,7 +346,7 @@ export async function syncAll(
     }
     
     try {
-      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername);
+      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername, lastFmClient ?? null);
       peers.push(peerResult);
       if (peerOperationId && syncOpService) {
         syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);

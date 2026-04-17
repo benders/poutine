@@ -376,6 +376,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       app.syncOpService,
       log,
       "manual",
+      app.lastFmClient,
     );
   });
 

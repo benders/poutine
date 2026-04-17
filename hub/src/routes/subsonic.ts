@@ -13,12 +13,14 @@ import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { selectBestSource } from "../library/source-selection.js";
 import type { StreamTrackingService } from "../services/stream-tracking.js";
+import type { LastFmClient } from "../services/lastfm.js";
 import type { Peer } from "../federation/peers.js";
 
 // Extend Fastify app type for stream tracking
 declare module "fastify" {
   interface FastifyInstance {
     streamTracking: StreamTrackingService;
+    lastFmClient: import("../services/lastfm.js").LastFmClient | null;
   }
 }
 // ── Content-type helpers ──────────────────────────────────────────────────────
@@ -384,6 +386,30 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       } else {
         // It's an encoded cover art ID, return as-is for client to resolve
         imageUrl = artistRow.image_url;
+      }
+    }
+
+    // If no image URL and Last.fm is enabled, try to fetch from Last.fm
+    if (!imageUrl && app.lastFmClient?.isEnabled()) {
+      try {
+        const lastFmInfo = await app.lastFmClient.getArtistInfo(
+          artistRow.name,
+          artistRow.musicbrainz_id ?? undefined
+        );
+
+        if (lastFmInfo) {
+          const bestImage = app.lastFmClient.getBestImage(lastFmInfo);
+          if (bestImage) {
+            // Cache the image URL in the database
+            app.db
+              .prepare("UPDATE unified_artists SET image_url = ? WHERE id = ?")
+              .run(bestImage, artistId);
+            imageUrl = bestImage;
+            request.log.info(`Cached Last.fm image for artist ${artistRow.name}`);
+          }
+        }
+      } catch (err) {
+        request.log.warn(`Failed to fetch Last.fm info for artist ${artistRow.name}: ${err}`);
       }
     }
 

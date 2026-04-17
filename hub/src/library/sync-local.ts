@@ -1,6 +1,6 @@
 /**
  * sync-local.ts
- *
+/**
  * Syncs the bundled local Navidrome into instance_* tables.
  * Reads Navidrome directly via SubsonicClient (bypasses /proxy/*).
  */
@@ -10,10 +10,12 @@ import type { Config } from "../config.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { syncInstance } from "./sync.js";
 import type { SyncResult, Instance } from "./sync.js";
+import type { LastFmClient } from "../services/lastfm.js";
 
 export async function syncLocal(
   db: Database.Database,
   config: Config,
+  lastFmClient?: LastFmClient | null,
 ): Promise<SyncResult> {
   const client = new SubsonicClient({
     url: config.navidromeUrl,
@@ -40,5 +42,6 @@ export async function syncLocal(
 
   return syncInstance(db, instance, client, {
     concurrency: config.instanceConcurrency,
+    lastFmClient: lastFmClient ?? null,
   });
 }
