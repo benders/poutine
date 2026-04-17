@@ -1,4 +1,5 @@
-import { useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { usePlayer } from "@/stores/player";
 import { getInstanceInfo, type InstanceInfo } from "./api";
 
@@ -12,49 +13,47 @@ import { getInstanceInfo, type InstanceInfo } from "./api";
  * Fallback: "Poutine"
  */
 export function useDocumentTitle() {
-  // Subscribe to the underlying state values that determine currentTrack
-  // (not the computed getter, which won't trigger re-renders properly)
-  const queue = usePlayer((state) => state.queue);
-  const currentIndex = usePlayer((state) => state.currentIndex);
-  const isPlaying = usePlayer((state) => state.isPlaying);
-  
   const instanceIdRef = useRef<string | null>(null);
 
-  // Compute currentTrack from the subscribed state values
-  const currentTrack = useMemo(() => {
-    return currentIndex >= 0 && currentIndex < queue.length
-      ? queue[currentIndex]
-      : null;
-  }, [queue, currentIndex]);
+  // Use useShallow to subscribe to multiple state values without causing
+  // re-renders when the selector object reference changes
+  const { queue, currentIndex, isPlaying } = usePlayer(
+    useShallow((state) => ({
+      queue: state.queue,
+      currentIndex: state.currentIndex,
+      isPlaying: state.isPlaying,
+    }))
+  );
 
+  // Fetch instance info once on mount
   useEffect(() => {
-    // Fetch instance info on mount
     getInstanceInfo()
       .then((info: InstanceInfo) => {
         instanceIdRef.current = info.instanceId;
         updateTitle();
       })
       .catch(() => {
-        // If instance info is unavailable, use fallback
         instanceIdRef.current = null;
         updateTitle();
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update title whenever track or playing state changes
+  // Update title whenever player state changes
   useEffect(() => {
     updateTitle();
-  }, [currentTrack, isPlaying]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue, currentIndex, isPlaying]);
 
   function updateTitle() {
-    const instanceId = instanceIdRef.current;
+    const currentTrack = currentIndex >= 0 && currentIndex < queue.length
+      ? queue[currentIndex]
+      : null;
 
     if (currentTrack && isPlaying) {
-      // Format: "Poutine {instanceId}: {artist} - {song}"
-      const prefix = instanceId ? `Poutine ${instanceId}` : "Poutine";
+      const prefix = instanceIdRef.current ? `Poutine ${instanceIdRef.current}` : "Poutine";
       document.title = `${prefix}: ${currentTrack.artist} - ${currentTrack.title}`;
     } else {
-      // Not playing: just "Poutine"
       document.title = "Poutine";
     }
   }
