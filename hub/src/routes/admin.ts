@@ -490,7 +490,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // GET /admin/activity/streams/active — get currently active streams
-  app.get("/admin/activity/streams/active", { preHandler: requireOwner }, async () => {
+  app.get("/activity/streams/active", { preHandler: requireOwner }, async () => {
     return app.streamTracking.getActive();
   });
 
