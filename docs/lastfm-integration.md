@@ -22,13 +22,13 @@ Set the `LASTFM_API_KEY` environment variable when starting the hub:
 
 ```bash
 # Option 1: Environment variable
-export LASTFM_API_KEY="your_api_key_here"
+export LASTFM_API_KEY="***"
 cd ~/poutine/hub
 npm run dev
 
 # Option 2: .env file
 # Create a .env file in ~/poutine/hub/ with:
-# LASTFM_API_KEY=your_api_key_here
+# LASTFM_API_KEY=***
 ```
 
 ### 3. Verify Integration
@@ -86,7 +86,7 @@ To fetch images for artists that were already synced before enabling Last.fm:
 
 ```bash
 curl -X POST http://localhost:3000/admin/sync \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+  -H "Authorization: Bearer ***
 ```
 
 Or access artists via the frontend - the first time an artist page is viewed, it will trigger a Last.fm lookup if no image is cached.
