@@ -193,6 +193,89 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"].error.code).toBe(70);
   });
 
+  it("getArtistInfo2 with unknown id → error 70", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getArtistInfo2?u=tester&p=secret&f=json&id=arnobody",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("failed");
+    expect(body["subsonic-response"].error.code).toBe(70);
+  });
+
+  it("getArtistInfo2 with valid id → returns artist info structure", async () => {
+    // First create a test artist in the database (use raw ID without prefix)
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized, musicbrainz_id, image_url) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("test-1", "Radiohead", "radiohead", "a74b1b7f-71a5-4011-9441-d0b5e4122711", "https://last.fm/music/Radiohead");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getArtistInfo2?u=tester&p=secret&f=json&id=artest-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    expect(body["subsonic-response"]).toHaveProperty("artistInfo2");
+    expect(body["subsonic-response"].artistInfo2).toHaveProperty("artist");
+    expect(body["subsonic-response"].artistInfo2.artist.name).toBe("Radiohead");
+    expect(body["subsonic-response"].artistInfo2.largeImageUrl).toBe("https://last.fm/music/Radiohead");
+    expect(body["subsonic-response"].artistInfo2.musicBrainzId).toBe("a74b1b7f-71a5-4011-9441-d0b5e4122711");
+  });
+
+  it("getArtistInfo2 with Last.fm URL → returns URL directly", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized, image_url) VALUES (?, ?, ?, ?)",
+      )
+      .run("test-2", "Thom Yorke", "thom-yorke", "https://last.fm/music/Thom+Yorke");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getArtistInfo2?u=tester&p=secret&f=json&id=artest-2",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].artistInfo2.largeImageUrl).toBe("https://last.fm/music/Thom+Yorke");
+  });
+
+  it("getArtistInfo2 with encoded cover art ID → returns encoded ID", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized, image_url) VALUES (?, ?, ?, ?)",
+      )
+      .run("test-3", "Atoms for Peace", "atoms-for-peace", "instance-1:cover-art-123");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getArtistInfo2?u=tester&p=secret&f=json&id=artest-3",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].artistInfo2.largeImageUrl).toBe("instance-1:cover-art-123");
+  });
+
+  it("getArtistInfo2 without image_url → undefined image URLs", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("test-4", "Unknown Artist", "unknown-artist");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getArtistInfo2?u=tester&p=secret&f=json&id=artest-4",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].artistInfo2.largeImageUrl).toBeUndefined();
+    expect(body["subsonic-response"].artistInfo2.mediumImageUrl).toBeUndefined();
+    expect(body["subsonic-response"].artistInfo2.smallImageUrl).toBeUndefined();
+  });
+
   it("getAlbum with bad id prefix → error 70", async () => {
     const res = await app.inject({
       method: "GET",

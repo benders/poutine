@@ -100,6 +100,19 @@ export interface SubsonicAlbumInfo {
   largeImageUrl?: string;
 }
 
+export interface SubsonicArtistInfo {
+  artist?: SubsonicArtist;
+  similarArtist?: SubsonicArtist[];
+  notes?: string;
+  smallImageUrl?: string;
+  mediumImageUrl?: string;
+  largeImageUrl?: string;
+  lastFmUrl?: string;
+  musicBrainzId?: string;
+  /** Artist bio (Navidrome extension). */
+  biography?: string;
+}
+
 export interface SubsonicScanStatus {
   scanning: boolean;
   count: number;
@@ -338,6 +351,21 @@ export class SubsonicClient {
   async getAlbumInfo(id: string): Promise<SubsonicAlbumInfo> {
     const data = await this.request("/rest/getAlbumInfo2", { id });
     return (data.albumInfo as SubsonicAlbumInfo) ?? {};
+  }
+
+  async getArtistInfo(
+    id: string,
+    params?: { musicBrainzId?: string; count?: number; includeNotYetReleased?: boolean },
+  ): Promise<SubsonicArtistInfo> {
+    const extra: Record<string, string> = { id };
+    if (params?.musicBrainzId !== undefined)
+      extra.musicBrainzId = params.musicBrainzId;
+    if (params?.count !== undefined) extra.count = String(params.count);
+    if (params?.includeNotYetReleased !== undefined)
+      extra.includeNotYetReleased = params.includeNotYetReleased ? "true" : "false";
+
+    const data = await this.request("/rest/getArtistInfo2", extra);
+    return (data.artistInfo2 as SubsonicArtistInfo) ?? {};
   }
 
   async getScanStatus(): Promise<SubsonicScanStatus> {

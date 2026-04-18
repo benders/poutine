@@ -1,8 +1,8 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getArtists } from "@/lib/subsonic";
-import { Search } from "lucide-react";
+import { getArtists, artUrl } from "@/lib/subsonic";
+import { Search, Disc } from "lucide-react";
 
 function initials(name: string): string {
   return name
@@ -67,13 +67,19 @@ export function ArtistsPage() {
               onClick={() => navigate(`/artists/${artist.id}`)}
               className="group text-left rounded-lg bg-surface p-4 transition-colors hover:bg-surface-hover cursor-pointer"
             >
-              <div
-                className="w-full aspect-square rounded-full mb-3 flex items-center justify-center mx-auto overflow-hidden"
-                style={{ backgroundColor: hashColor(artist.name) }}
-              >
-                <span className="text-xl font-semibold text-white/70">
-                  {initials(artist.name)}
-                </span>
+              <div className="w-full aspect-square rounded-full mb-3 flex items-center justify-center mx-auto overflow-hidden bg-[color:var(--artist-bg, hsl(0, 35%, 35%))]">
+                {artist.coverArt ? (
+                  <img
+                    src={artUrl(artist.coverArt, 300)}
+                    alt={artist.name}
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                ) : (
+                  <span className="text-xl font-semibold text-white/70">
+                    {initials(artist.name)}
+                  </span>
+                )}
               </div>
               <p className="text-sm font-medium text-text-primary truncate text-center">
                 {artist.name}

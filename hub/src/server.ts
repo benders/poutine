@@ -17,6 +17,7 @@ import { hashPassword } from "./auth/passwords.js";
 import { AutoSyncService } from "./services/auto-sync.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
+import { LastFmClient } from "./services/lastfm.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -35,6 +36,7 @@ declare module "fastify" {
   federatedFetch: ReturnType<typeof FetcherFactory>;
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
+  lastFmClient: LastFmClient | null;
 }
 }
 
@@ -82,6 +84,17 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const artCache = new ArtCache(db, cacheDir);
   app.decorate("artCache", artCache);
 
+  // Last.fm client — optional, only if API key is configured
+  const lastFmClient = config.lastFmApiKey
+    ? new LastFmClient(config.lastFmApiKey)
+    : null;
+  if (lastFmClient) {
+    app.log.info("Last.fm integration enabled — artist images will be fetched from Last.fm");
+  } else {
+    app.log.info("Last.fm integration disabled — set LASTFM_API_KEY env var to enable");
+  }
+  app.decorate("lastFmClient", lastFmClient);
+
   // Federation keys and peer registry
   const { privateKey, publicKeyBase64 } = loadOrCreatePrivateKey(
     config.poutinePrivateKeyPath,
@@ -126,7 +139,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const autoSync = new AutoSyncService(db, config, {
     info: (msg) => app.log.info(msg),
     error: (msg) => app.log.error(msg),
-  }, syncOpService);
+  }, syncOpService, lastFmClient);
 
   // SIGHUP handler to reload peer registry without restart
   const sighupHandler = () => {

@@ -13,12 +13,14 @@ import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { selectBestSource } from "../library/source-selection.js";
 import type { StreamTrackingService } from "../services/stream-tracking.js";
+import type { LastFmClient } from "../services/lastfm.js";
 import type { Peer } from "../federation/peers.js";
 
 // Extend Fastify app type for stream tracking
 declare module "fastify" {
   interface FastifyInstance {
     streamTracking: StreamTrackingService;
+    lastFmClient: import("../services/lastfm.js").LastFmClient | null;
   }
 }
 // ── Content-type helpers ──────────────────────────────────────────────────────
@@ -44,6 +46,7 @@ interface ArtistRow {
   id: string;
   name: string;
   albumCount: number;
+  image_url: string | null;
 }
 
 interface ReleaseGroupRow {
@@ -228,7 +231,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const artists = app.db
       .prepare(
-        `SELECT ua.id, ua.name,
+        `SELECT ua.id, ua.name, ua.image_url,
           COUNT(urg.id) AS albumCount
         FROM unified_artists ua
         LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
@@ -253,6 +256,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           id: encodeId("ar", a.id),
           name: a.name,
           albumCount: a.albumCount,
+          coverArt: a.image_url ?? undefined,
         })),
       }));
 
@@ -319,8 +323,8 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const artist = app.db
-      .prepare("SELECT id, name FROM unified_artists WHERE id = ?")
-      .get(artistId) as { id: string; name: string } | undefined;
+      .prepare("SELECT id, name, image_url FROM unified_artists WHERE id = ?")
+      .get(artistId) as { id: string; name: string; image_url: string | null } | undefined;
 
     if (!artist) {
       sendSubsonicError(reply, 70, "Artist not found", q);
@@ -347,7 +351,81 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         id: encodeId("ar", artist.id),
         name: artist.name,
         albumCount: albums.length,
+        coverArt: artist.image_url ?? undefined,
         album: albums.map(buildAlbum),
+      },
+    });
+  });
+
+// ── getArtistInfo2 ────────────────────────────────────────────────────────
+
+  route("/getArtistInfo2", async (request, reply) => {
+    const q = request.query as Record<string, string>;
+
+    let artistId: string;
+    try {
+      artistId = decodeId(q.id ?? "", "ar");
+    } catch {
+      sendSubsonicError(reply, 70, "Artist not found", q);
+      return;
+    }
+
+    const artistRow = app.db
+      .prepare("SELECT id, name, musicbrainz_id, image_url FROM unified_artists WHERE id = ?")
+      .get(artistId) as { id: string; name: string; musicbrainz_id: string | null; image_url: string | null } | undefined;
+
+    if (!artistRow) {
+      sendSubsonicError(reply, 70, "Artist not found", q);
+      return;
+    }
+
+    // Get image URL from unified_artists (may be Last.fm URL or encoded cover art ID)
+    let imageUrl: string | undefined;
+    if (artistRow.image_url) {
+      if (artistRow.image_url.startsWith("https://")) {
+        // It's a Last.fm URL, return directly
+        imageUrl = artistRow.image_url;
+      } else {
+        // It's an encoded cover art ID, return as-is for client to resolve
+        imageUrl = artistRow.image_url;
+      }
+    }
+
+    // If no image URL and Last.fm is enabled, try to fetch from Last.fm
+    if (!imageUrl && app.lastFmClient?.isEnabled()) {
+      try {
+        const lastFmInfo = await app.lastFmClient.getArtistInfo(
+          artistRow.name,
+          artistRow.musicbrainz_id ?? undefined
+        );
+
+        if (lastFmInfo) {
+          const bestImage = app.lastFmClient.getBestImage(lastFmInfo);
+          if (bestImage) {
+            // Cache the image URL in the database
+            app.db
+              .prepare("UPDATE unified_artists SET image_url = ? WHERE id = ?")
+              .run(bestImage, artistId);
+            imageUrl = bestImage;
+            request.log.info(`Cached Last.fm image for artist ${artistRow.name}`);
+          }
+        }
+      } catch (err) {
+        request.log.warn(`Failed to fetch Last.fm info for artist ${artistRow.name}: ${err}`);
+      }
+    }
+
+    sendSubsonicOk(reply, q, {
+      artistInfo2: {
+        artist: {
+          id: encodeId("ar", artistRow.id),
+          name: artistRow.name,
+          musicBrainzId: artistRow.musicbrainz_id ?? undefined,
+        },
+        smallImageUrl: imageUrl,
+        mediumImageUrl: imageUrl,
+        largeImageUrl: imageUrl,
+        musicBrainzId: artistRow.musicbrainz_id ?? undefined,
       },
     });
   });
@@ -776,6 +854,27 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
     return;
   }
 
+  // Get track info for streaming
+  const trackRow = app.db
+    .prepare(
+      `SELECT ut.id, ut.title, ut.artist_id, ua.name AS artist_name, ut.duration_ms
+       FROM unified_tracks ut
+       JOIN unified_artists ua ON ua.id = ut.artist_id
+       WHERE ut.id = ?`,
+    )
+    .get(trackId) as { id: string; title: string; artist_name: string; duration_ms: number | null } | undefined;
+
+  // Start stream tracking
+  let streamOpId: string | undefined;
+  if (trackRow) {
+    streamOpId = app.streamTracking.start(
+      request.subsonicUser.username,
+      trackRow.id,
+      trackRow.title,
+      trackRow.artist_name,
+    );
+  }
+
   const rawSources = app.db
     .prepare(
       `SELECT it.remote_id, ts.format, ts.bitrate, ts.instance_id
@@ -860,6 +959,26 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
   const nodeStream = Readable.fromWeb(
     response.body as import("node:stream/web").ReadableStream,
   );
+  
+  // Track bytes transferred
+  let bytesTransferred = 0;
+  nodeStream.on("data", (chunk) => {
+    bytesTransferred += chunk.length;
+  });
+  
+  // Finish tracking when stream ends or errors
+  nodeStream.on("end", () => {
+    if (streamOpId) {
+      app.streamTracking.finish(streamOpId, null, bytesTransferred);
+    }
+  });
+  
+  nodeStream.on("error", () => {
+    if (streamOpId) {
+      app.streamTracking.finish(streamOpId, null, bytesTransferred);
+    }
+  });
+  
   nodeStream.pipe(reply.raw);
 }
 

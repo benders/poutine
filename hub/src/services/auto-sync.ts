@@ -4,6 +4,7 @@ import { SubsonicClient } from "../adapters/subsonic.js";
 import { syncLocal } from "../library/sync-local.js";
 import { mergeLibraries } from "../library/merge.js";
 import { SyncOperationService } from "./sync-operations.js";
+import { LastFmClient } from "./lastfm.js";
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -16,6 +17,7 @@ export class AutoSyncService {
     private readonly config: Config,
     private readonly log: { info: (msg: string) => void; error: (msg: string) => void },
     private readonly syncOpService?: SyncOperationService,
+    private readonly lastFmClient?: LastFmClient | null,
   ) {}
 
   start(): void {
@@ -69,7 +71,7 @@ export class AutoSyncService {
         `AutoSync: Navidrome lastScan=${scanStatus.lastScan} is newer than lastSyncedAt=${lastSyncedAt?.toISOString() ?? "never"} — syncing local library`,
       );
       try {
-        const result = await syncLocal(this.db, this.config);
+        const result = await syncLocal(this.db, this.config, this.lastFmClient ?? null);
         mergeLibraries(this.db);
         this.log.info(
           `AutoSync complete: ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks`,

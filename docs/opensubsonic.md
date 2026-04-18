@@ -53,7 +53,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | `getVideos`         | NOT IMPLEMENTED |                                                                    |
 | `getVideoInfo`      | NOT IMPLEMENTED |                                                                    |
 | `getArtistInfo`     | NOT IMPLEMENTED |                                                                    |
-| `getArtistInfo2`    | NOT IMPLEMENTED |                                                                    |
+| `getArtistInfo2`    | Implemented     | Returns artist info with image URLs; supports `musicBrainzId`, `count`, `includeNotYetReleased` |
 | `getAlbumInfo`      | NOT IMPLEMENTED |                                                                    |
 | `getAlbumInfo2`     | NOT IMPLEMENTED |                                                                    |
 | `getSimilarSongs`   | NOT IMPLEMENTED |                                                                    |
