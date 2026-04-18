@@ -23,6 +23,8 @@ export interface Config {
   // When set, the hub serves the SPA at / in addition to all API routes.
   // Leave unset in dev — the Vite dev server handles the frontend instead.
   staticDir: string | undefined;
+  // Optional: Last.fm API key for artist images and metadata
+  lastFmApiKey: string | undefined;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -85,5 +87,6 @@ export function loadConfig(): Config {
       process.env.POUTINE_OWNER_PASSWORD
     ),
     staticDir: process.env.PUBLIC_DIR || undefined,
+    lastFmApiKey: process.env.LASTFM_API_KEY || undefined,
   };
 }

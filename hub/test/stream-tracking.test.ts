@@ -166,15 +166,18 @@ describe("StreamTrackingService", () => {
   });
 
   describe("getRecent", () => {
-    it("should return operations ordered by started_at descending", () => {
+    it("should return operations ordered by started_at descending", async () => {
       const id1 = service.start("alice", "t:1", "Song 1", "Artist 1");
       service.finish(id1, 180000, 5000000);
-      
+
+      // Small delay to ensure different started_at timestamps (SQLite datetime has second-level precision)
+      await new Promise((r) => setTimeout(r, 1100));
+
       const id2 = service.start("bob", "t:2", "Song 2", "Artist 2");
       service.finish(id2, 240000, 7000000);
-      
+
       const recent = service.getRecent(10);
-      
+
       expect(recent).toHaveLength(2);
       expect(recent[0].id).toBe(id2); // Most recent first
       expect(recent[1].id).toBe(id1);

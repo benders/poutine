@@ -52,13 +52,18 @@ export function ArtistDetailPage() {
 
       {/* Artist header */}
       <div className="flex items-center gap-6">
-        <div
-          className="w-28 h-28 rounded-full flex items-center justify-center shrink-0"
-          style={{ backgroundColor: hashColor(artist.name) }}
-        >
-          <span className="text-3xl font-bold text-white/60">
-            {initials(artist.name)}
-          </span>
+        <div className="w-28 h-28 rounded-full flex items-center justify-center shrink-0 overflow-hidden bg-[color:var(--artist-bg, hsl(0, 40%, 30%))]">
+          {artist.coverArt ? (
+            <img
+              src={artUrl(artist.coverArt, 300)}
+              alt={artist.name}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <span className="text-3xl font-bold text-white/60">
+              {initials(artist.name)}
+            </span>
+          )}
         </div>
         <div>
           <h1 className="text-3xl font-bold text-text-primary">{artist.name}</h1>

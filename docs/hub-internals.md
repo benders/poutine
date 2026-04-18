@@ -40,7 +40,7 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 
 | Surface           | Prefix          | Auth                                                             | Purpose                                   |
 |-------------------|-----------------|------------------------------------------------------------------|--------------------------------------------|
-| Subsonic          | `/rest/*`       | JWT or Subsonic `u`+`p` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art   |
+| Subsonic          | `/rest/*`       | JWT or Subsonic `u`+`p` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art — see [opensubsonic.md](opensubsonic.md) for compatibility |
 | Proxy             | `/proxy/*`      | Ed25519, JWT, or Subsonic `u`+`p` (unified — see below)          | Authenticated transparent proxy to Navidrome |
 | Federation        | `/federation/*` | Ed25519-signed (see [federation-api.md](federation-api.md))      | Peer-to-peer only                         |
 | Admin             | `/admin/*`      | JWT (see [authentication.md](authentication.md))                 | Users CRUD, peers, sync, cache, instance  |

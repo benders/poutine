@@ -63,9 +63,18 @@ export function mergeLibraries(db: Database.Database): void {
       const nameNormalized = normalizeName(name);
 
       const artistCoverArtId = representative.image_url as string | null;
-      const encodedArtistArt = artistCoverArtId
-        ? `${representative.instance_id as string}:${artistCoverArtId}`
-        : null;
+      // Check if this is a Last.fm URL or a cover art ID
+      // Last.fm URLs start with https://
+      let encodedArtistArt: string | null = null;
+      if (artistCoverArtId) {
+        if (artistCoverArtId.startsWith("https://")) {
+          // It's a Last.fm URL, store directly
+          encodedArtistArt = artistCoverArtId;
+        } else {
+          // It's a cover art ID, encode it
+          encodedArtistArt = `${representative.instance_id as string}:${artistCoverArtId}`;
+        }
+      }
 
       insertUnifiedArtist.run(
         id,
@@ -97,9 +106,16 @@ export function mergeLibraries(db: Database.Database): void {
       const representative = group[0];
 
       const artistCoverArtId2 = representative.image_url as string | null;
-      const encodedArtistArt2 = artistCoverArtId2
-        ? `${representative.instance_id as string}:${artistCoverArtId2}`
-        : null;
+      let encodedArtistArt2: string | null = null;
+      if (artistCoverArtId2) {
+        if (artistCoverArtId2.startsWith("https://")) {
+          // It's a Last.fm URL, store directly
+          encodedArtistArt2 = artistCoverArtId2;
+        } else {
+          // It's a cover art ID, encode it
+          encodedArtistArt2 = `${representative.instance_id as string}:${artistCoverArtId2}`;
+        }
+      }
 
       insertUnifiedArtist.run(
         id,

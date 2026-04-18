@@ -14,6 +14,7 @@ export interface SubsonicArtist {
   id: string;
   name: string;
   albumCount: number;
+  coverArt?: string;
 }
 
 export interface SubsonicAlbum {
@@ -43,6 +44,18 @@ export interface SubsonicSong {
   bitRate?: number;
   suffix?: string;
   sourceInstance?: string;
+  // Additional metadata for debugging (Issue #42)
+  year?: number;
+  contentType?: string;
+  size?: number;
+  path?: string;
+  channelCount?: number;
+  samplingRate?: number;
+  bitDepth?: number;
+  sortName?: string;
+  musicBrainzId?: string;
+  comment?: string;
+  bpm?: number;
 }
 
 export interface SubsonicArtistDetail extends SubsonicArtist {
@@ -74,6 +87,7 @@ interface RawArtist {
   id: string;
   name: string;
   albumCount?: number;
+  coverArt?: string;
 }
 
 interface RawAlbum {
@@ -103,6 +117,18 @@ interface RawSong {
   bitRate?: number;
   suffix?: string;
   sourceInstance?: string;
+  // Additional metadata for debugging (Issue #42)
+  year?: number;
+  contentType?: string;
+  size?: number;
+  path?: string;
+  channelCount?: number;
+  samplingRate?: number;
+  bitDepth?: number;
+  sortName?: string;
+  musicBrainzId?: string;
+  comment?: string;
+  bpm?: number;
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
@@ -136,6 +162,18 @@ function parseSong(raw: RawSong): SubsonicSong {
     bitRate: raw.bitRate,
     suffix: raw.suffix,
     sourceInstance: raw.sourceInstance,
+    // Additional metadata for debugging (Issue #42)
+    year: raw.year,
+    contentType: raw.contentType,
+    size: raw.size,
+    path: raw.path,
+    channelCount: raw.channelCount,
+    samplingRate: raw.samplingRate,
+    bitDepth: raw.bitDepth,
+    sortName: raw.sortName,
+    musicBrainzId: raw.musicBrainzId,
+    comment: raw.comment,
+    bpm: raw.bpm,
   };
 }
 
@@ -210,7 +248,7 @@ export async function getArtists(): Promise<SubsonicArtist[]> {
   const artists: SubsonicArtist[] = [];
   for (const idx of sr.artists.index) {
     for (const a of idx.artist ?? []) {
-      artists.push({ id: a.id, name: a.name, albumCount: a.albumCount ?? 0 });
+      artists.push({ id: a.id, name: a.name, albumCount: a.albumCount ?? 0, coverArt: a.coverArt });
     }
   }
   return artists;
@@ -225,6 +263,7 @@ export async function getArtist(id: string): Promise<SubsonicArtistDetail> {
     id: raw.id,
     name: raw.name,
     albumCount: raw.albumCount ?? raw.album?.length ?? 0,
+    coverArt: raw.coverArt,
     album: (raw.album ?? []).map(parseAlbum),
   };
 }
@@ -287,6 +326,12 @@ export function artUrl(coverArtId: string, size?: number): string {
   // Auth via httpOnly access_token cookie (sent automatically by the browser).
   // Do NOT embed the JWT in the URL — the token baked in at render time goes
   // stale when the access token refreshes, causing images to 401.
+  
+  // If coverArtId is already a full URL (e.g., Last.fm), return it directly
+  if (coverArtId.startsWith("http://") || coverArtId.startsWith("https://")) {
+    return coverArtId;
+  }
+  
   const params = new URLSearchParams({
     v: SUBSONIC_VERSION,
     c: CLIENT,

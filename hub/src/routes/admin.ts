@@ -363,7 +363,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
   // POST /admin/sync — trigger a full sync (local + peers)
   app.post("/sync", { preHandler: requireOwner }, async (request) => {
-    return syncAll(
+   return syncAll(
       app.db,
       app.config,
       app.peerRegistry,
@@ -371,6 +371,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       request.adminUsername,
       app.syncOpService,
       "manual",
+      app.lastFmClient,
     );
   });
 

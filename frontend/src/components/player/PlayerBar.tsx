@@ -1,7 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
-import { streamUrl } from "@/lib/subsonic";
+import { streamUrl, artUrl } from "@/lib/subsonic";
 import { attemptRefresh, clearTokens } from "@/lib/api";
 import {
   Play,
@@ -18,6 +19,7 @@ import {
 import { cn } from "@/lib/cn";
 
 export function PlayerBar() {
+  const navigate = useNavigate();
   const audioRef = useRef<HTMLAudioElement>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const retryAttemptedRef = useRef(false);
@@ -49,6 +51,19 @@ export function PlayerBar() {
   const currentStreamUrl = currentTrack
     ? streamUrl(currentTrack.id, "opus", 192)
     : null;
+
+  // Navigation handlers for Issue #40
+  const navigateToAlbum = () => {
+    if (currentTrack?.albumId) {
+      navigate(`/albums/${currentTrack.albumId}`);
+    }
+  };
+
+  const navigateToArtist = () => {
+    if (currentTrack?.artistId) {
+      navigate(`/artists/${currentTrack.artistId}`);
+    }
+  };
 
   // Reset error/retry state and seed duration from metadata when track changes
   useEffect(() => {
@@ -162,12 +177,34 @@ export function PlayerBar() {
 
       {/* Track info */}
       <div className="shrink-0 flex items-center gap-3">
-        <div className="w-12 h-12 rounded bg-surface-active shrink-0 flex items-center justify-center">
-          <ListMusic className="w-5 h-5 text-text-muted" />
+        <div
+          className="w-12 h-12 rounded overflow-hidden bg-surface-active shrink-0 flex items-center justify-center cursor-pointer hover:opacity-80 transition-opacity"
+          onClick={navigateToAlbum}
+          title={currentTrack?.album ? `View album: ${currentTrack.album}` : undefined}
+        >
+          {currentTrack?.coverArt ? (
+            <img
+              src={artUrl(currentTrack.coverArt, 48)}
+              alt={currentTrack.album || "Album art"}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <ListMusic className="w-5 h-5 text-text-muted" />
+          )}
         </div>
         <div className="min-w-0 max-w-xs">
-          <p className="text-sm font-medium truncate">{currentTrack.title}</p>
-          <p className="text-xs text-text-secondary truncate">
+          <p
+            className="text-sm font-medium truncate cursor-pointer hover:underline"
+            onClick={navigateToAlbum}
+            title={currentTrack?.album ? `View album: ${currentTrack.album}` : undefined}
+          >
+            {currentTrack.title}
+          </p>
+          <p
+            className="text-xs text-text-secondary truncate cursor-pointer hover:underline"
+            onClick={navigateToArtist}
+            title={currentTrack?.artist ? `View artist: ${currentTrack.artist}` : undefined}
+          >
             {currentTrack.artist}
           </p>
           <div className="flex items-center gap-2 text-xs text-text-muted mt-0.5">

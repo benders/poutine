@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "@/stores/auth";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { useDocumentTitle } from "@/lib/useDocumentTitle";
 import { LoginPage } from "@/pages/LoginPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { ArtistsPage } from "@/pages/ArtistsPage";
@@ -27,9 +28,13 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 export function App() {
   const { checkAuth } = useAuth();
+  useDocumentTitle();
 
   useEffect(() => {
-    checkAuth();
+    // Skip auth check on login page to avoid redirect loop
+    if (window.location.pathname !== '/login') {
+      checkAuth();
+    }
   }, [checkAuth]);
 
   return (
