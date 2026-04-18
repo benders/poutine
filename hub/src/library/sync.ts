@@ -351,7 +351,6 @@ export async function syncAll(
       if (peerOperationId && syncOpService) {
         syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);
       }
-      log?.info(`syncAll: peer ${peer.id} done — ${peerResult.artistCount} artists, ${peerResult.albumCount} albums, ${peerResult.trackCount} tracks`);
     } catch (err) {
       const syncMessage = `Peer sync failed: ${String(err)}`;
       db.prepare(
