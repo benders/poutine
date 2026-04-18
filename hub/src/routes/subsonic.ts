@@ -46,6 +46,7 @@ interface ArtistRow {
   id: string;
   name: string;
   albumCount: number;
+  image_url: string | null;
 }
 
 interface ReleaseGroupRow {
@@ -230,7 +231,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const artists = app.db
       .prepare(
-        `SELECT ua.id, ua.name,
+        `SELECT ua.id, ua.name, ua.image_url,
           COUNT(urg.id) AS albumCount
         FROM unified_artists ua
         LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
@@ -255,6 +256,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           id: encodeId("ar", a.id),
           name: a.name,
           albumCount: a.albumCount,
+          coverArt: a.image_url ?? undefined,
         })),
       }));
 
