@@ -14,6 +14,7 @@ export interface SubsonicArtist {
   id: string;
   name: string;
   albumCount: number;
+  coverArt?: string;
 }
 
 export interface SubsonicAlbum {
@@ -86,6 +87,7 @@ interface RawArtist {
   id: string;
   name: string;
   albumCount?: number;
+  coverArt?: string;
 }
 
 interface RawAlbum {
@@ -246,7 +248,7 @@ export async function getArtists(): Promise<SubsonicArtist[]> {
   const artists: SubsonicArtist[] = [];
   for (const idx of sr.artists.index) {
     for (const a of idx.artist ?? []) {
-      artists.push({ id: a.id, name: a.name, albumCount: a.albumCount ?? 0 });
+      artists.push({ id: a.id, name: a.name, albumCount: a.albumCount ?? 0, coverArt: a.coverArt });
     }
   }
   return artists;
@@ -261,6 +263,7 @@ export async function getArtist(id: string): Promise<SubsonicArtistDetail> {
     id: raw.id,
     name: raw.name,
     albumCount: raw.albumCount ?? raw.album?.length ?? 0,
+    coverArt: raw.coverArt,
     album: (raw.album ?? []).map(parseAlbum),
   };
 }
