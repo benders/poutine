@@ -168,23 +168,10 @@ export async function syncInstance(
           const artistDetail = await client.getArtist(artist.id);
           const artistCompositeId = `${instance.id}:${artist.id}`;
 
-          // Fetch artist info for image URLs from Last.fm/MusicBrainz
-          let artistImageUrl: string | null = null;
-          try {
-            const artistInfo = await client.getArtistInfo(artist.id);
-            // Prefer large image URL, fall back to medium, then small
-            artistImageUrl = 
-              artistInfo.largeImageUrl ?? 
-              artistInfo.mediumImageUrl ?? 
-              artistInfo.smallImageUrl ?? 
-              null;
-          } catch {
-            // getArtistInfo2 may not be supported by all servers
-            // Fall back to coverArt ID from getArtist
-            artistImageUrl = artistDetail.coverArt ?? artist.coverArt ?? null;
-          }
+          // Get image from Navidrome first (coverArt ID)
+          let artistImageUrl: string | null = artistDetail.coverArt ?? artist.coverArt ?? null;
 
-          // If still no image and we have a MusicBrainz ID, try Last.fm directly
+          // If no image and Last.fm is enabled, try to fetch from Last.fm directly
           // This handles the case where the Subsonic server doesn't have Last.fm configured
           if (!artistImageUrl && config.lastFmClient?.isEnabled()) {
             try {
