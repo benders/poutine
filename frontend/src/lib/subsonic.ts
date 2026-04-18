@@ -326,6 +326,12 @@ export function artUrl(coverArtId: string, size?: number): string {
   // Auth via httpOnly access_token cookie (sent automatically by the browser).
   // Do NOT embed the JWT in the URL — the token baked in at render time goes
   // stale when the access token refreshes, causing images to 401.
+  
+  // If coverArtId is already a full URL (e.g., Last.fm), return it directly
+  if (coverArtId.startsWith("http://") || coverArtId.startsWith("https://")) {
+    return coverArtId;
+  }
+  
   const params = new URLSearchParams({
     v: SUBSONIC_VERSION,
     c: CLIENT,
