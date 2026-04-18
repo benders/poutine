@@ -855,6 +855,10 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
     )
     .get(trackId) as { id: string; title: string; artist_name: string; duration_ms: number | null } | undefined;
 
+  if (!trackRow) {
+    request.log.warn(`Stream tracking: track ${trackId} not found in unified_tracks`);
+  }
+
   // Start stream tracking
   let streamOpId: string | undefined;
   if (trackRow) {
@@ -864,6 +868,7 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
       trackRow.title,
       trackRow.artist_name,
     );
+    request.log.info(`Stream tracking started: ${streamOpId} for ${trackRow.title} by ${trackRow.artist_name}`);
   }
 
   const rawSources = app.db
