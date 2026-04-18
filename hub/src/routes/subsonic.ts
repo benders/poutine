@@ -837,13 +837,15 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
   const q = request.query as Record<string, string>;
 
-  let trackId: string;
-  try {
-    trackId = decodeId(q.id ?? "", "t");
-  } catch {
-    sendBinaryError(reply, 400, "Invalid track ID");
-    return;
-  }
+let trackId: string;
+try {
+  trackId = decodeId(q.id ?? "", "t");
+  request.log.info(`Stream request: decoded trackId = ${trackId}`);
+} catch {
+  request.log.warn(`Stream request: failed to decode track ID from ${q.id}`);
+  sendBinaryError(reply, 400, "Invalid track ID");
+  return;
+}
 
   // Get track info for streaming
   const trackRow = app.db
