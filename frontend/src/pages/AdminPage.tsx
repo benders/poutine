@@ -556,7 +556,7 @@ function ActivitySection() {
             <p className="text-sm text-text-muted py-2">Loading stream history...</p>
           ) : recentStreams && recentStreams.length > 0 ? (
             <div className="space-y-2">
-              {recentStreams.slice(0, 5).map((stream) => (
+              {recentStreams.map((stream) => (
                 <div key={stream.id} className="bg-surface-hover border border-border rounded-lg p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
@@ -611,7 +611,7 @@ function ActivitySection() {
             <p className="text-sm text-text-muted py-2">Loading sync history...</p>
           ) : recentSyncs && recentSyncs.length > 0 ? (
             <div className="space-y-2">
-              {recentSyncs.slice(0, 5).map((sync) => {
+              {recentSyncs.map((sync) => {
                 const statusConfig =
                   sync.status === "complete"
                     ? { class: "bg-success/10 text-success", label: "Complete" }
