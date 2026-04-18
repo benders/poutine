@@ -94,6 +94,9 @@ export async function syncInstance(
 
   const startMs = Date.now();
   const sem = new Semaphore(config.concurrency);
+  
+  const hasLastFm = config.lastFmClient?.isEnabled() ?? false;
+  console.log(`syncInstance: starting sync for instance ${instance.id}, concurrency=${config.concurrency}, lastFm=${hasLastFm}`);
 
   // Prepared statements for upserts
   const upsertArtist = db.prepare(`
@@ -170,11 +173,14 @@ export async function syncInstance(
 
           // Get image from Navidrome first (coverArt ID)
           let artistImageUrl: string | null = artistDetail.coverArt ?? artist.coverArt ?? null;
+          
+          console.log(`syncInstance: artist "${artistDetail.name ?? artist.name}" - coverArt=${artistImageUrl ? "yes" : "no"}, lastFm=${hasLastFm ? "enabled" : "disabled"}`);
 
           // If no image and Last.fm is enabled, try to fetch from Last.fm directly
           // This handles the case where the Subsonic server doesn't have Last.fm configured
-          if (!artistImageUrl && config.lastFmClient?.isEnabled()) {
+          if (!artistImageUrl && hasLastFm && config.lastFmClient) {
             try {
+              console.log(`syncInstance: fetching Last.fm info for "${artistDetail.name ?? artist.name}"...`);
               const lastFmInfo = await config.lastFmClient.getArtistInfo(
                 artistDetail.name ?? artist.name,
                 artistDetail.musicBrainzId ?? artist.musicBrainzId ?? undefined
@@ -183,11 +189,19 @@ export async function syncInstance(
                 const bestImage = config.lastFmClient.getBestImage(lastFmInfo);
                 if (bestImage) {
                   artistImageUrl = bestImage;
+                  console.log(`syncInstance: found Last.fm image for "${artistDetail.name ?? artist.name}": ${bestImage.substring(0, 50)}...`);
+                } else {
+                  console.log(`syncInstance: Last.fm returned info but no image for "${artistDetail.name ?? artist.name}"`);
                 }
+              } else {
+                console.log(`syncInstance: Last.fm returned no info for "${artistDetail.name ?? artist.name}"`);
               }
-            } catch {
+            } catch (err) {
+              console.log(`syncInstance: Last.fm fetch failed for "${artistDetail.name ?? artist.name}": ${String(err)}`);
               // Last.fm fetch failed, keep existing image URL (or null)
             }
+          } else if (!artistImageUrl && !hasLastFm) {
+            console.log(`syncInstance: no image for "${artistDetail.name ?? artist.name}" and Last.fm disabled`);
           }
 
           upsertArtist.run(
@@ -290,6 +304,8 @@ export async function syncInstance(
   db.prepare(
     "UPDATE instances SET status = 'online', last_seen = datetime('now'), last_synced_at = datetime('now'), last_sync_ok = 1, last_sync_message = ?, track_count = ?, updated_at = datetime('now') WHERE id = ?",
   ).run(syncMessage, result.trackCount, instance.id);
+  
+  console.log(`syncInstance: completed for instance ${instance.id} in ${elapsedSec}s — ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks, ${result.errors.length} errors`);
 
   return result;
 }
@@ -312,11 +328,15 @@ export async function syncAll(
   const operationId = syncOpService?.start(operationType, "local") || null;
   let localResult: SyncResult;
   
+  log?.info(`syncAll: starting ${operationType} sync for local instance, lastFmClient=${lastFmClient?.isEnabled() ? "enabled" : "disabled"}`);
+  
   // Ensure synthetic instance rows exist (idempotent)
   seedSyntheticInstances(db, config, peerRegistry);
 
   try {
+    log?.info("syncAll: syncing local Navidrome instance...");
     localResult = await syncLocal(db, config, lastFmClient ?? null);
+    log?.info(`syncAll: local sync done — ${localResult.artistCount} artists, ${localResult.albumCount} albums, ${localResult.trackCount} tracks`);
   } catch (err) {
     if (operationId) {
       syncOpService!.fail(operationId, [`Local sync failed: ${String(err)}`]);

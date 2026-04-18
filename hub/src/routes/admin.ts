@@ -367,17 +367,28 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       info: (msg: string) => request.log.info(msg),
       error: (msg: string) => request.log.error(msg),
     };
-    return syncAll(
-      app.db,
-      app.config,
-      app.peerRegistry,
-      app.federatedFetch,
-      request.adminUsername,
-      app.syncOpService,
-      log,
-      "manual",
-      app.lastFmClient,
-    );
+    
+    log.info("Starting manual sync for local instance and all peers");
+    
+    try {
+      const result = await syncAll(
+        app.db,
+        app.config,
+        app.peerRegistry,
+        app.federatedFetch,
+        request.adminUsername,
+        app.syncOpService,
+        log,
+        "manual",
+        app.lastFmClient,
+      );
+      
+      log.info(`Sync complete: local=${result.local.artistCount} artists, ${result.local.albumCount} albums, ${result.local.trackCount} tracks, errors=${result.local.errors.length}`);
+      return result;
+    } catch (err) {
+      log.error(`Sync failed: ${String(err)}`);
+      throw err;
+    }
   });
 
   // GET /admin/peers/:peerId/data — raw instance_* rows for a peer (debug)
