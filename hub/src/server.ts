@@ -139,7 +139,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const autoSync = new AutoSyncService(db, config, {
     info: (msg) => app.log.info(msg),
     error: (msg) => app.log.error(msg),
-  }, syncOpService);
+  }, syncOpService, lastFmClient);
 
   // SIGHUP handler to reload peer registry without restart
   const sighupHandler = () => {
