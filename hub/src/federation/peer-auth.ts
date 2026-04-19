@@ -11,6 +11,7 @@ declare module "fastify" {
 export function createRequirePeerAuth(deps: {
   registry: PeerRegistry;
   maxSkewMs?: number;
+  poutineSkipVersionCheck?: boolean;
 }): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
   const maxSkewMs = deps.maxSkewMs ?? 5 * 60 * 1000;
 
@@ -62,6 +63,24 @@ export function createRequirePeerAuth(deps: {
     if (!verifyRequest(peer.publicKey, payload, signature)) {
       reply.code(401).send({ error: "Invalid signature" });
       return;
+    }
+
+    // Enforce minimum federation API version
+    const MINIMUM_API_VERSION = 3;
+    const skipCheck = deps.poutineSkipVersionCheck ?? false;
+    if (!skipCheck) {
+      const versionHeader = request.headers["poutine-api-version"];
+      const peerVersion = versionHeader
+        ? parseInt(Array.isArray(versionHeader) ? versionHeader[0] : versionHeader, 10)
+        : undefined;
+
+      // Reject peers that omit the header or declare a version below the floor.
+      if (peerVersion === undefined || peerVersion < MINIMUM_API_VERSION) {
+        reply.code(403).send({
+          error: `Peer API version ${peerVersion ?? "unspecified"} is below minimum required ${MINIMUM_API_VERSION}`,
+        });
+        return;
+      }
     }
 
     request.peer = { id: instanceId, userAssertion };

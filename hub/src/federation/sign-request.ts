@@ -5,7 +5,7 @@ import {
   signRequest,
 } from "./signing.js";
 import type { Peer } from "./peers.js";
-import { USER_AGENT } from "../version.js";
+import { FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
 
 export interface FederatedFetchOptions {
   method?: string; // default GET
@@ -52,6 +52,7 @@ export function createFederationFetcher(deps: {
       "x-poutine-user": opts.asUser,
       "x-poutine-timestamp": timestamp,
       "x-poutine-signature": signature,
+      "poutine-api-version": String(FEDERATION_API_VERSION),
     };
 
     if (opts.body) {

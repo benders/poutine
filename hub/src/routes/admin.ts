@@ -7,6 +7,7 @@ import { StreamTrackingService } from "../services/stream-tracking.js";
 import { mergeLibraries } from "../library/merge.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { USER_AGENT } from "../version.js";
+import { FEDERATION_API_VERSION } from "../version.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -271,6 +272,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     return {
       instanceId: app.config.poutineInstanceId,
       publicKey: app.publicKeySpec,
+      apiVersion: FEDERATION_API_VERSION,
       navidrome: {
         reachable: scanStatus !== null,
         scanning: scanStatus?.scanning ?? false,
@@ -336,6 +338,17 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       JOIN unified_tracks ut ON ts.unified_track_id = ut.id
       WHERE ts.instance_id = ?
     `);
+
+    // Persist peer's reported API version to the instances table
+    const updateVersionStmt = app.db.prepare(
+      "UPDATE instances SET server_version = ? WHERE id = ?",
+    );
+    for (let i = 0; i < peers.length; i++) {
+      const healthResult = healthChecks[i];
+      const health = healthResult.status === "fulfilled" ? healthResult.value : null;
+      const apiVersion = health?.apiVersion != null ? String(health.apiVersion) : null;
+      updateVersionStmt.run(apiVersion, peers[i].id);
+    }
 
     return peers.map((peer, i) => {
       const row = app.db

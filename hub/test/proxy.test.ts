@@ -149,6 +149,7 @@ async function buildTestSetup(): Promise<TestSetup> {
     navidromeUrl: `http://127.0.0.1:${navidromePort}`,
     navidromeUsername: "nav-admin",
     navidromePassword: "nav-pass",
+    poutineSkipVersionCheck: true, // skip version enforcement in standard peer-auth tests
   };
 
   const app = await buildApp(config);
@@ -362,6 +363,146 @@ describe("proxy — auth reject", () => {
       headers,
     });
     expect(res.statusCode).toBe(401);
+  });
+});
+
+// ── Version enforcement ─────────────────────────────────────────────────────────
+
+/** Extended setup for version enforcement tests (version checks ENFORCED). */
+async function buildVersionEnforcedSetup(): Promise<TestSetup> {
+  const keyPathA = tmpPath("key-ve-a.pem");
+  const keyPathApp = tmpPath("key-ve-app.pem");
+  const peersYaml = tmpPath("peers-ve.yaml");
+
+  const { privateKey: privKeyA, publicKeyBase64: pubKeyBase64A } =
+    loadOrCreatePrivateKey(keyPathA);
+
+  writeYaml(
+    peersYaml,
+    [
+      `peers:`,
+      `  - id: "peer-a"`,
+      `    url: "http://localhost"`,
+      `    public_key: "ed25519:${pubKeyBase64A}"`,
+    ].join("\n"),
+  );
+
+  const { server: navidrome, port: navidromePort, requests: navidromeRequests } =
+    await startFakeNavidrome();
+
+  const config: Partial<Config> = {
+    databasePath: ":memory:",
+    jwtSecret: "version-enforced-test",
+    poutinePrivateKeyPath: keyPathApp,
+    poutinePeersConfig: peersYaml,
+    poutineInstanceId: "hub-version-test",
+    navidromeUrl: `http://127.0.0.1:${navidromePort}`,
+    navidromeUsername: "nav-admin",
+    navidromePassword: "nav-pass",
+    poutineSkipVersionCheck: false, // enforce version checks
+  };
+
+  const app = await buildApp(config);
+  await app.ready();
+
+  return {
+    app,
+    navidrome,
+    navidromePort,
+    navidromeRequests,
+    keyPathA,
+    keyPathApp,
+    peersYaml,
+    privKeyA,
+    pubKeyBase64A,
+  };
+}
+
+describe("proxy — version enforcement", () => {
+  let setup: TestSetup;
+
+  beforeEach(async () => {
+    setup = await buildVersionEnforcedSetup();
+  });
+
+  afterEach(async () => {
+    await teardown(setup);
+  });
+
+  it("rejects peer auth with 403 when poutine-api-version header is missing", async () => {
+    const url = "/proxy/rest/ping?f=json";
+    const headers = makePeerHeaders({
+      privateKey: setup.privKeyA,
+      instanceId: "peer-a",
+      url,
+    });
+    // No poutine-api-version header set
+
+    const res = await setup.app.inject({
+      method: "GET",
+      url,
+      headers,
+    });
+
+    expect(res.statusCode).toBe(403);
+    const body = res.json() as { error: string };
+    expect(body.error).toMatch(/below minimum required 3/i);
+  });
+
+  it("rejects peer auth with 403 when poutine-api-version is below minimum", async () => {
+    const url = "/proxy/rest/ping?f=json";
+    const headers = makePeerHeaders({
+      privateKey: setup.privKeyA,
+      instanceId: "peer-a",
+      url,
+    });
+    headers["poutine-api-version"] = "2"; // below minimum of 3
+
+    const res = await setup.app.inject({
+      method: "GET",
+      url,
+      headers,
+    });
+
+    expect(res.statusCode).toBe(403);
+    const body = res.json() as { error: string };
+    expect(body.error).toMatch(/below minimum required 3/i);
+  });
+
+  it("allows peer auth when poutine-api-version is exactly at minimum", async () => {
+    const url = "/proxy/rest/ping?f=json";
+    const headers = makePeerHeaders({
+      privateKey: setup.privKeyA,
+      instanceId: "peer-a",
+      url,
+    });
+    headers["poutine-api-version"] = "3"; // exactly at minimum
+
+    const res = await setup.app.inject({
+      method: "GET",
+      url,
+      headers,
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("allows peer auth when poutine-api-version is above minimum", async () => {
+    const url = "/proxy/rest/ping?f=json";
+    const headers = makePeerHeaders({
+      privateKey: setup.privKeyA,
+      instanceId: "peer-a",
+      url,
+    });
+    headers["poutine-api-version"] = "99"; // above minimum
+
+    const res = await setup.app.inject({
+      method: "GET",
+      url,
+      headers,
+    });
+
+    expect(res.statusCode).toBe(200);
   });
 });
 
