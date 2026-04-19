@@ -8,6 +8,7 @@ import { createDatabase } from "./db/client.js";
 import { adminRoutes } from "./routes/admin.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
 import { proxyRoutes } from "./routes/proxy.js";
+import { federationRoutes } from "./routes/federation.js";
 import { ArtCache } from "./services/art-cache.js";
 import { loadOrCreatePrivateKey } from "./federation/signing.js";
 import { loadPeerRegistry } from "./federation/peers.js";
@@ -139,7 +140,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const autoSync = new AutoSyncService(db, config, {
     info: (msg) => app.log.info(msg),
     error: (msg) => app.log.error(msg),
-  }, syncOpService, lastFmClient);
+}, syncOpService, lastFmClient);
 
   // SIGHUP handler to reload peer registry without restart
   const sighupHandler = () => {
@@ -161,6 +162,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // Routes
   await app.register(adminRoutes, { prefix: "/admin" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
+  await app.register(federationRoutes, { prefix: "/federation" });
 
   await app.register(proxyRoutes, {
     prefix: "/proxy",

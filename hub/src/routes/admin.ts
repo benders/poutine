@@ -363,32 +363,16 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
   // POST /admin/sync — trigger a full sync (local + peers)
   app.post("/sync", { preHandler: requireOwner }, async (request) => {
-    const log = {
-      info: (msg: string) => request.log.info(msg),
-      error: (msg: string) => request.log.error(msg),
-    };
-    
-    log.info("Starting manual sync for local instance and all peers");
-    
-    try {
-      const result = await syncAll(
-        app.db,
-        app.config,
-        app.peerRegistry,
-        app.federatedFetch,
-        request.adminUsername,
-        app.syncOpService,
-        log,
-        "manual",
-        app.lastFmClient,
-      );
-      
-      log.info(`Sync complete: local=${result.local.artistCount} artists, ${result.local.albumCount} albums, ${result.local.trackCount} tracks, errors=${result.local.errors.length}`);
-      return result;
-    } catch (err) {
-      log.error(`Sync failed: ${String(err)}`);
-      throw err;
-    }
+   return syncAll(
+      app.db,
+      app.config,
+      app.peerRegistry,
+      app.federatedFetch,
+      request.adminUsername,
+      app.syncOpService,
+      "manual",
+      app.lastFmClient,
+    );
   });
 
   // GET /admin/peers/:peerId/data — raw instance_* rows for a peer (debug)
@@ -506,7 +490,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // GET /admin/activity/streams/active — get currently active streams
-  app.get("/admin/activity/streams/active", { preHandler: requireOwner }, async () => {
+  app.get("/activity/streams/active", { preHandler: requireOwner }, async () => {
     return app.streamTracking.getActive();
   });
 

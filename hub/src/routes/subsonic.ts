@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, RouteHandlerMethod } from "fastify";
 import { Readable } from "node:stream";
 import { readFileSync } from "node:fs";
+import type { Peer } from "../federation/peers.js";
 import { requireSubsonicAuth, requireSubsonicAuthBinary } from "../auth/subsonic-auth.js";
 import {
   sendSubsonicOk,
@@ -13,14 +14,11 @@ import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { selectBestSource } from "../library/source-selection.js";
 import type { StreamTrackingService } from "../services/stream-tracking.js";
-import type { LastFmClient } from "../services/lastfm.js";
-import type { Peer } from "../federation/peers.js";
 
 // Extend Fastify app type for stream tracking
 declare module "fastify" {
   interface FastifyInstance {
     streamTracking: StreamTrackingService;
-    lastFmClient: import("../services/lastfm.js").LastFmClient | null;
   }
 }
 // ── Content-type helpers ──────────────────────────────────────────────────────
@@ -84,13 +82,6 @@ interface GenreRow {
   genre: string;
   albumCount: number;
   songCount: number;
-}
-
-interface TrackSourceRow {
-  remote_id: string;
-  format: string | null;
-  bitrate: number | null;
-  instance_id: string;
 }
 
 // ── Source selection subquery ─────────────────────────────────────────────────
@@ -846,13 +837,15 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: Parameters<RouteHandlerMethod>[1]) {
   const q = request.query as Record<string, string>;
 
-  let trackId: string;
-  try {
-    trackId = decodeId(q.id ?? "", "t");
-  } catch {
-    sendBinaryError(reply, 400, "Invalid track ID");
-    return;
-  }
+let trackId: string;
+try {
+  trackId = decodeId(q.id ?? "", "t");
+  request.log.info(`Stream request: decoded trackId = ${trackId}`);
+} catch {
+  request.log.warn(`Stream request: failed to decode track ID from ${q.id}`);
+  sendBinaryError(reply, 400, "Invalid track ID");
+  return;
+}
 
   // Get track info for streaming
   const trackRow = app.db
@@ -864,6 +857,10 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
     )
     .get(trackId) as { id: string; title: string; artist_name: string; duration_ms: number | null } | undefined;
 
+  if (!trackRow) {
+    request.log.warn(`Stream tracking: track ${trackId} not found in unified_tracks`);
+  }
+
   // Start stream tracking
   let streamOpId: string | undefined;
   if (trackRow) {
@@ -873,16 +870,22 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
       trackRow.title,
       trackRow.artist_name,
     );
+    request.log.info(`Stream tracking started: ${streamOpId} for ${trackRow.title} by ${trackRow.artist_name}`);
   }
 
   const rawSources = app.db
     .prepare(
-      `SELECT it.remote_id, ts.format, ts.bitrate, ts.instance_id
+      `SELECT ts.format, ts.bitrate, ts.instance_id, it.remote_id
       FROM track_sources ts
-      JOIN instance_tracks it ON ts.instance_track_id = it.id
+      JOIN instance_tracks it ON it.id = ts.instance_track_id
       WHERE ts.unified_track_id = ?`,
     )
-    .all(trackId) as TrackSourceRow[];
+    .all(trackId) as Array<{
+      format: string | null;
+      bitrate: number | null;
+      instance_id: string;
+      remote_id: string;
+    }>;
 
   const best = selectBestSource(
     rawSources.map((s) => ({
@@ -900,6 +903,7 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
   }
 
   let response: Response;
+  let bytesTransferred = 0;
 
   if (best.instanceId === "local") {
     const client = new SubsonicClient({
@@ -908,9 +912,7 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
       password: app.config.navidromePassword,
     });
     try {
-      const streamParams: { format?: string; maxBitRate?: number; estimateContentLength?: boolean } = {
-        estimateContentLength: true,
-      };
+     const streamParams: { format?: string; maxBitRate?: number } = {};
       if (q.format) streamParams.format = q.format;
       if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
       response = await client.stream(best.remoteId, streamParams);
@@ -919,23 +921,16 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
       return;
     }
   } else {
-    // Peer routing via /proxy/rest/stream — Ed25519-signed request to the peer's proxy endpoint.
-    // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
+    // Peer routing
     const peer = app.peerRegistry.peers.get(best.instanceId);
     if (!peer) {
       sendBinaryError(reply, 502, "Peer not available");
       return;
     }
     try {
-      const proxyParams = new URLSearchParams({ id: best.remoteId });
-      if (q.format) proxyParams.set("format", q.format);
-      if (q.maxBitRate) proxyParams.set("maxBitRate", q.maxBitRate);
-      const signingPath = `/proxy/rest/stream?${proxyParams.toString()}`;
-      // Substitute peer.proxyUrl as the base so the HTTP request goes to the correct host.
-      const proxyPeer: Peer = { ...peer, url: peer.proxyUrl };
-      response = await app.federatedFetch(
-        proxyPeer,
-        signingPath,
+    response = await app.federatedFetch(
+        peer,
+        `/federation/stream/${encodeURIComponent(best.remoteId)}`,
         { asUser: request.subsonicUser.username },
       );
     } catch {
@@ -961,7 +956,6 @@ async function handleStream(request: Parameters<RouteHandlerMethod>[0], reply: P
   );
   
   // Track bytes transferred
-  let bytesTransferred = 0;
   nodeStream.on("data", (chunk) => {
     bytesTransferred += chunk.length;
   });

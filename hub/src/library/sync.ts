@@ -6,11 +6,10 @@ import type { PeerRegistry } from "../federation/peers.js";
 import { syncLocal } from "./sync-local.js";
 import { syncPeer } from "./sync-peer.js";
 import type { FederationFetcher } from "./sync-peer.js";
-import type { SyncLogger } from "./sync-instance.js";
+import type { SyncOperationType } from "../services/sync-operations.js";
+import { SyncOperationService } from "../services/sync-operations.js";
 import { mergeLibraries } from "./merge.js";
 import { seedSyntheticInstances } from "./seed-instances.js";
-import { SyncOperationService } from "../services/sync-operations.js";
-import type { SyncOperationType } from "../services/sync-operations.js";
 import type { LastFmClient } from "../services/lastfm.js";
 
 /** Minimal instance descriptor used by syncInstance. */
@@ -321,27 +320,21 @@ export async function syncAll(
   federatedFetch: FederationFetcher,
   ownerUsername: string,
   syncOpService?: SyncOperationService,
-  log?: SyncLogger,
   operationType: SyncOperationType = "manual",
   lastFmClient?: LastFmClient | null,
 ): Promise<{ local: SyncResult; peers: SyncResult[] }> {
   const operationId = syncOpService?.start(operationType, "local") || null;
   let localResult: SyncResult;
-  
-  log?.info(`syncAll: starting ${operationType} sync for local instance, lastFmClient=${lastFmClient?.isEnabled() ? "enabled" : "disabled"}`);
-  
+
   // Ensure synthetic instance rows exist (idempotent)
   seedSyntheticInstances(db, config, peerRegistry);
 
   try {
-    log?.info("syncAll: syncing local Navidrome instance...");
     localResult = await syncLocal(db, config, lastFmClient ?? null);
-    log?.info(`syncAll: local sync done — ${localResult.artistCount} artists, ${localResult.albumCount} albums, ${localResult.trackCount} tracks`);
   } catch (err) {
     if (operationId) {
       syncOpService!.fail(operationId, [`Local sync failed: ${String(err)}`]);
     }
-    log?.error(`syncAll: local sync failed — ${String(err)}`);
     throw err;
   }
 
@@ -351,16 +344,14 @@ export async function syncAll(
     if (syncOpService) {
       peerOperationId = syncOpService.start(operationType, "peer", peer.id);
     }
-    
+
     try {
       const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername, lastFmClient ?? null);
       peers.push(peerResult);
       if (peerOperationId && syncOpService) {
         syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);
       }
-      log?.info(`syncAll: peer ${peer.id} done — ${peerResult.artistCount} artists, ${peerResult.albumCount} albums, ${peerResult.trackCount} tracks`);
     } catch (err) {
-      log?.error(`syncAll: peer ${peer.id} threw — ${String(err)}`);
       const syncMessage = `Peer sync failed: ${String(err)}`;
       db.prepare(
         "UPDATE instances SET status = 'offline', last_sync_ok = 0, last_sync_message = ?, updated_at = datetime('now') WHERE id = ?",
