@@ -96,6 +96,7 @@ Routes register via `binaryRoute()` in `subsonic.ts` to get the binary variant.
 - **`subsonicFetch()`** (`frontend/src/lib/subsonic.ts`) does the same for Subsonic calls.
 - **`artUrl()` / `streamUrl()`** rely on the `access_token` cookie (browser sends it automatically for `<img>` / `<audio>` src). **Do NOT embed the JWT in art/stream URLs** — it gets baked in at render time and goes stale on refresh, causing 401s.
 - **Silent refresh:** on 401, both `apiFetch` and `subsonicFetch` call `attemptRefresh()`, which is deduped by a module-level `refreshPromise` to prevent concurrent refresh races. On success, retries the original request. On failure, clears tokens and redirects to `/login`.
+- **No authenticated fetches from `/login`.** The login route must not trigger any `apiFetch`/`subsonicFetch` calls — a 401 from the login route is the classic infinite-redirect loop. Hooks or components that fire authenticated requests on mount (e.g. `useDocumentTitle`) must live inside the authenticated tree (`AppLayout`), not in the top-level `App`. The 401 redirect in `apiFetch` is also guarded against self-redirect when already on `/login`, as defense in depth.
 
 ## Owner seeding
 

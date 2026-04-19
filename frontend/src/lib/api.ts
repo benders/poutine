@@ -59,7 +59,9 @@ async function apiFetch<T = unknown>(
         if (newToken) return apiFetch<T>(path, options, false);
       }
       clearTokens();
-      window.location.replace("/login");
+      if (window.location.pathname !== "/login") {
+        window.location.replace("/login");
+      }
       return undefined as T;
     }
     const body = await res.json().catch(() => ({}));
