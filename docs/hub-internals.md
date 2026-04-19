@@ -147,7 +147,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 - **Standard Subsonic API** (`/rest/*`): `getArtists`, `getAlbum`, `stream`, `getCoverArt`, `getScanStatus`, `startScan`. Navidrome adds `lastScan` and `folderCount` to `scanStatus`; `startScan` accepts `fullScan=true` (Navidrome extension). Poutine uses only the Subsonic API — Navidrome's native `/api/*` REST API is not used.
 - **Navidrome scans on startup** regardless of `ND_SCANSCHEDULE` (schedule controls repeats only). Federation test driver polls `POST /admin/sync` until `local.trackCount > 0` instead of sleeping.
-- **Admin bootstrap env vars:** use `ND_DEVAUTOCREATEADMINPASSWORD` (NOT `ND_INITIALADMINPASSWORD`, which is a silent no-op in 0.52+). Also set `ND_ENCRYPTIONKEY` or password storage fails silently. Both required on a fresh volume; if `navidrome-data` already has an `InitialSetup` property row, auto-create won't re-run — wipe the volume (`clean-wipe.sh`) and restart.
+- **Admin bootstrap env var:** use `ND_DEVAUTOCREATEADMINPASSWORD` (NOT `ND_INITIALADMINPASSWORD`, which is a silent no-op in 0.52+). Required on a fresh volume; if `navidrome-data` already has an `InitialSetup` property row, auto-create won't re-run — wipe the volume (`clean-wipe.sh`) and restart.
 - **No credentials in the DB.** Navidrome creds live in env vars only. Navidrome runs on an internal Docker network; only the hub can reach it.
 
 ## SQLite notes
