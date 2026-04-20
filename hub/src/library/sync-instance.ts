@@ -116,17 +116,9 @@ export function createLocalProxyFetch(opts: {
   const base = proxyBaseUrl.replace(/\/+$/, "");
 
   return async (path: string, fetchOpts?: { signal?: AbortSignal }) => {
-    // The local proxy accepts Subsonic u+t+s (the proxy itself uses MD5 t+s
-    // to talk to Navidrome; for authenticating *to* the proxy we use u+p).
-    // But actually: the proxy auth layer only supports u+p (plaintext), not u+t+s,
-    // because Poutine stores Argon2id hashes. So we use u+p for local proxy auth.
-    // However, we don't want to use the Poutine user credentials here; instead we
-    // bypass proxy auth entirely by routing via the internal URL directly.
-    //
-    // TODO(phase-5): route local reads through /proxy/* to enforce uniformity.
-    // For now, we inject Navidrome t+s credentials directly so the proxy can
-    // authenticate on our behalf. This is not reached in production because
-    // syncLocal() still calls Navidrome directly — see sync-local.ts.
+    // Local sync hits Navidrome directly with Subsonic t+s creds (proxyBaseUrl
+    // is the Navidrome URL). Bypasses /proxy/* to avoid the Argon2id u+p round-
+    // trip for an internal call.
     const salt = crypto.randomBytes(8).toString("hex");
     const token = crypto.createHash("md5").update(navidromePassword + salt).digest("hex");
 

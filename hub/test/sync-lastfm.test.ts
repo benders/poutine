@@ -12,8 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { createDatabase } from "../src/db/client.js";
-import { syncInstance, type Instance } from "../src/library/sync.js";
-import { SubsonicClient } from "../src/adapters/subsonic.js";
+import { syncLocal } from "../src/library/sync-local.js";
+import type { Config } from "../src/config.js";
 import { LastFmClient } from "../src/services/lastfm.js";
 import { seedSyntheticInstances } from "../src/library/seed-instances.js";
 
@@ -165,33 +165,18 @@ describe("Last.fm integration during sync", () => {
       reload: () => {},
     } as any);
 
-    // Create Subsonic client and instance
-    const client = new SubsonicClient({
-      url: "http://navidrome:4533",
-      username: "test",
-      password: "test",
-    });
-
-    const instance: Instance = {
-      id: "local",
-      name: "Local Navidrome",
-      url: "http://navidrome:4533",
-      adapterType: "subsonic",
-      ownerId: "owner-1",
-      status: "online",
-      lastSeen: null,
-      lastSyncedAt: null,
-      trackCount: 0,
-      serverVersion: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    const testConfig = {
+      databasePath: ":memory:",
+      navidromeUrl: "http://navidrome:4533",
+      navidromeUsername: "test",
+      navidromePassword: "test",
+      poutineInstanceId: "test-instance",
+      poutinePeersConfig: "{}",
+      instanceConcurrency: 1,
+    } as unknown as Config;
 
     // Run sync with Last.fm enabled
-    const result = await syncInstance(db, instance, client, {
-      concurrency: 1,
-      lastFmClient,
-    });
+    const result = await syncLocal(db, testConfig, lastFmClient);
 
     // Assertions
     expect(result.artistCount).toBe(1);
@@ -277,33 +262,18 @@ describe("Last.fm integration during sync", () => {
       reload: () => {},
     } as any);
 
-    // Create Subsonic client and instance
-    const client = new SubsonicClient({
-      url: "http://navidrome:4533",
-      username: "test",
-      password: "test",
-    });
-
-    const instance: Instance = {
-      id: "local",
-      name: "Local Navidrome",
-      url: "http://navidrome:4533",
-      adapterType: "subsonic",
-      ownerId: "owner-1",
-      status: "online",
-      lastSeen: null,
-      lastSyncedAt: null,
-      trackCount: 0,
-      serverVersion: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    const testConfig = {
+      databasePath: ":memory:",
+      navidromeUrl: "http://navidrome:4533",
+      navidromeUsername: "test",
+      navidromePassword: "test",
+      poutineInstanceId: "test-instance",
+      poutinePeersConfig: "{}",
+      instanceConcurrency: 1,
+    } as unknown as Config;
 
     // Run sync with Last.fm enabled
-    const result = await syncInstance(db, instance, client, {
-      concurrency: 1,
-      lastFmClient,
-    });
+    const result = await syncLocal(db, testConfig, lastFmClient);
 
     // Assertions
     expect(result.artistCount).toBe(1);
@@ -384,33 +354,18 @@ describe("Last.fm integration during sync", () => {
       reload: () => {},
     } as any);
 
-    // Create Subsonic client and instance
-    const client = new SubsonicClient({
-      url: "http://navidrome:4533",
-      username: "test",
-      password: "test",
-    });
-
-    const instance: Instance = {
-      id: "local",
-      name: "Local Navidrome",
-      url: "http://navidrome:4533",
-      adapterType: "subsonic",
-      ownerId: "owner-1",
-      status: "online",
-      lastSeen: null,
-      lastSyncedAt: null,
-      trackCount: 0,
-      serverVersion: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    const testConfig = {
+      databasePath: ":memory:",
+      navidromeUrl: "http://navidrome:4533",
+      navidromeUsername: "test",
+      navidromePassword: "test",
+      poutineInstanceId: "test-instance",
+      poutinePeersConfig: "{}",
+      instanceConcurrency: 1,
+    } as unknown as Config;
 
     // Run sync with Last.fm enabled
-    const result = await syncInstance(db, instance, client, {
-      concurrency: 1,
-      lastFmClient,
-    });
+    const result = await syncLocal(db, testConfig, lastFmClient);
 
     // Assertions - sync should complete successfully despite Last.fm failure
     expect(result.artistCount).toBe(1);
@@ -491,33 +446,18 @@ describe("Last.fm integration during sync", () => {
       reload: () => {},
     } as any);
 
-    // Create Subsonic client and instance
-    const client = new SubsonicClient({
-      url: "http://navidrome:4533",
-      username: "test",
-      password: "test",
-    });
-
-    const instance: Instance = {
-      id: "local",
-      name: "Local Navidrome",
-      url: "http://navidrome:4533",
-      adapterType: "subsonic",
-      ownerId: "owner-1",
-      status: "online",
-      lastSeen: null,
-      lastSyncedAt: null,
-      trackCount: 0,
-      serverVersion: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    const testConfig = {
+      databasePath: ":memory:",
+      navidromeUrl: "http://navidrome:4533",
+      navidromeUsername: "test",
+      navidromePassword: "test",
+      poutineInstanceId: "test-instance",
+      poutinePeersConfig: "{}",
+      instanceConcurrency: 1,
+    } as unknown as Config;
 
     // Run sync with Last.fm enabled
-    await syncInstance(db, instance, client, {
-      concurrency: 1,
-      lastFmClient,
-    });
+    await syncLocal(db, testConfig, lastFmClient);
 
     // Verify Last.fm was called with MusicBrainz ID
     expect(lastFmFetchMock).toHaveBeenCalledTimes(1);
