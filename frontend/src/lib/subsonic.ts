@@ -230,15 +230,26 @@ export async function getAlbumList2(params?: {
   type?: string;
   size?: number;
 }): Promise<SubsonicAlbum[]> {
-  const sr = await subsonicFetch<{ albumList2: { album?: RawAlbum[] } }>(
-    "getAlbumList2",
-    {
-      type: params?.type ?? "alphabeticalByName",
-      size: String(params?.size ?? 500),
-      offset: "0",
-    },
-  );
-  return (sr.albumList2.album ?? []).map(parseAlbum);
+  const type = params?.type ?? "alphabeticalByName";
+  const pageSize = Math.min(params?.size ?? 500, 500);
+  const all: RawAlbum[] = [];
+  let offset = 0;
+  // Subsonic caps getAlbumList2 at 500 per call; page until a short page returns.
+  for (;;) {
+    const sr = await subsonicFetch<{ albumList2: { album?: RawAlbum[] } }>(
+      "getAlbumList2",
+      {
+        type,
+        size: String(pageSize),
+        offset: String(offset),
+      },
+    );
+    const page = sr.albumList2.album ?? [];
+    all.push(...page);
+    if (page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all.map(parseAlbum);
 }
 
 export async function getArtists(): Promise<SubsonicArtist[]> {
