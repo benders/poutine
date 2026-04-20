@@ -37,8 +37,10 @@ COPY package.json pnpm-workspace.yaml ./
 COPY hub/package.json hub/
 COPY --from=build /app/hub/dist hub/dist/
 COPY --from=build /app/frontend/dist hub/public/
+COPY hub/newrelic.js hub/newrelic.js
 RUN mkdir -p /app/data
 ENV NODE_ENV=production
 ENV PUBLIC_DIR=/app/hub/public
+ENV NEW_RELIC_CONFIG_FILE=/app/hub/newrelic.js
 EXPOSE 3000
-CMD ["node", "hub/dist/server.js"]
+CMD ["node", "--require", "newrelic", "hub/dist/server.js"]

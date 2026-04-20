@@ -33,8 +33,11 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Auto-generated if absent                                        |
 | `POUTINE_PEERS_CONFIG`       | no       | `./config/peers.yaml`        | Peer registry file                                              |
 | `PUBLIC_DIR`                 | no       | —                            | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
+| `NEW_RELIC_LICENSE_KEY`      | no       | —                            | Activates New Relic APM + Browser monitoring; omit to disable    |
+| `NEW_RELIC_APP_NAME`         | no       | `Poutine`                    | Application name shown in the New Relic UI                       |
+| `LASTFM_API_KEY`             | no       | —                            | Enables Last.fm artist image and metadata lookups                |
 
-`hub/src/config.ts` is the authoritative list.
+`hub/src/config.ts` is the authoritative list for app config. New Relic config is in `hub/newrelic.js` (all NR settings can be overridden with `NEW_RELIC_*` env vars).
 
 ## API surface
 

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node --require newrelic dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
@@ -21,6 +21,7 @@
     "better-sqlite3": "^11.9.1",
     "fastify": "^5.3.3",
     "jose": "^6.0.11",
+    "newrelic": "^13.19.2",
     "pino": "^9.6.0",
     "undici": "^7.5.0",
     "yaml": "^2.8.3"
