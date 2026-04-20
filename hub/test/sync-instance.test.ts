@@ -230,6 +230,42 @@ describe("multi-instance merge via proxy", () => {
     expect(peerSrc?.bitrate).toBe(1000);
   });
 
+  it("unreachable peer at probe time → cached library wiped, unified merge excludes it", async () => {
+    // First sync: peer is reachable and populates instance_* rows.
+    await readNavidromeViaProxy(db, "local", makeProxyFetch(localPort));
+    await readNavidromeViaProxy(db, "peer-hub", makeProxyFetch(peerPort));
+    mergeLibraries(db);
+
+    expect(db.prepare("SELECT COUNT(*) AS c FROM instance_tracks WHERE instance_id = 'peer-hub'").get()).toEqual({ c: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS c FROM track_sources WHERE instance_id = 'peer-hub'").get()).toEqual({ c: 1 });
+
+    // Second sync: peer is unreachable — point ProxyFetch at a closed port.
+    const deadFetch: ProxyFetch = async () => { throw new Error("ECONNREFUSED"); };
+    const result = await readNavidromeViaProxy(db, "peer-hub", deadFetch);
+    expect(result.errors.length).toBeGreaterThan(0);
+
+    // Peer's instance_* rows must be gone.
+    expect(db.prepare("SELECT COUNT(*) AS c FROM instance_tracks  WHERE instance_id = 'peer-hub'").get()).toEqual({ c: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS c FROM instance_albums  WHERE instance_id = 'peer-hub'").get()).toEqual({ c: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS c FROM instance_artists WHERE instance_id = 'peer-hub'").get()).toEqual({ c: 0 });
+
+    // Instance row marked offline with cleared track_count.
+    const row = db.prepare("SELECT status, last_sync_ok, track_count FROM instances WHERE id = 'peer-hub'").get() as {
+      status: string; last_sync_ok: number; track_count: number;
+    };
+    expect(row.status).toBe("offline");
+    expect(row.last_sync_ok).toBe(0);
+    expect(row.track_count).toBe(0);
+
+    // After a remerge, unified_* has no peer source.
+    mergeLibraries(db);
+    const peerSources = db.prepare("SELECT COUNT(*) AS c FROM track_sources WHERE instance_id = 'peer-hub'").get();
+    expect(peerSources).toEqual({ c: 0 });
+    // Local source survives.
+    const localSources = db.prepare("SELECT COUNT(*) AS c FROM track_sources WHERE instance_id = 'local'").get();
+    expect(localSources).toEqual({ c: 1 });
+  });
+
   it("local-only instance results in one unified track with one local source", async () => {
     await readNavidromeViaProxy(db, "local", makeProxyFetch(localPort));
     mergeLibraries(db);

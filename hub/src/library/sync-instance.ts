@@ -278,9 +278,14 @@ export async function readNavidromeViaProxy(
     artistIndexes = artistsObj?.index ?? [];
   } catch (err) {
     result.errors.push(`Failed to fetch artists for ${instanceId}: ${String(err)}`);
+    // Peer unreachable at probe time → wipe its cached library so stale data
+    // does not leak into the merged unified_* tables. A later successful sync
+    // will re-populate.
+    _deleteAllForInstance(db, instanceId);
     db.prepare(
-      "UPDATE instances SET status = 'offline', last_sync_ok = 0, last_sync_message = ?, updated_at = datetime('now') WHERE id = ?",
+      "UPDATE instances SET status = 'offline', last_sync_ok = 0, last_sync_message = ?, track_count = 0, updated_at = datetime('now') WHERE id = ?",
     ).run(result.errors.join("; "), instanceId);
+    log.info(`[${instanceId}] unreachable — cleared cached library`);
     return result;
   }
 
@@ -433,6 +438,19 @@ export async function readNavidromeViaProxy(
   }
 
   return result;
+}
+
+/**
+ * Wipe every instance_* row for an instance. Called when the peer/instance is
+ * unreachable at sync time — we prefer an empty library over stale data.
+ * Caller may want to run mergeLibraries() afterward to refresh unified_*.
+ */
+function _deleteAllForInstance(db: Database.Database, instanceId: string): void {
+  db.transaction(() => {
+    db.prepare("DELETE FROM instance_tracks  WHERE instance_id = ?").run(instanceId);
+    db.prepare("DELETE FROM instance_albums  WHERE instance_id = ?").run(instanceId);
+    db.prepare("DELETE FROM instance_artists WHERE instance_id = ?").run(instanceId);
+  })();
 }
 
 // ── Stale-data cleanup (reused from sync-peer.ts pattern) ────────────────────
