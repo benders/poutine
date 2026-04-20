@@ -113,6 +113,14 @@ function InstanceSection() {
 
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-text-muted shrink-0" />
+          <span className="text-xs text-text-secondary uppercase tracking-wide font-medium">Federation API Version</span>
+        </div>
+        <div className="flex items-center gap-2 pl-6">
+          <code className="flex-1 text-sm text-text-primary font-mono bg-surface-hover px-2 py-1 rounded">{info.apiVersion}</code>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4 text-text-muted shrink-0" />
           <span className="text-xs text-text-secondary uppercase tracking-wide font-medium">Public Key</span>
         </div>
         <div className="flex items-center gap-2 pl-6">
@@ -227,6 +235,12 @@ function PeerRow({ peer }: { peer: Peer }) {
             </span>
           </div>
           <p className="text-xs text-text-muted truncate">{peer.url}</p>
+          {(peer.appVersion || peer.apiVersion) && (
+            <p className="text-xs text-text-muted truncate">
+              {peer.appVersion ? `v${peer.appVersion}` : "unknown version"}
+              {peer.apiVersion !== null ? ` · api ${peer.apiVersion}` : ""}
+            </p>
+          )}
         </div>
         <div className="hidden sm:block text-xs text-text-secondary shrink-0">
           {peer.lastSeen ? `Last seen ${formatTimeAgo(peer.lastSeen)}` : "Never synced"}
