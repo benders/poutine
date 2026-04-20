@@ -125,12 +125,29 @@ export function PlayerBar() {
 
     if (!retryAttemptedRef.current) {
       retryAttemptedRef.current = true;
+      // Preserve playback position so a mid-track 401 retry resumes where
+      // we were, instead of restarting the track from 0.
+      const resumeAt =
+        isFinite(audio.currentTime) && audio.currentTime > 0
+          ? audio.currentTime
+          : 0;
       const newToken = await attemptRefresh();
       if (newToken) {
-        // Cookie refreshed — reload the same URL with the fresh cookie
+        const resume = () => {
+          audio.removeEventListener("loadedmetadata", resume);
+          if (resumeAt > 0) {
+            try {
+              audio.currentTime = resumeAt;
+            } catch {
+              // Seeking can fail if the server rejects the Range request;
+              // fall through and let playback start from 0.
+            }
+          }
+          if (isPlaying) audio.play().catch(() => setPlaying(false));
+        };
+        audio.addEventListener("loadedmetadata", resume);
         audio.src = currentStreamUrl;
         audio.load();
-        if (isPlaying) audio.play().catch(() => setPlaying(false));
       } else {
         clearTokens();
         window.location.replace("/login");
