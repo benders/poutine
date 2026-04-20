@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getArtist, artUrl } from "@/lib/subsonic";
 import type { SubsonicAlbum } from "@/lib/subsonic";
 import { ChevronRight, Disc } from "lucide-react";
+import { ShareIdButton } from "@/components/ShareIdButton";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -71,6 +72,11 @@ export function ArtistDetailPage() {
             {artist.album.length}{" "}
             {artist.album.length === 1 ? "album" : "albums"}
           </p>
+          {artist.shareId && (
+            <div className="mt-3">
+              <ShareIdButton shareId={artist.shareId} />
+            </div>
+          )}
         </div>
       </div>
 

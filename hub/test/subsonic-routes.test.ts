@@ -448,4 +448,109 @@ describe("Subsonic routes — endpoints", () => {
     });
     expect(byMbid.json()["subsonic-response"].searchResult3.song).toHaveLength(1);
   });
+
+  // ── Share IDs ─────────────────────────────────────────────────────────────
+  // shareId surfaces the Navidrome remote_id of a source. search3 resolves
+  // it back to a unified entity via the join through instance_*.
+
+  async function seedShareFixture(app: FastifyInstance) {
+    const ownerId = (app.db.prepare("SELECT id FROM users LIMIT 1").get() as { id: string }).id;
+    app.db.prepare(
+      "INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id) VALUES ('local', 'Local', 'http://nav/', 'subsonic', '', ?)",
+    ).run(ownerId);
+    app.db.prepare(
+      "INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id) VALUES ('peer-x', 'Peer X', 'https://x/', 'subsonic', '', ?)",
+    ).run(ownerId);
+
+    // Artist: unified + two sources (local + peer-x). Local preferred.
+    app.db.prepare(
+      "INSERT INTO unified_artists (id, name, name_normalized) VALUES ('ua-1','Share Artist','share artist')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO instance_artists (id, instance_id, remote_id, name) VALUES ('local:LOC-AR-1','local','LOC-AR-1','Share Artist')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO instance_artists (id, instance_id, remote_id, name) VALUES ('peer-x:PX-AR-1','peer-x','PX-AR-1','Share Artist')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO unified_artist_sources (unified_artist_id, instance_artist_id, instance_id) VALUES ('ua-1','local:LOC-AR-1','local')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO unified_artist_sources (unified_artist_id, instance_artist_id, instance_id) VALUES ('ua-1','peer-x:PX-AR-1','peer-x')",
+    ).run();
+
+    // Album: unified release-group with one release + two source albums.
+    app.db.prepare(
+      "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id) VALUES ('urg-1','Share Album','share album','ua-1')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO unified_releases (id, release_group_id, name) VALUES ('ur-1','urg-1','Share Album')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name) VALUES ('local:LOC-AL-1','local','LOC-AL-1','Share Album','local:LOC-AR-1','Share Artist')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name) VALUES ('peer-x:PX-AL-1','peer-x','PX-AL-1','Share Album','peer-x:PX-AR-1','Share Artist')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO unified_release_sources (unified_release_id, instance_album_id, instance_id) VALUES ('ur-1','local:LOC-AL-1','local')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO unified_release_sources (unified_release_id, instance_album_id, instance_id) VALUES ('ur-1','peer-x:PX-AL-1','peer-x')",
+    ).run();
+  }
+
+  it("getAlbum surfaces shareId preferring local source", async () => {
+    await seedShareFixture(app);
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getAlbum?u=tester&p=secret&f=json&id=alurg-1",
+    });
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    expect(body["subsonic-response"].album.shareId).toBe("LOC-AL-1");
+  });
+
+  it("getArtist surfaces shareId preferring local source", async () => {
+    await seedShareFixture(app);
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getArtist?u=tester&p=secret&f=json&id=arua-1",
+    });
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    expect(body["subsonic-response"].artist.shareId).toBe("LOC-AR-1");
+  });
+
+  it("search3 resolves album shareId from any source (peer)", async () => {
+    await seedShareFixture(app);
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=PX-AL-1",
+    });
+    const body = res.json();
+    expect(body["subsonic-response"].searchResult3.album).toHaveLength(1);
+    expect(body["subsonic-response"].searchResult3.album[0].name).toBe("Share Album");
+  });
+
+  it("search3 resolves artist shareId from any source (peer)", async () => {
+    await seedShareFixture(app);
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=PX-AR-1",
+    });
+    const body = res.json();
+    expect(body["subsonic-response"].searchResult3.artist).toHaveLength(1);
+  });
+
+  it("search3 with unknown remote_id returns no results", async () => {
+    await seedShareFixture(app);
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=NOPE-UNKNOWN-9",
+    });
+    const body = res.json();
+    expect(body["subsonic-response"].searchResult3.album ?? []).toHaveLength(0);
+    expect(body["subsonic-response"].searchResult3.artist ?? []).toHaveLength(0);
+  });
 });

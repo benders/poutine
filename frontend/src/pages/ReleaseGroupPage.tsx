@@ -6,6 +6,7 @@ import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
 import { Play, Plus, ChevronRight, Disc, ChevronDown, ChevronUp, FileAudio, Info } from "lucide-react";
 import { useState } from "react";
+import { ShareIdButton } from "@/components/ShareIdButton";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -88,6 +89,12 @@ export function ReleaseGroupPage() {
               <Play className="w-4 h-4 fill-current" />
               Play All
             </button>
+          )}
+
+          {album.shareId && (
+            <span className="mt-3 inline-flex mr-2">
+              <ShareIdButton shareId={album.shareId} />
+            </span>
           )}
 
           {/* Album metadata toggle */}

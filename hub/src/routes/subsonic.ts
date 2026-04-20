@@ -100,6 +100,42 @@ const BEST_SOURCE_INSTANCE_SUBQUERY = `
    ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1)
 `;
 
+// ── Share ID helpers ──────────────────────────────────────────────────────────
+// shareId is a raw `instance_*.remote_id` (typically a Navidrome 32-char hash).
+// Collision across unrelated Navidromes is negligible, so the bare id is a
+// usable cross-hub identifier — the receiving hub's search3 joins through
+// instance_albums / instance_artists and resolves it to its own unified id.
+// Prefer the 'local' source so that sharing an album from this hub's own
+// library emits an id the owner's Navidrome holds.
+function pickAlbumShareId(db: import("better-sqlite3").Database, rgId: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT ia.remote_id
+       FROM unified_release_sources urs
+       JOIN unified_releases ur ON ur.id = urs.unified_release_id
+       JOIN instance_albums ia ON ia.id = urs.instance_album_id
+       WHERE ur.release_group_id = ?
+       ORDER BY (ia.instance_id = 'local') DESC, ia.instance_id, ia.remote_id
+       LIMIT 1`,
+    )
+    .get(rgId) as { remote_id: string } | undefined;
+  return row?.remote_id ?? null;
+}
+
+function pickArtistShareId(db: import("better-sqlite3").Database, artistId: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT ia.remote_id
+       FROM unified_artist_sources uas
+       JOIN instance_artists ia ON ia.id = uas.instance_artist_id
+       WHERE uas.unified_artist_id = ?
+       ORDER BY (ia.instance_id = 'local') DESC, ia.instance_id, ia.remote_id
+       LIMIT 1`,
+    )
+    .get(artistId) as { remote_id: string } | undefined;
+  return row?.remote_id ?? null;
+}
+
 // ── Song shape builder ────────────────────────────────────────────────────────
 
 function buildSong(row: TrackRow) {
@@ -337,12 +373,15 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       )
       .all(artistId) as ReleaseGroupRow[];
 
+    const shareId = pickArtistShareId(app.db, artist.id);
+
     sendSubsonicOk(reply, q, {
       artist: {
         id: encodeId("ar", artist.id),
         name: artist.name,
         albumCount: albums.length,
         coverArt: artist.image_url ?? undefined,
+        shareId: shareId ?? undefined,
         album: albums.map(buildAlbum),
       },
     });
@@ -575,6 +614,8 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       0,
     );
 
+    const shareId = pickAlbumShareId(app.db, rg.id);
+
     sendSubsonicOk(reply, q, {
       album: {
         id: encodeId("al", rg.id),
@@ -586,6 +627,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         duration: totalDuration,
         year: rg.year ?? undefined,
         genre: rg.genre ?? undefined,
+        shareId: shareId ?? undefined,
         song: tracks.map(buildSong),
       },
     });
@@ -664,6 +706,11 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         WHERE ua.name_normalized LIKE ?
           OR ua.id = ? OR ua.id = ?
           OR ua.musicbrainz_id = ? OR ua.musicbrainz_id = ?
+          OR EXISTS (
+            SELECT 1 FROM unified_artist_sources uas
+            JOIN instance_artists iar ON iar.id = uas.instance_artist_id
+            WHERE uas.unified_artist_id = ua.id AND iar.remote_id = ?
+          )
         GROUP BY ua.id
         ORDER BY ua.name_normalized
         LIMIT ? OFFSET ?`,
@@ -674,6 +721,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         artistIdCandidate,
         trimmed,
         artistIdCandidate,
+        trimmed,
         artistCount,
         artistOffset,
       ) as ArtistRow[];
@@ -690,6 +738,12 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         WHERE urg.name_normalized LIKE ?
           OR urg.id = ? OR urg.id = ?
           OR urg.musicbrainz_id = ? OR urg.musicbrainz_id = ?
+          OR EXISTS (
+            SELECT 1 FROM unified_release_sources urs
+            JOIN unified_releases ur2 ON ur2.id = urs.unified_release_id
+            JOIN instance_albums ial ON ial.id = urs.instance_album_id
+            WHERE ur2.release_group_id = urg.id AND ial.remote_id = ?
+          )
         GROUP BY urg.id
         ORDER BY urg.name_normalized
         LIMIT ? OFFSET ?`,
@@ -700,6 +754,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         albumIdCandidate,
         trimmed,
         albumIdCandidate,
+        trimmed,
         albumCount,
         albumOffset,
       ) as ReleaseGroupRow[];
@@ -726,6 +781,11 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         WHERE ut.title_normalized LIKE ?
           OR ut.id = ? OR ut.id = ?
           OR ut.musicbrainz_id = ? OR ut.musicbrainz_id = ?
+          OR EXISTS (
+            SELECT 1 FROM track_sources ts2
+            JOIN instance_tracks it ON it.id = ts2.instance_track_id
+            WHERE ts2.unified_track_id = ut.id AND it.remote_id = ?
+          )
         ORDER BY ut.title_normalized
         LIMIT ? OFFSET ?`,
       )
@@ -735,6 +795,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         songIdCandidate,
         trimmed,
         songIdCandidate,
+        trimmed,
         songCount,
         songOffset,
       ) as TrackRow[];

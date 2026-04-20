@@ -76,6 +76,10 @@ Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static file
 
 See [docs/hub-internals.md#testing-notes](docs/hub-internals.md#testing-notes) for test patterns and gotchas.
 
+## Sharing albums and artists
+
+Each Album and Artist detail page has a **Share** button that copies a Poutine sharing ID to your clipboard. Paste that value into the Search box on a friend's hub to pull up the same entity there. The lookup works whenever both hubs sync the same underlying library (your Navidrome, your friend's, or any mutual peer); if the receiving hub doesn't sync an instance that has the item, search returns no results.
+
 ## Operations
 
 ### Updating a running instance
