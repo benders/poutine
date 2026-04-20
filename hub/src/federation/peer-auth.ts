@@ -8,11 +8,23 @@ declare module "fastify" {
   }
 }
 
+/**
+ * Minimum accepted federation API version.
+ * Peers advertising an apiVersion below this floor will be rejected.
+ * May be disabled via POUTINE_DISABLE_VERSION_CHECK=true for testing/migration.
+ */
+const MIN_FEDERATION_API_VERSION = 3;
+
 export function createRequirePeerAuth(deps: {
   registry: PeerRegistry;
+  db: { prepare(sql: string): { run(instanceId: string, serverVersion: string): void } };
   maxSkewMs?: number;
 }): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
   const maxSkewMs = deps.maxSkewMs ?? 5 * 60 * 1000;
+  const versionCheckEnabled = process.env.POUTINE_DISABLE_VERSION_CHECK !== "true";
+  const upsertServerVersion = deps.db.prepare(
+    "UPDATE instances SET server_version = ? WHERE id = ?",
+  );
 
   return async function requirePeerAuth(
     request: FastifyRequest,
@@ -22,6 +34,7 @@ export function createRequirePeerAuth(deps: {
     const userHeader = request.headers["x-poutine-user"];
     const timestampHeader = request.headers["x-poutine-timestamp"];
     const signatureHeader = request.headers["x-poutine-signature"];
+    const apiVersionHeader = request.headers["poutine-api-version"];
 
     if (!instanceHeader || !userHeader || !timestampHeader || !signatureHeader) {
       reply.code(401).send({ error: "Missing required federation headers" });
@@ -37,6 +50,25 @@ export function createRequirePeerAuth(deps: {
     if (!peer) {
       reply.code(401).send({ error: `Unknown peer: ${instanceId}` });
       return;
+    }
+
+    // ── Phase 3: version enforcement ─────────────────────────────────────────
+    if (versionCheckEnabled) {
+      const rawVersion = Array.isArray(apiVersionHeader)
+        ? apiVersionHeader[0]
+        : apiVersionHeader;
+      const peerApiVersion = rawVersion !== undefined ? parseInt(String(rawVersion), 10) : NaN;
+
+      if (isNaN(peerApiVersion) || peerApiVersion < MIN_FEDERATION_API_VERSION) {
+        const gotVersion = isNaN(peerApiVersion) ? "(none)" : String(peerApiVersion);
+        reply.code(403).send({
+          error: `Peer ${instanceId} apiVersion ${gotVersion} is below minimum required ${MIN_FEDERATION_API_VERSION}`,
+        });
+        return;
+      }
+
+      // Store the peer's reported version in the instances table for display.
+      upsertServerVersion.run(String(peerApiVersion), instanceId);
     }
 
     const ts = parseInt(timestamp, 10);

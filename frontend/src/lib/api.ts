@@ -136,11 +136,14 @@ export interface Peer {
   trackCount: number;
   artistCount: number;
   albumCount: number;
+  appVersion: string | null;
+  apiVersion: number | null;
 }
 
 export interface InstanceInfo {
   instanceId: string;
   publicKey: string;
+  apiVersion: number;
   navidrome: {
     reachable: boolean;
     scanning: boolean;

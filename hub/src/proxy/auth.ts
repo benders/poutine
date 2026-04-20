@@ -12,6 +12,7 @@
 
 import crypto from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { FEDERATION_API_VERSION } from "../version.js";
 import { canonicalSigningPayload, verifyRequest } from "../federation/signing.js";
 import { verifyToken } from "../auth/jwt.js";
 import { verifyPassword } from "../auth/passwords.js";
@@ -98,6 +99,24 @@ export function createRequireProxyAuth(deps: {
       if (!verifyRequest(peer.publicKey, payload, signature)) {
         reply.code(401).send({ error: "Invalid signature" });
         return;
+      }
+
+      // Enforce minimum federation API version
+      const versionCheckEnabled = process.env.POUTINE_DISABLE_VERSION_CHECK !== "true";
+      if (versionCheckEnabled) {
+        const apiVersionHeader = request.headers["poutine-api-version"];
+        const rawVersion = Array.isArray(apiVersionHeader)
+          ? apiVersionHeader[0]
+          : apiVersionHeader;
+        const peerApiVersion = rawVersion !== undefined ? parseInt(String(rawVersion), 10) : NaN;
+
+        if (isNaN(peerApiVersion) || peerApiVersion < FEDERATION_API_VERSION) {
+          const gotVersion = isNaN(peerApiVersion) ? "(none)" : String(peerApiVersion);
+          reply.code(403).send({
+            error: `Peer ${instanceId} apiVersion ${gotVersion} is below minimum required ${FEDERATION_API_VERSION}`,
+          });
+          return;
+        }
       }
 
       request.proxyAuth = { kind: "peer", peerId: instanceId };

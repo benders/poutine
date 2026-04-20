@@ -9,6 +9,7 @@ import type { FastifyPluginAsync } from "fastify";
 import http from "node:http";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
+import { createRequirePeerAuth } from "../federation/peer-auth.js";
 
 // ── HTTP agents for upstream requests ────────────────────────────────────────
 
@@ -27,12 +28,16 @@ const httpsAgent = new https.Agent({
 // ── Plugin ────────────────────────────────────────────────────────────────────
 
 export const federationRoutes: FastifyPluginAsync = async (app) => {
-  const config = app.config;
+  const requirePeerAuth = createRequirePeerAuth({
+    registry: app.peerRegistry,
+    db: app.db,
+  });
 
   // Stream audio from local Navidrome to peer
-  app.get("/stream/:id", async (request, reply) => {
+  app.get("/stream/:id", { preHandler: requirePeerAuth }, async (request, reply) => {
+    const config = app.config;
     const { id: trackId } = request.params as { id: string };
-    
+
     // Build the stream URL for local Navidrome
     const targetBase = config.navidromeUrl.replace(/\/+$/, "");
     const targetUrl = new URL(`${targetBase}/rest/stream`);

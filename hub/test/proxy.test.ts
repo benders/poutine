@@ -23,6 +23,7 @@ import {
   canonicalSigningPayload,
   signRequest,
 } from "../src/federation/signing.js";
+import { FEDERATION_API_VERSION } from "../src/version.js";
 import type { KeyObject } from "node:crypto";
 import type { Config } from "../src/config.js";
 
@@ -102,6 +103,7 @@ function makePeerHeaders(opts: {
     "x-poutine-user": "test-user",
     "x-poutine-timestamp": ts,
     "x-poutine-signature": sig,
+    "poutine-api-version": String(FEDERATION_API_VERSION),
   };
 }
 

@@ -6,7 +6,7 @@ import { SyncOperationService } from "../services/sync-operations.js";
 import { StreamTrackingService } from "../services/stream-tracking.js";
 import { mergeLibraries } from "../library/merge.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
-import { USER_AGENT } from "../version.js";
+import { FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -271,6 +271,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     return {
       instanceId: app.config.poutineInstanceId,
       publicKey: app.publicKeySpec,
+      apiVersion: FEDERATION_API_VERSION,
       navidrome: {
         reachable: scanStatus !== null,
         scanning: scanStatus?.scanning ?? false,
