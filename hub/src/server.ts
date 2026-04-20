@@ -192,7 +192,30 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // Static file serving + SPA fallback (production only; skipped in dev)
   if (config.staticDir) {
     const { resolve } = await import("node:path");
+    const { readFileSync } = await import("node:fs");
     const root = resolve(config.staticDir);
+
+    // Pre-read index.html for New Relic browser header injection.
+    let indexHtml: string | null = null;
+    try {
+      indexHtml = readFileSync(resolve(root, "index.html"), "utf8");
+    } catch {
+      // fall back to sendFile if unreadable
+    }
+
+    // Load New Relic API for browser timing header injection.
+    // The agent is bootstrapped via --require newrelic before this module loads.
+    // Returns no-op stubs when NR is disabled (no license key).
+    let nr: { getBrowserTimingHeader(): string } | null = null;
+    try {
+      const { createRequire } = await import("node:module");
+      nr = createRequire(import.meta.url)("newrelic") as {
+        getBrowserTimingHeader(): string;
+      };
+    } catch {
+      // NR not available in this environment
+    }
+
     await app.register(fastifyStatic, { root, wildcard: false });
 
     // SPA fallback: serve index.html for any unmatched non-API route.
@@ -207,6 +230,15 @@ export async function buildApp(configOverrides?: Partial<Config>) {
         urlPath.startsWith("/proxy");
       if (isApiRoute) {
         return reply.status(404).send({ error: "Not found" });
+      }
+      if (indexHtml) {
+        const nrHeader = nr?.getBrowserTimingHeader() ?? "";
+        if (nrHeader) {
+          return reply
+            .type("text/html")
+            .send(indexHtml.replace("</head>", `${nrHeader}\n</head>`));
+        }
+        return reply.type("text/html").send(indexHtml);
       }
       return reply.sendFile("index.html");
     });
