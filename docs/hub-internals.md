@@ -115,6 +115,15 @@ Both defined in `hub/src/version.ts`. Protocol version also appears in `/library
 
 `USER_AGENT` is sent on every outgoing HTTP call from the hub: federation (`sign-request.ts`), Navidrome Subsonic (`adapters/subsonic.ts`), and peer health checks (`routes/admin.ts`).
 
+## Share IDs
+
+Users copy a "Share ID" for an album or artist from its detail page and paste it into Search on any peer hub that also syncs the same underlying library.
+
+- **Token**: bare `instance_*.remote_id` — the Navidrome hash (≈32 hex chars). No prefix, no encoding. Collision across unrelated Navidromes is negligible.
+- **Sender** (`pickAlbumShareId` / `pickArtistShareId` in `hub/src/routes/subsonic.ts`): picks one source row per entity; prefers `instance_id = 'local'`, else deterministic by instance id. Returned as `shareId` on `getAlbum` / `getArtist` responses.
+- **Receiver**: `/rest/search3` WHERE-clause joins through `unified_*_sources → instance_*` and matches `remote_id` alongside the existing name/UUID/MBID cases. If no hub the receiver syncs has the album, the search is empty (scenario D).
+- **No federation RPC involved.** Resolution is a local DB lookup against data the receiver already synced via `/proxy/*`.
+
 ## Frontend Subsonic client
 
 `frontend/src/lib/subsonic.ts`.

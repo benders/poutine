@@ -78,7 +78,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 |-----------|-----------------|-------------------------------------|
 | `search`  | NOT IMPLEMENTED | Legacy v1 endpoint                  |
 | `search2` | NOT IMPLEMENTED |                                     |
-| `search3` | Implemented     | Name LIKE match; also matches internal IDs (with or without `ar`/`al`/`t` prefix) and MusicBrainz IDs on artists, albums, and songs |
+| `search3` | Implemented     | Name LIKE match; also matches internal IDs (with or without `ar`/`al`/`t` prefix), MusicBrainz IDs, and Poutine share IDs (upstream Navidrome `remote_id`; see [hub-internals.md](hub-internals.md#share-ids)) on artists, albums, and songs |
 
 ### Playlists
 

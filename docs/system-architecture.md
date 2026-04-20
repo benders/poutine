@@ -68,6 +68,8 @@ The `/federation/*` surface carries only peer identity/auth in v3. Content (audi
 
 Contract details (headers, signing payload, error codes): [federation-api.md](federation-api.md). `/proxy/*` auth modes: [hub-internals.md#proxy](hub-internals.md#proxy).
 
+Cross-hub share IDs for albums and artists are resolved entirely locally by each hub against its synced `instance_*` tables — no federation RPC. See [hub-internals.md#share-ids](hub-internals.md#share-ids).
+
 ## Data model
 
 Two tables per entity — one "raw" (per-instance), one "unified" (deduped across instances):

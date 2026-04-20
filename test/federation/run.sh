@@ -60,6 +60,11 @@ docker network create "$FED_NETWORK"
 
 # Pre-populate hub data volumes with the committed test keypairs so each hub
 # boots with a known identity (matching the public keys in peers-{a,b,c}.yaml).
+echo "==> Removing existing hub data volumes..."
+docker volume rm -f "${PROJECT_A}_hub-data"
+docker volume rm -f "${PROJECT_B}_hub-data"
+docker volume rm -f "${PROJECT_C}_hub-data"
+
 echo "==> Pre-populating hub data volumes with test keys..."
 docker volume create "${PROJECT_A}_hub-data"
 docker volume create "${PROJECT_B}_hub-data"
@@ -158,12 +163,12 @@ wait_http "http://localhost:3012/api/health" "hub-b" 120
 wait_http "http://localhost:3013/api/health" "hub-c" 120
 
 echo ""
-echo "==> Syncing hub-b local library (navidrome-b must scan first)..."
-login_and_sync 3012 "hub-b" 180 > /dev/null  # only care that it succeeds
-
-echo ""
 echo "==> Syncing hub-c local library (navidrome-c must scan first)..."
 login_and_sync 3013 "hub-c" 180 > /dev/null  # only care that it succeeds
+
+echo ""
+echo "==> Syncing hub-b local library (navidrome-b must scan first)..."
+login_and_sync 3012 "hub-b" 180 > /dev/null  # only care that it succeeds
 
 echo ""
 echo "==> Syncing hub-a (local + federated from hub-b and hub-c)..."
@@ -270,6 +275,7 @@ ARTIST_ID=$(echo "$ALBUM_DETAIL" | python3 -c "
 import sys, json
 print(json.load(sys.stdin)['subsonic-response']['album']['artistId'])
 ")
+export OTHER_ALBUM_ID ARTIST_ID TRACK_ID_B
 echo ""
 echo "==> Testing search3 by album ID ($OTHER_ALBUM_ID)..."
 SEARCH_ALBUM=$(curl -sf \
@@ -282,7 +288,7 @@ match = [a for a in albums if a['id'] == target]
 assert match, f'No album with id {target} in search results: {[a[\"id\"] for a in albums]}'
 assert match[0]['name'] == 'Other Album', f'Expected Other Album, got {match[0][\"name\"]}'
 print(f'  search3 by album ID returned: {match[0][\"name\"]}')
-" OTHER_ALBUM_ID="$OTHER_ALBUM_ID"; then
+"; then
   echo "ERROR: search3 by album ID did not return the expected album" >&2
   echo "Response: $SEARCH_ALBUM" >&2
   exit 1
@@ -299,7 +305,7 @@ artists = json.load(sys.stdin)['subsonic-response'].get('searchResult3', {}).get
 match = [a for a in artists if a['id'] == target]
 assert match, f'No artist with id {target} in search results: {[a[\"id\"] for a in artists]}'
 print(f'  search3 by artist ID returned: {match[0][\"name\"]}')
-" ARTIST_ID="$ARTIST_ID"; then
+"; then
   echo "ERROR: search3 by artist ID did not return the expected artist" >&2
   echo "Response: $SEARCH_ARTIST" >&2
   exit 1
@@ -316,11 +322,85 @@ songs = json.load(sys.stdin)['subsonic-response'].get('searchResult3', {}).get('
 match = [s for s in songs if s['id'] == target]
 assert match, f'No song with id {target} in search results: {[s[\"id\"] for s in songs]}'
 print(f'  search3 by track ID returned: {match[0][\"title\"]}')
-" TRACK_ID_B="$TRACK_ID_B"; then
+"; then
   echo "ERROR: search3 by track ID did not return the expected song" >&2
   echo "Response: $SEARCH_TRACK" >&2
   exit 1
 fi
+
+# ── Share ID scenarios (issue #83) ────────────────────────────────────────────
+# Sender mints a shareId (a Navidrome remote_id) via getAlbum on its own hub;
+# receiver pastes into search3. Four scenarios exercised:
+#   A: album from hub-a's local Navidrome — B resolves via its sync of A.
+#   B: album from hub-b's Navidrome — A minted via sync of B; B resolves locally.
+#   C: album from hub-c's Navidrome (mutual peer) — B resolves via its own sync of C.
+#   D: a random remote_id that no hub knows — B returns empty results.
+
+echo ""
+echo "==> Share-ID scenarios (A/B/C/D)..."
+
+# Look up an album detail on a given hub, return its shareId.
+get_share_id() {
+  local port="$1" album_id="$2"
+  curl -sf "http://localhost:${port}/rest/getAlbum?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&id=${album_id}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['subsonic-response']['album'].get('shareId',''))"
+}
+
+assert_search_finds() {
+  local port="$1" query="$2" expected_name="$3" label="$4"
+  local resp
+  resp=$(curl -sf "http://localhost:${port}/rest/search3?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&query=${query}")
+  if ! echo "$resp" | EXPECTED="$expected_name" Q="$query" python3 -c "
+import sys, json, os
+name = os.environ['EXPECTED']
+albums = json.load(sys.stdin)['subsonic-response'].get('searchResult3', {}).get('album', [])
+match = [a for a in albums if a['name'] == name]
+assert match, f'Scenario ${label}: {name} not in results: {[a[\"name\"] for a in albums]}'
+print(f'  Scenario ${label}: hub on port ${port} resolved shareId {os.environ[\"Q\"]!r} -> {name}')
+"; then
+    echo "ERROR: scenario $label failed" >&2
+    echo "Response: $resp" >&2
+    exit 1
+  fi
+}
+
+assert_search_empty() {
+  local port="$1" query="$2" label="$3"
+  local resp
+  resp=$(curl -sf "http://localhost:${port}/rest/search3?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&query=${query}")
+  if ! echo "$resp" | python3 -c "
+import sys, json
+r = json.load(sys.stdin)['subsonic-response'].get('searchResult3', {})
+assert not r.get('album') and not r.get('artist') and not r.get('song'), f'Expected empty results, got {r}'
+print(f'  Scenario ${label}: empty results as expected')
+"; then
+    echo "ERROR: scenario $label expected empty results" >&2
+    echo "Response: $resp" >&2
+    exit 1
+  fi
+}
+
+# Resolve album IDs on hub-a for each scenario (A/B/C sourced albums).
+FIRST_ALBUM_ID=$(echo "$ALBUM_LIST" | python3 -c "
+import sys, json
+albums = json.load(sys.stdin)['subsonic-response']['albumList2']['album']
+print([a for a in albums if a['name'] == 'First Album'][0]['id'])
+")
+
+SHARE_A=$(get_share_id 3011 "$FIRST_ALBUM_ID")
+SHARE_B=$(get_share_id 3011 "$OTHER_ALBUM_ID")
+SHARE_C=$(get_share_id 3011 "$THIRD_ALBUM_ID")
+echo "  hub-a shareIds: A=${SHARE_A}  B=${SHARE_B}  C=${SHARE_C}"
+
+if [ -z "$SHARE_A" ] || [ -z "$SHARE_B" ] || [ -z "$SHARE_C" ]; then
+  echo "ERROR: getAlbum did not return shareId for all scenarios" >&2
+  exit 1
+fi
+
+assert_search_finds 3012 "$SHARE_A" "First Album" "A"
+assert_search_finds 3012 "$SHARE_B" "Other Album" "B"
+assert_search_finds 3012 "$SHARE_C" "Third Album" "C"
+assert_search_empty  3012 "ffffffffffffffffffffffffffffffff" "D"
 
 echo ""
 echo "==> All assertions passed!"

@@ -15,6 +15,7 @@ export interface SubsonicArtist {
   name: string;
   albumCount: number;
   coverArt?: string;
+  shareId?: string;
 }
 
 export interface SubsonicAlbum {
@@ -26,6 +27,7 @@ export interface SubsonicAlbum {
   songCount: number;
   year?: number;
   genre?: string;
+  shareId?: string;
 }
 
 export interface SubsonicSong {
@@ -88,6 +90,7 @@ interface RawArtist {
   name: string;
   albumCount?: number;
   coverArt?: string;
+  shareId?: string;
 }
 
 interface RawAlbum {
@@ -100,6 +103,7 @@ interface RawAlbum {
   year?: number;
   genre?: string;
   song?: RawSong[];
+  shareId?: string;
 }
 
 interface RawSong {
@@ -143,6 +147,7 @@ function parseAlbum(raw: RawAlbum): SubsonicAlbum {
     songCount: raw.songCount ?? 0,
     year: raw.year,
     genre: raw.genre,
+    shareId: raw.shareId,
   };
 }
 
@@ -275,6 +280,7 @@ export async function getArtist(id: string): Promise<SubsonicArtistDetail> {
     name: raw.name,
     albumCount: raw.albumCount ?? raw.album?.length ?? 0,
     coverArt: raw.coverArt,
+    shareId: raw.shareId,
     album: (raw.album ?? []).map(parseAlbum),
   };
 }
