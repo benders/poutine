@@ -648,17 +648,35 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const songOffset = parseInt(q.songOffset ?? "0", 10);
     const like = `%${query}%`;
 
+    // ID lookup: allow pasting an internal ID (optionally prefixed ar/al/t)
+    // or a MusicBrainz ID into the search box. Strip known prefixes so the
+    // bare UUID matches id/musicbrainz_id columns directly.
+    const trimmed = query.trim();
+    const artistIdCandidate = trimmed.startsWith("ar") ? trimmed.slice(2) : trimmed;
+    const albumIdCandidate = trimmed.startsWith("al") ? trimmed.slice(2) : trimmed;
+    const songIdCandidate = trimmed.startsWith("t") ? trimmed.slice(1) : trimmed;
+
     const artists = app.db
       .prepare(
         `SELECT ua.id, ua.name, COUNT(urg.id) AS albumCount
         FROM unified_artists ua
         LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
         WHERE ua.name_normalized LIKE ?
+          OR ua.id = ? OR ua.id = ?
+          OR ua.musicbrainz_id = ? OR ua.musicbrainz_id = ?
         GROUP BY ua.id
         ORDER BY ua.name_normalized
         LIMIT ? OFFSET ?`,
       )
-      .all(like, artistCount, artistOffset) as ArtistRow[];
+      .all(
+        like,
+        trimmed,
+        artistIdCandidate,
+        trimmed,
+        artistIdCandidate,
+        artistCount,
+        artistOffset,
+      ) as ArtistRow[];
 
     const albums = app.db
       .prepare(
@@ -670,11 +688,21 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         LEFT JOIN unified_releases ur ON ur.release_group_id = urg.id
         LEFT JOIN unified_tracks ut ON ut.release_id = ur.id
         WHERE urg.name_normalized LIKE ?
+          OR urg.id = ? OR urg.id = ?
+          OR urg.musicbrainz_id = ? OR urg.musicbrainz_id = ?
         GROUP BY urg.id
         ORDER BY urg.name_normalized
         LIMIT ? OFFSET ?`,
       )
-      .all(like, albumCount, albumOffset) as ReleaseGroupRow[];
+      .all(
+        like,
+        trimmed,
+        albumIdCandidate,
+        trimmed,
+        albumIdCandidate,
+        albumCount,
+        albumOffset,
+      ) as ReleaseGroupRow[];
 
     const songs = app.db
       .prepare(
@@ -696,10 +724,20 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         JOIN unified_releases ur ON ur.id = ut.release_id
         JOIN unified_release_groups urg ON urg.id = ur.release_group_id
         WHERE ut.title_normalized LIKE ?
+          OR ut.id = ? OR ut.id = ?
+          OR ut.musicbrainz_id = ? OR ut.musicbrainz_id = ?
         ORDER BY ut.title_normalized
         LIMIT ? OFFSET ?`,
       )
-      .all(like, songCount, songOffset) as TrackRow[];
+      .all(
+        like,
+        trimmed,
+        songIdCandidate,
+        trimmed,
+        songIdCandidate,
+        songCount,
+        songOffset,
+      ) as TrackRow[];
 
     sendSubsonicOk(reply, q, {
       searchResult3: {

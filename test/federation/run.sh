@@ -262,6 +262,66 @@ if [ "$STREAM_SIZE" -lt 1000 ]; then
   exit 1
 fi
 
+# ── Search by ID (share-ID workflow) ──────────────────────────────────────────
+# Simulates a user copying an album/artist ID from another hub and pasting it
+# into Search to look it up.
+
+ARTIST_ID=$(echo "$ALBUM_DETAIL" | python3 -c "
+import sys, json
+print(json.load(sys.stdin)['subsonic-response']['album']['artistId'])
+")
+echo ""
+echo "==> Testing search3 by album ID ($OTHER_ALBUM_ID)..."
+SEARCH_ALBUM=$(curl -sf \
+  "http://localhost:3011/rest/search3?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&query=${OTHER_ALBUM_ID}")
+if ! echo "$SEARCH_ALBUM" | python3 -c "
+import sys, json, os
+target = os.environ['OTHER_ALBUM_ID']
+albums = json.load(sys.stdin)['subsonic-response'].get('searchResult3', {}).get('album', [])
+match = [a for a in albums if a['id'] == target]
+assert match, f'No album with id {target} in search results: {[a[\"id\"] for a in albums]}'
+assert match[0]['name'] == 'Other Album', f'Expected Other Album, got {match[0][\"name\"]}'
+print(f'  search3 by album ID returned: {match[0][\"name\"]}')
+" OTHER_ALBUM_ID="$OTHER_ALBUM_ID"; then
+  echo "ERROR: search3 by album ID did not return the expected album" >&2
+  echo "Response: $SEARCH_ALBUM" >&2
+  exit 1
+fi
+
+echo ""
+echo "==> Testing search3 by artist ID ($ARTIST_ID)..."
+SEARCH_ARTIST=$(curl -sf \
+  "http://localhost:3011/rest/search3?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&query=${ARTIST_ID}")
+if ! echo "$SEARCH_ARTIST" | python3 -c "
+import sys, json, os
+target = os.environ['ARTIST_ID']
+artists = json.load(sys.stdin)['subsonic-response'].get('searchResult3', {}).get('artist', [])
+match = [a for a in artists if a['id'] == target]
+assert match, f'No artist with id {target} in search results: {[a[\"id\"] for a in artists]}'
+print(f'  search3 by artist ID returned: {match[0][\"name\"]}')
+" ARTIST_ID="$ARTIST_ID"; then
+  echo "ERROR: search3 by artist ID did not return the expected artist" >&2
+  echo "Response: $SEARCH_ARTIST" >&2
+  exit 1
+fi
+
+echo ""
+echo "==> Testing search3 by track ID ($TRACK_ID_B)..."
+SEARCH_TRACK=$(curl -sf \
+  "http://localhost:3011/rest/search3?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&query=${TRACK_ID_B}")
+if ! echo "$SEARCH_TRACK" | python3 -c "
+import sys, json, os
+target = os.environ['TRACK_ID_B']
+songs = json.load(sys.stdin)['subsonic-response'].get('searchResult3', {}).get('song', [])
+match = [s for s in songs if s['id'] == target]
+assert match, f'No song with id {target} in search results: {[s[\"id\"] for s in songs]}'
+print(f'  search3 by track ID returned: {match[0][\"title\"]}')
+" TRACK_ID_B="$TRACK_ID_B"; then
+  echo "ERROR: search3 by track ID did not return the expected song" >&2
+  echo "Response: $SEARCH_TRACK" >&2
+  exit 1
+fi
+
 echo ""
 echo "==> All assertions passed!"
 PASSED=1

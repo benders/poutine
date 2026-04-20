@@ -340,4 +340,112 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"].status).toBe("ok");
     expect(body["subsonic-response"]).toHaveProperty("searchResult3");
   });
+
+  it("search3 matches artist by internal id (prefixed and bare)", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized, musicbrainz_id) VALUES (?, ?, ?, ?)",
+      )
+      .run(
+        "artist-uuid-1",
+        "Zzz Obscure",
+        "zzz obscure",
+        "mbid-artist-aaaa",
+      );
+
+    const prefixed = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=arartist-uuid-1",
+    });
+    const prefixedBody = prefixed.json();
+    expect(prefixedBody["subsonic-response"].searchResult3.artist).toHaveLength(1);
+    expect(prefixedBody["subsonic-response"].searchResult3.artist[0].name).toBe(
+      "Zzz Obscure",
+    );
+
+    const bare = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=artist-uuid-1",
+    });
+    expect(bare.json()["subsonic-response"].searchResult3.artist).toHaveLength(1);
+
+    const byMbid = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=mbid-artist-aaaa",
+    });
+    expect(byMbid.json()["subsonic-response"].searchResult3.artist).toHaveLength(1);
+  });
+
+  it("search3 matches album by internal id and MusicBrainz id", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("artist-a", "Some Artist", "some artist");
+    app.db
+      .prepare(
+        "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, musicbrainz_id) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("rg-uuid-1", "An Album", "an album", "artist-a", "mbid-rg-bbbb");
+
+    const byId = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=alrg-uuid-1",
+    });
+    expect(byId.json()["subsonic-response"].searchResult3.album).toHaveLength(1);
+
+    const byMbid = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=mbid-rg-bbbb",
+    });
+    expect(byMbid.json()["subsonic-response"].searchResult3.album).toHaveLength(1);
+  });
+
+  it("search3 matches track by internal id (the /stream id workflow)", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("artist-b", "Track Artist", "track artist");
+    app.db
+      .prepare(
+        "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id) VALUES (?, ?, ?, ?)",
+      )
+      .run("rg-b", "RG B", "rg b", "artist-b");
+    app.db
+      .prepare(
+        "INSERT INTO unified_releases (id, release_group_id, name) VALUES (?, ?, ?)",
+      )
+      .run("rel-b", "rg-b", "RG B");
+    app.db
+      .prepare(
+        `INSERT INTO unified_tracks
+          (id, release_id, artist_id, title, title_normalized, musicbrainz_id)
+          VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "track-uuid-1",
+        "rel-b",
+        "artist-b",
+        "Zxcv Unique Title",
+        "zxcv unique title",
+        "mbid-track-cccc",
+      );
+
+    // Prefixed id as seen in /stream?id=... URLs
+    const streamId = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=ttrack-uuid-1",
+    });
+    expect(streamId.json()["subsonic-response"].searchResult3.song).toHaveLength(1);
+    expect(streamId.json()["subsonic-response"].searchResult3.song[0].title).toBe(
+      "Zxcv Unique Title",
+    );
+
+    const byMbid = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=mbid-track-cccc",
+    });
+    expect(byMbid.json()["subsonic-response"].searchResult3.song).toHaveLength(1);
+  });
 });
