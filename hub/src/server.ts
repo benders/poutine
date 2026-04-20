@@ -14,6 +14,8 @@ import { loadOrCreatePrivateKey } from "./federation/signing.js";
 import { loadPeerRegistry } from "./federation/peers.js";
 import { createFederationFetcher } from "./federation/sign-request.js";
 import { seedSyntheticInstances } from "./library/seed-instances.js";
+import { pruneOrphanInstances } from "./library/prune-instances.js";
+import { mergeLibraries } from "./library/merge.js";
 import { hashPassword } from "./auth/passwords.js";
 import { AutoSyncService } from "./services/auto-sync.js";
 import { SyncOperationService } from "./services/sync-operations.js";
@@ -130,6 +132,17 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
   // Seed synthetic instance rows (local Navidrome + known peers) — idempotent
   seedSyntheticInstances(db, config, peerRegistry);
+
+  // Prune instances for peers no longer listed in peers.yaml. Cascades remove
+  // all instance_* data and unified_*_sources; re-merge rebuilds unified_*.
+  const pruned = pruneOrphanInstances(db, peerRegistry);
+  if (pruned.removed.length > 0) {
+    app.log.info(
+      { removedInstances: pruned.removed },
+      "Removed orphan peer instances no longer in peers.yaml",
+    );
+    mergeLibraries(db);
+  }
 
   // Auto-sync: polls Navidrome every 30s and syncs when a new scan has completed
   const syncOpService = new SyncOperationService(db);
