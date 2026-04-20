@@ -14,8 +14,10 @@ export function formatDurationLong(ms: number): string {
   return `${minutes} min`;
 }
 
-export function formatTimeAgo(dateStr: string): string {
+export function formatTimeAgo(dateStr: string | null | undefined): string {
+  if (!dateStr) return "Never";
   const date = new Date(dateStr);
+  if (isNaN(date.getTime()) || date.getUTCFullYear() < 1970) return "Never";
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMin = Math.floor(diffMs / 60000);
