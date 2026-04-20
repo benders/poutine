@@ -6,6 +6,7 @@ import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
 import { Play, Plus, ChevronRight, Disc, ChevronDown, ChevronUp, FileAudio, Info } from "lucide-react";
 import { useState } from "react";
+import { ShareIdButton } from "@/components/ShareIdButton";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -90,19 +91,22 @@ export function ReleaseGroupPage() {
             </button>
           )}
 
-          {/* Album metadata toggle */}
-          <button
-            onClick={() => setShowAlbumMetadata(!showAlbumMetadata)}
-            className="mt-3 inline-flex items-center gap-2 px-4 py-1.5 bg-surface-hover hover:bg-surface text-text-primary rounded-full text-sm font-medium transition-colors cursor-pointer"
-          >
-            {showAlbumMetadata ? (
-              <ChevronUp className="w-4 h-4" />
-            ) : (
-              <ChevronDown className="w-4 h-4" />
-            )}
-            <Info className="w-4 h-4" />
-            {showAlbumMetadata ? "Hide" : "Show"} Album Metadata
-          </button>
+          {/* Album metadata toggle + Share ID */}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setShowAlbumMetadata(!showAlbumMetadata)}
+              className="inline-flex items-center gap-2 px-4 py-1.5 bg-surface-hover hover:bg-surface text-text-primary rounded-full text-sm font-medium transition-colors cursor-pointer"
+            >
+              {showAlbumMetadata ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+              <Info className="w-4 h-4" />
+              {showAlbumMetadata ? "Hide" : "Show"} Album Metadata
+            </button>
+            {id && <ShareIdButton id={id} />}
+          </div>
         </div>
       </div>
 
