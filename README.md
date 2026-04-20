@@ -98,6 +98,25 @@ Owner seeding only runs on first boot (when `users` is empty). To reset a passwo
 
 Reads the new password interactively. Errors if the user does not exist or the database is empty.
 
+### Cutting a release
+
+Releases are tag-triggered. A `vX.Y.Z` tag push builds a multi-arch Docker image to `ghcr.io/benders/poutine` and creates a GitHub Release with auto-generated notes.
+
+```bash
+pnpm version patch          # or minor / major — syncs hub, frontend, version.ts
+git push --follow-tags
+```
+
+The `.github/workflows/release.yml` workflow verifies the tag matches `package.json`, builds `linux/amd64` + `linux/arm64`, and tags the image `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` (non-prerelease only). Pre-release tags (e.g. `v0.3.1-rc.0`) publish without `:latest` and are marked pre-release on GitHub.
+
+Operators can pull a pinned image instead of rebuilding from source:
+
+```bash
+docker pull ghcr.io/benders/poutine:latest
+```
+
+Or replace the `build:` block in `docker-compose.yml` with `image: ghcr.io/benders/poutine:X.Y.Z` to pin.
+
 ### Wiping the Navidrome volume
 
 Navidrome's admin-bootstrap env vars only run on a fresh volume. To force a reset, use:
