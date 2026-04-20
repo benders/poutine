@@ -60,6 +60,11 @@ docker network create "$FED_NETWORK"
 
 # Pre-populate hub data volumes with the committed test keypairs so each hub
 # boots with a known identity (matching the public keys in peers-{a,b,c}.yaml).
+echo "==> Removing existing hub data volumes..."
+docker volume rm -f "${PROJECT_A}_hub-data"
+docker volume rm -f "${PROJECT_B}_hub-data"
+docker volume rm -f "${PROJECT_C}_hub-data"
+
 echo "==> Pre-populating hub data volumes with test keys..."
 docker volume create "${PROJECT_A}_hub-data"
 docker volume create "${PROJECT_B}_hub-data"
@@ -158,12 +163,12 @@ wait_http "http://localhost:3012/api/health" "hub-b" 120
 wait_http "http://localhost:3013/api/health" "hub-c" 120
 
 echo ""
-echo "==> Syncing hub-b local library (navidrome-b must scan first)..."
-login_and_sync 3012 "hub-b" 180 > /dev/null  # only care that it succeeds
-
-echo ""
 echo "==> Syncing hub-c local library (navidrome-c must scan first)..."
 login_and_sync 3013 "hub-c" 180 > /dev/null  # only care that it succeeds
+
+echo ""
+echo "==> Syncing hub-b local library (navidrome-b must scan first)..."
+login_and_sync 3012 "hub-b" 180 > /dev/null  # only care that it succeeds
 
 echo ""
 echo "==> Syncing hub-a (local + federated from hub-b and hub-c)..."
