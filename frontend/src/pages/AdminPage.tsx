@@ -144,11 +144,11 @@ function InstanceSection() {
           </div>
           <div>
             <p className="text-xs text-text-muted mb-0.5">Last Navidrome scan</p>
-            <p className="text-text-primary">{nd.lastScan ? formatTimeAgo(nd.lastScan) : "Never"}</p>
+            <p className="text-text-primary">{formatTimeAgo(nd.lastScan)}</p>
           </div>
           <div>
             <p className="text-xs text-text-muted mb-0.5">Last synced</p>
-            <p className="text-text-primary">{nd.lastSynced ? formatTimeAgo(nd.lastSynced) : "Never"}</p>
+            <p className="text-text-primary">{formatTimeAgo(nd.lastSynced)}</p>
           </div>
         </div>
       </div>

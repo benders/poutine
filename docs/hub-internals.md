@@ -163,6 +163,10 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 - **Native deps:** `argon2` and `better-sqlite3` need `python3 make g++`. Root `package.json` has `pnpm.onlyBuiltDependencies` to allow their postinstall scripts. pnpm v10+ ignores build scripts by default — any new native dep must be added there.
 - **Rebuild after source changes.** Running containers use the compiled image, not live source. `docker compose build <service> && docker compose up -d <service>` or stale routes/assets will be served.
 
+## Release process
+
+Tag-triggered. `.github/workflows/release.yml` fires on `v*.*.*` pushes, verifies the tag matches `package.json`, builds multi-arch (`linux/amd64,linux/arm64`), pushes to `ghcr.io/benders/poutine`, and creates a GitHub Release. Version is propagated to `hub/package.json`, `frontend/package.json`, and `hub/src/version.ts` by `scripts/sync-version.mjs` via the root `package.json` `version` lifecycle hook — developers run `pnpm version <bump>` locally, never edit versions manually. Operator-facing instructions live in `README.md#cutting-a-release`.
+
 ## Three-hub federation test
 
 - `pnpm test:federation` → `test/federation/run.sh`. Starts hub-a (3011), hub-b (3012), hub-c (3013) as separate Compose projects (`-p poutine-fed-a/b/c`) from the same `docker-compose.yml`, each with its own `--env-file`.
