@@ -30,6 +30,44 @@ function ensureColumns(db: Database.Database): void {
   if (!instanceColNames.has("last_sync_message")) {
     db.exec("ALTER TABLE instances ADD COLUMN last_sync_message TEXT");
   }
+
+  const trackSourceCols = db
+    .prepare("PRAGMA table_info(track_sources)")
+    .all() as Array<{ name: string }>;
+  const trackSourceColNames = new Set(trackSourceCols.map((c) => c.name));
+  if (!trackSourceColNames.has("preferred")) {
+    db.exec(
+      "ALTER TABLE track_sources ADD COLUMN preferred INTEGER NOT NULL DEFAULT 0",
+    );
+    // Backfill: pick a preferred source per unified track on existing DBs so
+    // streaming keeps working before the next merge runs. Same rule merge.ts
+    // applies after every sync.
+    db.exec(`
+      UPDATE track_sources SET preferred = 1 WHERE id IN (
+        SELECT id FROM (
+          SELECT ts.id,
+            ROW_NUMBER() OVER (
+              PARTITION BY ts.unified_track_id
+              ORDER BY
+                CASE LOWER(COALESCE(ts.format, ''))
+                  WHEN 'flac' THEN 100
+                  WHEN 'wav'  THEN 90
+                  WHEN 'alac' THEN 85
+                  WHEN 'opus' THEN 70
+                  WHEN 'aac'  THEN 60
+                  WHEN 'mp3'  THEN 50
+                  WHEN 'ogg'  THEN 45
+                  ELSE 30
+                END DESC,
+                COALESCE(ts.bitrate, 0) DESC,
+                CASE WHEN ts.instance_id = 'local' THEN 1 ELSE 0 END DESC,
+                ts.id ASC
+            ) AS rn
+          FROM track_sources ts
+        ) WHERE rn = 1
+      );
+    `);
+  }
 }
 
 /**
@@ -58,6 +96,7 @@ function migrateTrackSources(db: Database.Database): void {
       format TEXT,
       bitrate INTEGER,
       size INTEGER,
+      preferred INTEGER NOT NULL DEFAULT 0,
       UNIQUE(unified_track_id, instance_track_id)
     );
     CREATE INDEX IF NOT EXISTS idx_track_sources_track ON track_sources(unified_track_id);

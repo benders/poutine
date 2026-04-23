@@ -62,16 +62,16 @@ describe("mergeLibraries", () => {
     remoteId: string,
     albumId: string,
     title: string,
-    opts: { mbid?: string; trackNumber?: number; durationMs?: number; format?: string } = {},
+    opts: { mbid?: string; trackNumber?: number; durationMs?: number; format?: string; bitrate?: number } = {},
   ) {
     const id = `${instanceId}:${remoteId}`;
     db.prepare(
-      `INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, format, musicbrainz_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, format, bitrate, musicbrainz_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id, instanceId, remoteId, albumId, title, "Artist",
       opts.trackNumber ?? 1, 1, opts.durationMs ?? 240000,
-      opts.format ?? "flac", opts.mbid ?? null,
+      opts.format ?? "flac", opts.bitrate ?? null, opts.mbid ?? null,
     );
     return id;
   }
@@ -256,6 +256,57 @@ describe("mergeLibraries", () => {
 
     const artists = db.prepare("SELECT * FROM unified_artists").all();
     expect(artists).toHaveLength(0);
+  });
+
+  it("marks exactly one preferred source per unified track, favoring higher-quality format", () => {
+    const artistMbid = "artist-mbid-1";
+    insertArtist(inst1, "a1", "Radiohead", artistMbid);
+    insertArtist(inst2, "a1", "Radiohead", artistMbid);
+
+    const releaseMbid = "release-mbid-1";
+    const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { mbid: releaseMbid, trackCount: 1 });
+    const album2 = insertAlbum(inst2, "al1", "OK Computer", `${inst2}:a1`, { mbid: releaseMbid, trackCount: 1 });
+
+    const recordingMbid = "recording-mbid-1";
+    // inst1 has MP3 320, inst2 has FLAC 1000. FLAC wins regardless of instance.
+    insertTrack(inst1, "t1", album1, "Paranoid Android", { mbid: recordingMbid, format: "mp3", bitrate: 320 });
+    insertTrack(inst2, "t1", album2, "Paranoid Android", { mbid: recordingMbid, format: "flac", bitrate: 1000 });
+
+    mergeLibraries(db);
+
+    const preferred = db
+      .prepare("SELECT instance_id, format FROM track_sources WHERE preferred = 1")
+      .all() as Array<{ instance_id: string; format: string }>;
+    expect(preferred).toHaveLength(1);
+    expect(preferred[0].instance_id).toBe(inst2);
+    expect(preferred[0].format).toBe("flac");
+  });
+
+  it("breaks format/bitrate ties in favor of the local instance", () => {
+    // Create a "local" instance alongside the peer.
+    db.prepare(
+      "INSERT INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run("local", "Local", "https://local.example.com", "subsonic", "encrypted", ownerId, "online");
+
+    const artistMbid = "artist-mbid-1";
+    insertArtist("local", "a1", "Radiohead", artistMbid);
+    insertArtist(inst2, "a1", "Radiohead", artistMbid);
+
+    const releaseMbid = "release-mbid-1";
+    const albumLocal = insertAlbum("local", "al1", "OK Computer", "local:a1", { mbid: releaseMbid, trackCount: 1 });
+    const albumPeer = insertAlbum(inst2, "al1", "OK Computer", `${inst2}:a1`, { mbid: releaseMbid, trackCount: 1 });
+
+    const recordingMbid = "recording-mbid-1";
+    insertTrack("local", "t1", albumLocal, "Paranoid Android", { mbid: recordingMbid, format: "flac", bitrate: 1000 });
+    insertTrack(inst2, "t1", albumPeer, "Paranoid Android", { mbid: recordingMbid, format: "flac", bitrate: 1000 });
+
+    mergeLibraries(db);
+
+    const preferred = db
+      .prepare("SELECT instance_id FROM track_sources WHERE preferred = 1")
+      .all() as Array<{ instance_id: string }>;
+    expect(preferred).toHaveLength(1);
+    expect(preferred[0].instance_id).toBe("local");
   });
 
   it("should clear and rebuild on re-merge", () => {

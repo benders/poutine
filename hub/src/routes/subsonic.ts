@@ -12,7 +12,7 @@ import {
 } from "./subsonic-response.js";
 import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
-import { selectBestSource } from "../library/source-selection.js";
+import { buildStreamParams } from "./stream-params.js";
 import type { StreamTrackingService } from "../services/stream-tracking.js";
 
 // Extend Fastify app type for stream tracking
@@ -972,64 +972,60 @@ try {
     request.log.info(`Stream tracking started: ${streamOpId} for ${trackRow.title} by ${trackRow.artist_name}`);
   }
 
-  const rawSources = app.db
+  // Source selection happens at merge time (merge.ts sets preferred = 1).
+  // At stream time we just look up THE source for this unified track.
+  const best = app.db
     .prepare(
-      `SELECT ts.format, ts.bitrate, ts.instance_id, it.remote_id
-      FROM track_sources ts
-      JOIN instance_tracks it ON it.id = ts.instance_track_id
-      WHERE ts.unified_track_id = ?`,
+      `SELECT ts.instance_id, it.remote_id
+       FROM track_sources ts
+       JOIN instance_tracks it ON it.id = ts.instance_track_id
+       WHERE ts.unified_track_id = ? AND ts.preferred = 1
+       LIMIT 1`,
     )
-    .all(trackId) as Array<{
-      format: string | null;
-      bitrate: number | null;
-      instance_id: string;
-      remote_id: string;
-    }>;
-
-  const best = selectBestSource(
-    rawSources.map((s) => ({
-      remoteId: s.remote_id,
-      format: s.format,
-      bitrate: s.bitrate,
-      instanceId: s.instance_id,
-    })),
-    q.format,
-  );
+    .get(trackId) as { instance_id: string; remote_id: string } | undefined;
 
   if (!best) {
     sendBinaryError(reply, 404, "Track not found");
     return;
   }
 
+  const streamParams = buildStreamParams(q);
   let response: Response;
   let bytesTransferred = 0;
 
-  if (best.instanceId === "local") {
+  if (best.instance_id === "local") {
     const client = new SubsonicClient({
       url: app.config.navidromeUrl,
       username: app.config.navidromeUsername,
       password: app.config.navidromePassword,
     });
     try {
-     const streamParams: { format?: string; maxBitRate?: number } = {};
-      if (q.format) streamParams.format = q.format;
-      if (q.maxBitRate) streamParams.maxBitRate = parseInt(q.maxBitRate, 10);
-      response = await client.stream(best.remoteId, streamParams);
+      const opts: { format?: string; maxBitRate?: number; timeOffset?: number; estimateContentLength?: boolean } = {};
+      const fmt = streamParams.get("format");
+      const br = streamParams.get("maxBitRate");
+      const to = streamParams.get("timeOffset");
+      const ecl = streamParams.get("estimateContentLength");
+      if (fmt) opts.format = fmt;
+      if (br) opts.maxBitRate = parseInt(br, 10);
+      if (to) opts.timeOffset = parseInt(to, 10);
+      if (ecl === "true") opts.estimateContentLength = true;
+      response = await client.stream(best.remote_id, opts);
     } catch {
       sendBinaryError(reply, 502, "Stream error");
       return;
     }
   } else {
-    // Peer routing
-    const peer = app.peerRegistry.peers.get(best.instanceId);
+    const peer = app.peerRegistry.peers.get(best.instance_id);
     if (!peer) {
       sendBinaryError(reply, 502, "Peer not available");
       return;
     }
     try {
-    response = await app.federatedFetch(
+      const qs = streamParams.toString();
+      const path = `/federation/stream/${encodeURIComponent(best.remote_id)}${qs ? `?${qs}` : ""}`;
+      response = await app.federatedFetch(
         peer,
-        `/federation/stream/${encodeURIComponent(best.remoteId)}`,
+        path,
         { asUser: request.subsonicUser.username },
       );
     } catch {
