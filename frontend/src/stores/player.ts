@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import type { SubsonicSong } from "@/lib/subsonic";
-import { streamUrl } from "@/lib/subsonic";
 
 interface PlayerState {
   queue: SubsonicSong[];
@@ -30,7 +29,6 @@ interface PlayerState {
   setDuration: (duration: number) => void;
   toggleShuffle: () => void;
   cycleRepeat: () => void;
-  getStreamUrl: (trackId: string) => string;
 }
 
 export const usePlayer = create<PlayerState>((set, get) => ({
@@ -116,6 +114,4 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       const idx = modes.indexOf(state.repeat);
       return { repeat: modes[(idx + 1) % modes.length] };
     }),
-
-  getStreamUrl: (trackId: string) => streamUrl(trackId),
 }));

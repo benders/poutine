@@ -10,6 +10,7 @@ import http from "node:http";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
 import { createRequirePeerAuth } from "../federation/peer-auth.js";
+import { buildStreamParams } from "./stream-params.js";
 
 // ── HTTP agents for upstream requests ────────────────────────────────────────
 
@@ -56,10 +57,12 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
     targetUrl.searchParams.set("c", "poutine-federation");
     targetUrl.searchParams.set("id", trackId);
     
-    // Forward any format params from the request
+    // Forward Subsonic passthrough params (format, maxBitRate, timeOffset, …)
+    // via a single shared helper so the local and peer paths agree.
     const q = request.query as Record<string, string>;
-    if (q.format) targetUrl.searchParams.set("format", q.format);
-    if (q.maxBitRate) targetUrl.searchParams.set("maxBitRate", q.maxBitRate);
+    for (const [key, val] of buildStreamParams(q)) {
+      targetUrl.searchParams.set(key, val);
+    }
 
     // Make the upstream request
     const isHttps = targetUrl.protocol === "https:";

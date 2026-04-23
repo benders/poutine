@@ -480,6 +480,40 @@ export function mergeLibraries(db: Database.Database): void {
         }
       }
     }
+
+    // ── Step 5: Mark preferred source per unified track ────────────────────
+    //
+    // Selection rule (runs here, not at stream time):
+    //   1. Higher-quality format wins (FLAC > WAV > ALAC > Opus > AAC > MP3 > Ogg).
+    //   2. Tie → higher bitrate.
+    //   3. Tie → local instance.
+    //   4. Tie → lowest id (stable).
+    db.exec(`
+      UPDATE track_sources SET preferred = 0;
+      UPDATE track_sources SET preferred = 1 WHERE id IN (
+        SELECT id FROM (
+          SELECT ts.id,
+            ROW_NUMBER() OVER (
+              PARTITION BY ts.unified_track_id
+              ORDER BY
+                CASE LOWER(COALESCE(ts.format, ''))
+                  WHEN 'flac' THEN 100
+                  WHEN 'wav'  THEN 90
+                  WHEN 'alac' THEN 85
+                  WHEN 'opus' THEN 70
+                  WHEN 'aac'  THEN 60
+                  WHEN 'mp3'  THEN 50
+                  WHEN 'ogg'  THEN 45
+                  ELSE 30
+                END DESC,
+                COALESCE(ts.bitrate, 0) DESC,
+                CASE WHEN ts.instance_id = 'local' THEN 1 ELSE 0 END DESC,
+                ts.id ASC
+            ) AS rn
+          FROM track_sources ts
+        ) WHERE rn = 1
+      );
+    `);
   });
 
   transaction();

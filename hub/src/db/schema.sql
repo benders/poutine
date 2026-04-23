@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS track_sources (
   format TEXT,
   bitrate INTEGER,
   size INTEGER,
+  preferred INTEGER NOT NULL DEFAULT 0,
   UNIQUE(unified_track_id, instance_track_id)
 );
 
