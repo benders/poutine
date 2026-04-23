@@ -321,10 +321,38 @@ export async function search3(query: string): Promise<SubsonicSearchResults> {
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
+// Single place that defines what format/bitrate the SPA asks the hub to serve.
+// PlayerBar renders these same values as the "actually streamed" metadata, so
+// changing the defaults here also changes what the user sees in the player.
+export const STREAM_FORMAT = "opus";
+export const STREAM_MAX_BITRATE = 192;
+
+export interface EffectiveStream {
+  format: string;
+  bitRate: number;
+  bitRateIsCap: boolean; // true when we only know the ceiling (transcoded)
+}
+
+export function effectiveStream(
+  source: { suffix?: string | null; bitRate?: number | null },
+  format: string = STREAM_FORMAT,
+  maxBitRate: number = STREAM_MAX_BITRATE,
+): EffectiveStream {
+  const sourceFormat = source.suffix?.toLowerCase() ?? null;
+  const sourceBitRate = source.bitRate ?? null;
+  if (sourceFormat && sourceFormat === format.toLowerCase()) {
+    // Same format → Navidrome passes through, capped at source bitrate.
+    const br = sourceBitRate != null ? Math.min(sourceBitRate, maxBitRate) : maxBitRate;
+    return { format, bitRate: br, bitRateIsCap: sourceBitRate == null };
+  }
+  // Different format → transcoded. We only know the cap.
+  return { format, bitRate: maxBitRate, bitRateIsCap: true };
+}
+
 export function streamUrl(
   songId: string,
-  format = "opus",
-  maxBitRate = 128,
+  format: string = STREAM_FORMAT,
+  maxBitRate: number = STREAM_MAX_BITRATE,
 ): string {
   // Auth via httpOnly access_token cookie (sent automatically by the browser).
   // Do NOT embed the JWT in the URL — the token baked in at render time goes
