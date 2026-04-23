@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
-import { streamUrl, artUrl } from "@/lib/subsonic";
+import { streamUrl, artUrl, effectiveStream } from "@/lib/subsonic";
 import { attemptRefresh, clearTokens } from "@/lib/api";
 import {
   Play,
@@ -48,9 +48,13 @@ export function PlayerBar() {
       ? queue[currentIndex]
       : null;
 
-  const currentStreamUrl = currentTrack
-    ? streamUrl(currentTrack.id, "opus", 192)
-    : null;
+  const currentStreamUrl = currentTrack ? streamUrl(currentTrack.id) : null;
+  const streamed = currentTrack ? effectiveStream(currentTrack) : null;
+  const sourceLabel = currentTrack?.suffix && currentTrack.bitRate
+    ? `Source: ${currentTrack.suffix.toUpperCase()} ${currentTrack.bitRate} kbps`
+    : currentTrack?.suffix
+      ? `Source: ${currentTrack.suffix.toUpperCase()}`
+      : undefined;
 
   // Navigation handlers for Issue #40
   const navigateToAlbum = () => {
@@ -224,12 +228,18 @@ export function PlayerBar() {
           >
             {currentTrack.artist}
           </p>
-          <div className="flex items-center gap-2 text-xs text-text-muted mt-0.5">
-            {currentTrack.suffix && (
-              <span className="uppercase">{currentTrack.suffix}</span>
-            )}
-            {currentTrack.bitRate && (
-              <span>{currentTrack.bitRate} kbps</span>
+          <div
+            className="flex items-center gap-2 text-xs text-text-muted mt-0.5"
+            title={sourceLabel}
+          >
+            {streamed && (
+              <>
+                <span className="uppercase">{streamed.format}</span>
+                <span>
+                  {streamed.bitRateIsCap ? "≤" : ""}
+                  {streamed.bitRate} kbps
+                </span>
+              </>
             )}
             {currentTrack.sourceInstance && (
               <span>• {currentTrack.sourceInstance}</span>
