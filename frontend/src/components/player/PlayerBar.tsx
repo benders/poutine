@@ -328,8 +328,11 @@ export function PlayerBar() {
           min={0}
           max={1}
           step={0.01}
-          value={volume}
-          onChange={(e) => setVolume(parseFloat(e.target.value))}
+          value={Math.sqrt(volume)}
+          onChange={(e) => {
+            const pos = parseFloat(e.target.value);
+            setVolume(pos * pos);
+          }}
           className="flex-1 h-1 appearance-none bg-border rounded-full cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-text-primary [&::-webkit-slider-thumb]:rounded-full"
         />
       </div>
