@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getArtists, artUrl } from "@/lib/subsonic";
+import { ErrorMessage } from "@/components/ui/ErrorMessage";
 import { Search, Disc } from "lucide-react";
 
 function initials(name: string): string {
@@ -25,9 +26,10 @@ export function ArtistsPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
 
-  const { data: artists, isLoading } = useQuery({
+  const { data: artists, isLoading, error } = useQuery({
     queryKey: ["artists"],
     queryFn: () => getArtists(),
+    retry: false,
   });
 
   const filtered = useMemo(() => {
@@ -53,7 +55,9 @@ export function ArtistsPage() {
         </div>
       </div>
 
-      {isLoading ? (
+      {error ? (
+        <ErrorMessage error={error} />
+      ) : isLoading ? (
         <div className="text-text-muted text-center py-20">Loading...</div>
       ) : filtered.length === 0 ? (
         <div className="text-text-muted text-center py-20">

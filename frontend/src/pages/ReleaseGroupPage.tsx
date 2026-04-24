@@ -7,6 +7,7 @@ import { formatDuration } from "@/lib/format";
 import { Play, Plus, ChevronRight, Disc, ChevronDown, ChevronUp, FileAudio, Info } from "lucide-react";
 import { useState } from "react";
 import { ShareIdButton } from "@/components/ShareIdButton";
+import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -23,11 +24,16 @@ export function ReleaseGroupPage() {
   const [expandedTrackId, setExpandedTrackId] = useState<string | null>(null);
   const [showAlbumMetadata, setShowAlbumMetadata] = useState(false);
 
-  const { data: album, isLoading } = useQuery({
+  const { data: album, isLoading, error } = useQuery({
     queryKey: ["album", id],
     queryFn: () => getAlbum(id!),
     enabled: !!id,
+    retry: false,
   });
+
+  if (error) {
+    return <div className="py-6"><ErrorMessage error={error} /></div>;
+  }
 
   if (isLoading) {
     return <div className="text-text-muted text-center py-20">Loading...</div>;

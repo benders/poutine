@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getAlbumList2, artUrl } from "@/lib/subsonic";
 import type { SubsonicAlbum } from "@/lib/subsonic";
 import { Search, Disc, ChevronDown } from "lucide-react";
+import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -21,9 +22,10 @@ export function LibraryPage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortOption>("name");
 
-  const { data: albums, isLoading } = useQuery({
+  const { data: albums, isLoading, error } = useQuery({
     queryKey: ["albumList2"],
     queryFn: () => getAlbumList2({ size: 500 }),
+    retry: false,
   });
 
   const filtered = useMemo(() => {
@@ -83,7 +85,9 @@ export function LibraryPage() {
         </div>
       </div>
 
-      {isLoading ? (
+      {error ? (
+        <ErrorMessage error={error} />
+      ) : isLoading ? (
         <div className="text-text-muted text-center py-20">Loading...</div>
       ) : filtered.length === 0 ? (
         <div className="text-text-muted text-center py-20">

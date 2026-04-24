@@ -6,6 +6,7 @@ import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
 import { Search, Play, Disc, User, Music } from "lucide-react";
+import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -37,10 +38,11 @@ export function SearchPage() {
     return () => clearTimeout(timer);
   }, [input]);
 
-  const { data: results, isLoading } = useQuery({
+  const { data: results, isLoading, error } = useQuery({
     queryKey: ["search", debouncedQuery],
     queryFn: () => search3(debouncedQuery),
     enabled: debouncedQuery.length >= 2,
+    retry: false,
   });
 
   const hasResults =
@@ -71,7 +73,11 @@ export function SearchPage() {
         </div>
       )}
 
-      {isLoading && debouncedQuery.length >= 2 && (
+      {error && debouncedQuery.length >= 2 && (
+        <ErrorMessage error={error} />
+      )}
+
+      {isLoading && debouncedQuery.length >= 2 && !error && (
         <div className="text-text-muted text-center py-16">Searching...</div>
       )}
 

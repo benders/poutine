@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "pnpm --filter hub dev",
     "build": "pnpm --filter hub build && pnpm --filter frontend build",
-    "test": "pnpm --filter hub test",
+    "test": "pnpm --filter hub test && pnpm --filter frontend test",
     "lint": "pnpm --filter hub lint && pnpm --filter frontend lint",
     "typecheck": "pnpm --filter hub typecheck && pnpm --filter frontend typecheck",
     "test:federation": "bash test/federation/run.sh",

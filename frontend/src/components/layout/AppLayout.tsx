@@ -1,6 +1,7 @@
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { PlayerBar } from "@/components/player/PlayerBar";
+import { ToastHost } from "@/components/ui/ToastHost";
 import { useDocumentTitle } from "@/lib/useDocumentTitle";
 
 export function AppLayout() {
@@ -12,6 +13,7 @@ export function AppLayout() {
         <Outlet />
       </main>
       <PlayerBar />
+      <ToastHost />
     </div>
   );
 }

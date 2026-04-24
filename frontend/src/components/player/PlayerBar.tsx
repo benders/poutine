@@ -1,6 +1,7 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { usePlayer } from "@/stores/player";
+import { useToasts } from "@/stores/toast";
 import { formatDuration } from "@/lib/format";
 import { streamUrl, artUrl, effectiveStream } from "@/lib/subsonic";
 import { attemptRefresh, clearTokens } from "@/lib/api";
@@ -21,7 +22,7 @@ import { cn } from "@/lib/cn";
 export function PlayerBar() {
   const navigate = useNavigate();
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [streamError, setStreamError] = useState<string | null>(null);
+  const pushToast = useToasts((s) => s.push);
   const retryAttemptedRef = useRef(false);
   const {
     queue,
@@ -72,7 +73,6 @@ export function PlayerBar() {
   // Reset error/retry state and seed duration from metadata when track changes
   useEffect(() => {
     retryAttemptedRef.current = false;
-    setStreamError(null);
     if (currentTrack) {
       setDuration(currentTrack.durationMs / 1000);
     }
@@ -157,10 +157,23 @@ export function PlayerBar() {
         window.location.replace("/login");
       }
     } else {
-      setStreamError("Playback failed. Please try again or skip to the next track.");
+      const code = audio.error?.code;
+      const detail =
+        code === MediaError.MEDIA_ERR_NETWORK
+          ? "Network error while streaming"
+          : code === MediaError.MEDIA_ERR_DECODE
+            ? "Audio decode error"
+            : code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+              ? "Stream format not supported"
+              : "Stream request failed";
+      pushToast({
+        kind: "error",
+        title: `Playback failed: ${currentTrack?.title ?? "track"}`,
+        detail,
+      });
       setPlaying(false);
     }
-  }, [currentStreamUrl, isPlaying, setPlaying]);
+  }, [currentStreamUrl, currentTrack, isPlaying, pushToast, setPlaying]);
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
@@ -189,12 +202,6 @@ export function PlayerBar() {
         onEnded={handleEnded}
         onError={handleError}
       />
-
-      {streamError && (
-        <div className="absolute top-0 left-0 right-0 bg-red-900/80 text-red-200 text-xs text-center py-1 px-4">
-          {streamError}
-        </div>
-      )}
 
       {/* Track info */}
       <div className="shrink-0 flex items-center gap-3">

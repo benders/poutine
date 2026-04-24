@@ -4,6 +4,7 @@ import { getArtist, artUrl } from "@/lib/subsonic";
 import type { SubsonicAlbum } from "@/lib/subsonic";
 import { ChevronRight, Disc } from "lucide-react";
 import { ShareIdButton } from "@/components/ShareIdButton";
+import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -26,11 +27,16 @@ export function ArtistDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  const { data: artist, isLoading } = useQuery({
+  const { data: artist, isLoading, error } = useQuery({
     queryKey: ["artist", id],
     queryFn: () => getArtist(id!),
     enabled: !!id,
+    retry: false,
   });
+
+  if (error) {
+    return <div className="py-6"><ErrorMessage error={error} /></div>;
+  }
 
   if (isLoading) {
     return <div className="text-text-muted text-center py-20">Loading...</div>;
