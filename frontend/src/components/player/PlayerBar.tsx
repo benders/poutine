@@ -236,8 +236,7 @@ export function PlayerBar() {
               <>
                 <span className="uppercase">{streamed.format}</span>
                 <span>
-                  {streamed.bitRateIsCap ? "≤" : ""}
-                  {streamed.bitRate} kbps
+                  {streamed.bitRateIsCap ? "transcoding" : `${streamed.bitRate} kbps`}
                 </span>
               </>
             )}
