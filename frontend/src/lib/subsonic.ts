@@ -333,7 +333,9 @@ export interface EffectiveStream {
   bitRateIsCap: boolean; // true when we only know the ceiling (transcoded)
 }
 
-const LOSSY_FORMATS = new Set(["mp3", "opus", "aac", "ogg"]);
+// Mirrors the hub's stream-params.applyTranscodeRule so the player UI can
+// predict whether the server will transcode without waiting for the response.
+const LOSSY_SOURCE_FORMATS = new Set(["mp3", "opus", "aac", "ogg", "m4a"]);
 
 export function effectiveStream(
   source: { suffix?: string | null; bitRate?: number | null },
@@ -342,19 +344,22 @@ export function effectiveStream(
 ): EffectiveStream {
   const sourceFormat = source.suffix?.toLowerCase() ?? null;
   const sourceBitRate = source.bitRate ?? null;
-  if (sourceFormat && sourceFormat === format.toLowerCase()) {
-    // Same format → Navidrome passes through, capped at source bitrate.
-    const br = sourceBitRate != null ? Math.min(sourceBitRate, maxBitRate) : maxBitRate;
-    return { format, bitRate: br, bitRateIsCap: sourceBitRate == null };
+  if (!sourceFormat) {
+    return { format, bitRate: maxBitRate, bitRateIsCap: true };
   }
-  if (
-    sourceFormat && LOSSY_FORMATS.has(sourceFormat) &&
-    sourceBitRate != null && sourceBitRate <= maxBitRate
-  ) {
-    // Lossy source already under the cap → hub streams it raw.
-    return { format: sourceFormat, bitRate: sourceBitRate, bitRateIsCap: false };
+  const sameFormat = sourceFormat === format.toLowerCase();
+  const lossyPassthrough =
+    LOSSY_SOURCE_FORMATS.has(sourceFormat) &&
+    (sourceBitRate ?? Infinity) <= maxBitRate;
+  if (sameFormat || lossyPassthrough) {
+    // Server serves raw bytes.
+    return {
+      format: sourceFormat,
+      bitRate: sourceBitRate ?? maxBitRate,
+      bitRateIsCap: sourceBitRate == null,
+    };
   }
-  // Different format → transcoded. We only know the cap.
+  // Lossless source transcoded to target format (or source bitrate > cap).
   return { format, bitRate: maxBitRate, bitRateIsCap: true };
 }
 
