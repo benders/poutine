@@ -11,6 +11,7 @@ import {
   decodeId,
 } from "./subsonic-response.js";
 import { decodeCoverArtId } from "../library/cover-art.js";
+import { normalizeName } from "../library/normalize.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { applyTranscodeRule, buildStreamParams } from "./stream-params.js";
 import type { StreamTrackingService } from "../services/stream-tracking.js";
@@ -688,7 +689,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const artistOffset = parseInt(q.artistOffset ?? "0", 10);
     const albumOffset = parseInt(q.albumOffset ?? "0", 10);
     const songOffset = parseInt(q.songOffset ?? "0", 10);
-    const like = `%${query}%`;
+    const like = `%${normalizeName(query)}%`;
 
     // ID lookup: allow pasting an internal ID (optionally prefixed ar/al/t)
     // or a MusicBrainz ID into the search box. Strip known prefixes so the

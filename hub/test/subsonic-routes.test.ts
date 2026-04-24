@@ -543,6 +543,49 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"].searchResult3.artist).toHaveLength(1);
   });
 
+  it("search3 matches case-insensitively and across unicode/punctuation", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("artist-bjork", "Björk", "bjork");
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("artist-acdc", "AC/DC", "acdc");
+
+    const mixedCase = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=BJORK",
+    });
+    expect(
+      mixedCase.json()["subsonic-response"].searchResult3.artist?.some(
+        (a: { id: string }) => a.id === "arartist-bjork",
+      ),
+    ).toBe(true);
+
+    const diacritic = await app.inject({
+      method: "GET",
+      url: `/rest/search3?u=tester&p=secret&f=json&query=${encodeURIComponent("Björk")}`,
+    });
+    expect(
+      diacritic.json()["subsonic-response"].searchResult3.artist?.some(
+        (a: { id: string }) => a.id === "arartist-bjork",
+      ),
+    ).toBe(true);
+
+    const punct = await app.inject({
+      method: "GET",
+      url: `/rest/search3?u=tester&p=secret&f=json&query=${encodeURIComponent("AC/DC")}`,
+    });
+    expect(
+      punct.json()["subsonic-response"].searchResult3.artist?.some(
+        (a: { id: string }) => a.id === "arartist-acdc",
+      ),
+    ).toBe(true);
+  });
+
   it("search3 with unknown remote_id returns no results", async () => {
     await seedShareFixture(app);
     const res = await app.inject({
