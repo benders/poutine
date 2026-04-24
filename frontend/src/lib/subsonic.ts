@@ -325,7 +325,7 @@ export async function search3(query: string): Promise<SubsonicSearchResults> {
 // PlayerBar renders these same values as the "actually streamed" metadata, so
 // changing the defaults here also changes what the user sees in the player.
 export const STREAM_FORMAT = "opus";
-export const STREAM_MAX_BITRATE = 192;
+export const STREAM_MAX_BITRATE = 320;
 
 export interface EffectiveStream {
   format: string;
