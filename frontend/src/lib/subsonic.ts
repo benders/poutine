@@ -333,6 +333,8 @@ export interface EffectiveStream {
   bitRateIsCap: boolean; // true when we only know the ceiling (transcoded)
 }
 
+const LOSSY_FORMATS = new Set(["mp3", "opus", "aac", "ogg"]);
+
 export function effectiveStream(
   source: { suffix?: string | null; bitRate?: number | null },
   format: string = STREAM_FORMAT,
@@ -344,6 +346,13 @@ export function effectiveStream(
     // Same format → Navidrome passes through, capped at source bitrate.
     const br = sourceBitRate != null ? Math.min(sourceBitRate, maxBitRate) : maxBitRate;
     return { format, bitRate: br, bitRateIsCap: sourceBitRate == null };
+  }
+  if (
+    sourceFormat && LOSSY_FORMATS.has(sourceFormat) &&
+    sourceBitRate != null && sourceBitRate <= maxBitRate
+  ) {
+    // Lossy source already under the cap → hub streams it raw.
+    return { format: sourceFormat, bitRate: sourceBitRate, bitRateIsCap: false };
   }
   // Different format → transcoded. We only know the cap.
   return { format, bitRate: maxBitRate, bitRateIsCap: true };
