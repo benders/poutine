@@ -25,34 +25,43 @@ export function buildStreamParams(
   return p;
 }
 
-const LOSSY_FORMATS = new Set(["mp3", "opus", "aac", "ogg"]);
+// Lossy codecs — transcoding a lossy source to a different lossy codec
+// costs CPU and always degrades quality. If the source already fits under
+// the bitrate cap, drop the requested `format` so upstream Navidrome serves
+// the raw bytes. Lossless sources (flac, wav, alac) honor the request so
+// the client actually receives the compressed format it asked for.
+const LOSSY_FORMATS = new Set(["mp3", "opus", "aac", "ogg", "m4a"]);
 
 /**
- * Drop the `format` param when transcoding would be wasteful:
- * the source is already lossy and is already below the bitrate cap.
- * Keeps `maxBitRate` so Navidrome still enforces the ceiling if needed.
+ * Rewrite a set of Subsonic stream params in light of what the hub knows
+ * about the source file. The rule (issue #94):
  *
- * Lossless sources (flac/wav/alac) are always transcoded when the client
- * asks for a different format. Unknown source formats defer to the upstream.
+ *   - Source lossy AND source bitrate <= requested maxBitRate → drop
+ *     `format` so upstream serves raw bytes. `maxBitRate` is kept (it's a
+ *     ceiling; upstream will still transcode if the source exceeds it).
+ *   - Source lossless → keep `format` as-is (honor the request).
+ *   - Source format unknown → no change (defer to upstream).
+ *
+ * The hub applies this for every /rest/stream caller — SPA and 3rd-party
+ * Subsonic clients alike — because the calling hub is the only party that
+ * knows source format/bitrate for peer-routed tracks.
  */
-export function adjustStreamParamsForSource(
+export function applyTranscodeRule(
   params: URLSearchParams,
   source: { format: string | null; bitrate: number | null },
 ): URLSearchParams {
-  const reqFormat = params.get("format");
-  if (!reqFormat) return params;
-  const sf = source.format?.toLowerCase();
-  if (!sf) return params;
-  if (sf === reqFormat.toLowerCase()) {
-    params.delete("format");
-    return params;
+  const out = new URLSearchParams(params);
+  const reqFmt = out.get("format");
+  const srcFmt = source.format?.toLowerCase() ?? null;
+  if (!reqFmt || !srcFmt) return out;
+  if (reqFmt.toLowerCase() === srcFmt) {
+    // Already asking for the source format; let upstream passthrough.
+    out.delete("format");
+    return out;
   }
-  if (!LOSSY_FORMATS.has(sf)) return params;
-  const maxBr = params.get("maxBitRate");
-  const cap = maxBr ? parseInt(maxBr, 10) : null;
-  if (cap != null && source.bitrate != null && source.bitrate > cap) {
-    return params;
-  }
-  params.delete("format");
-  return params;
+  if (!LOSSY_FORMATS.has(srcFmt)) return out; // lossless — honor request
+  const cap = Number(out.get("maxBitRate")) || Infinity;
+  const srcBr = source.bitrate ?? Infinity;
+  if (srcBr <= cap) out.delete("format");
+  return out;
 }
