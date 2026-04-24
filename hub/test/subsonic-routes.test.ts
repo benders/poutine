@@ -101,6 +101,38 @@ describe("Subsonic routes — auth", () => {
     expect(body["subsonic-response"].error.code).toBe(10);
   });
 
+  it("ping with valid Bearer JWT → status ok (no u/p needed)", async () => {
+    const { createAccessToken } = await import("../src/auth/jwt.js");
+    const token = await createAccessToken("user-1", app.config);
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/ping?f=json",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()["subsonic-response"].status).toBe("ok");
+  });
+
+  it("ping with invalid Bearer JWT and no u/p → HTTP 401 (triggers SPA refresh, #43)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/ping?f=json",
+      headers: { authorization: "Bearer not-a-real-jwt" },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error).toBe("Authentication required");
+  });
+
+  it("ping with invalid Bearer JWT but valid u/p → falls back, status ok", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/ping?u=tester&p=secret&f=json",
+      headers: { authorization: "Bearer not-a-real-jwt" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()["subsonic-response"].status).toBe("ok");
+  });
+
   it("ping with unknown username → error code 40", async () => {
     const res = await app.inject({
       method: "GET",

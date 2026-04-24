@@ -53,7 +53,7 @@ export async function requireSubsonicAuth(
         return;
       }
     } catch {
-      // JWT invalid/expired — fall through to Subsonic param auth
+      // JWT invalid/expired — fall through to Subsonic param auth if u+p present
     }
   }
 
@@ -62,6 +62,15 @@ export async function requireSubsonicAuth(
   let password = query.p;
 
   if (!username || !password) {
+    // A JWT was presented but failed verification and there are no legacy
+    // Subsonic params to fall back to. This is the SPA path (expired access
+    // token); return HTTP 401 so the browser's silent-refresh logic kicks in.
+    // Without this, the SPA sees a 200 + Subsonic envelope error 10 and has
+    // no way to know it should refresh (issue #43).
+    if (jwt) {
+      reply.code(401).send({ error: "Authentication required" });
+      return;
+    }
     sendSubsonicError(reply, 10, "Required parameter missing", query);
     return;
   }
