@@ -17,3 +17,4 @@ coverage/
 .devcontainer
 .envrc
 .pnpm-store
+test/local-cluster/
