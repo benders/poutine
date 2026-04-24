@@ -17,6 +17,7 @@ import { seedSyntheticInstances } from "./library/seed-instances.js";
 import { pruneOrphanInstances } from "./library/prune-instances.js";
 import { mergeLibraries } from "./library/merge.js";
 import { hashPassword } from "./auth/passwords.js";
+import { ensureJwtSecret } from "./auth/jwt-secret.js";
 import { AutoSyncService } from "./services/auto-sync.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
@@ -78,6 +79,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
   // Decorate with config and db
   const db = createDatabase(config.databasePath);
+  if (!config.jwtSecret) {
+    config.jwtSecret = ensureJwtSecret(db);
+  }
   app.decorate("config", config);
   app.decorate("db", db);
 

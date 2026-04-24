@@ -19,7 +19,7 @@ Argon2id via the `argon2` npm package. Config: 64 MB memory, time cost 3, parall
 
 ## JWT tokens
 
-Signed with HS256. Secret: `JWT_SECRET` env var (required in prod). Two token types:
+Signed with HS256. Secret: auto-generated on first boot (32 random bytes, hex-encoded) and persisted in the `settings` table under key `jwt_secret`. Never exposed via any API. Resetting the DB regenerates the secret and invalidates all existing tokens. Two token types:
 
 | Token         | Lifetime | Cookie              | Cookie path        | Claims                    |
 |---------------|----------|---------------------|--------------------|---------------------------|

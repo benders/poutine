@@ -1,5 +1,3 @@
-import { randomBytes } from "node:crypto";
-
 export interface Config {
   port: number;
   host: string;
@@ -35,18 +33,11 @@ function requireInProd(name: string, value: string | undefined): string {
 }
 
 export function loadConfig(): Config {
-  const jwtSecret =
-    process.env.JWT_SECRET || randomBytes(32).toString("hex");
-
-  if (!process.env.JWT_SECRET && process.env.NODE_ENV === "production") {
-    throw new Error("JWT_SECRET environment variable is required in production");
-  }
-
   return {
     port: parseInt(process.env.PORT || "3000", 10),
     host: process.env.HOST || "0.0.0.0",
     databasePath: process.env.DATABASE_PATH || "./data/poutine.db",
-    jwtSecret,
+    jwtSecret: "",
     jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
     jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d",
     syncIntervalMs: parseInt(

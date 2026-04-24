@@ -32,7 +32,6 @@ Serves on `http://localhost:3000` (frontend and API on one port). SQLite and cov
 
 1. Edit `.env` to set owner credentials and instance ID:
    ```
-   JWT_SECRET=<hex>
    POUTINE_INSTANCE_ID=poutine-yourname
    POUTINE_OWNER_USERNAME=owner
    POUTINE_OWNER_PASSWORD=<password>
@@ -66,7 +65,7 @@ Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static file
 | `pnpm test:federation`      | Three-hub federation integration test           |
 | `pnpm lint`                 | Lint both packages                              |
 | `pnpm typecheck`            | Typecheck both packages                         |
-| `docker compose up --build` | Full stack via Docker (requires `JWT_SECRET`)   |
+| `docker compose up --build` | Full stack via Docker                           |
 
 ## Testing
 

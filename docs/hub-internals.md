@@ -21,7 +21,6 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 
 | Variable                     | Required | Default                      | Description                                                     |
 |------------------------------|----------|------------------------------|-----------------------------------------------------------------|
-| `JWT_SECRET`                 | prod     | —                            | Signs admin session tokens                                      |
 | `DATABASE_PATH`              | no       | `./data/poutine.db`          | SQLite file path                                                |
 | `PORT` / `HOST`              | no       | `3000` / `0.0.0.0`           | Hub bind                                                        |
 | `NAVIDROME_URL`              | no       | `http://navidrome:4533`      | Internal Navidrome URL                                          |
@@ -49,6 +48,8 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 ## Auth
 
 See [authentication.md](authentication.md) for the full auth reference: JWT flow, Subsonic dual-auth, token refresh, owner seeding, frontend token management.
+
+JWT signing secret auto-generates on first boot and lives in the `settings` table (key `jwt_secret`). No env override. DB reset regenerates it and invalidates every existing token.
 
 ## /proxy/*
 
