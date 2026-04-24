@@ -102,10 +102,12 @@ export function PlayerBar() {
     }
   }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync volume
+  // Sync volume. Depends on currentStreamUrl so a freshly mounted <audio>
+  // element (e.g. on first track load) picks up the stored volume instead
+  // of staying at the element's default of 1.0.
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
-  }, [volume]);
+  }, [volume, currentStreamUrl]);
 
   const handleTimeUpdate = useCallback(() => {
     if (audioRef.current) {
