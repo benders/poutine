@@ -24,3 +24,35 @@ export function buildStreamParams(
   }
   return p;
 }
+
+const LOSSY_FORMATS = new Set(["mp3", "opus", "aac", "ogg"]);
+
+/**
+ * Drop the `format` param when transcoding would be wasteful:
+ * the source is already lossy and is already below the bitrate cap.
+ * Keeps `maxBitRate` so Navidrome still enforces the ceiling if needed.
+ *
+ * Lossless sources (flac/wav/alac) are always transcoded when the client
+ * asks for a different format. Unknown source formats defer to the upstream.
+ */
+export function adjustStreamParamsForSource(
+  params: URLSearchParams,
+  source: { format: string | null; bitrate: number | null },
+): URLSearchParams {
+  const reqFormat = params.get("format");
+  if (!reqFormat) return params;
+  const sf = source.format?.toLowerCase();
+  if (!sf) return params;
+  if (sf === reqFormat.toLowerCase()) {
+    params.delete("format");
+    return params;
+  }
+  if (!LOSSY_FORMATS.has(sf)) return params;
+  const maxBr = params.get("maxBitRate");
+  const cap = maxBr ? parseInt(maxBr, 10) : null;
+  if (cap != null && source.bitrate != null && source.bitrate > cap) {
+    return params;
+  }
+  params.delete("format");
+  return params;
+}
