@@ -12,7 +12,7 @@ import {
 } from "./subsonic-response.js";
 import { decodeCoverArtId } from "../library/cover-art.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
-import { buildStreamParams, adjustStreamParamsForSource } from "./stream-params.js";
+import { applyTranscodeRule, buildStreamParams } from "./stream-params.js";
 import type { StreamTrackingService } from "../services/stream-tracking.js";
 
 // Extend Fastify app type for stream tracking
@@ -976,14 +976,14 @@ try {
   // At stream time we just look up THE source for this unified track.
   const best = app.db
     .prepare(
-      `SELECT ts.instance_id, it.remote_id, ts.format, ts.bitrate
+      `SELECT ts.instance_id, ts.format, ts.bitrate, it.remote_id
        FROM track_sources ts
        JOIN instance_tracks it ON it.id = ts.instance_track_id
        WHERE ts.unified_track_id = ? AND ts.preferred = 1
        LIMIT 1`,
     )
     .get(trackId) as
-    | { instance_id: string; remote_id: string; format: string | null; bitrate: number | null }
+    | { instance_id: string; format: string | null; bitrate: number | null; remote_id: string }
     | undefined;
 
   if (!best) {
@@ -991,7 +991,10 @@ try {
     return;
   }
 
-  const streamParams = adjustStreamParamsForSource(buildStreamParams(q), best);
+  const streamParams = applyTranscodeRule(buildStreamParams(q), {
+    format: best.format,
+    bitrate: best.bitrate,
+  });
   let response: Response;
   let bytesTransferred = 0;
 
