@@ -11,6 +11,7 @@
     "typecheck": "pnpm --filter hub typecheck && pnpm --filter frontend typecheck",
     "test:federation": "bash test/federation/run.sh",
     "sync-version": "node scripts/sync-version.mjs",
+    "preversion": "branch=$(git rev-parse --abbrev-ref HEAD); if [ \"$branch\" != \"main\" ]; then echo \"pnpm version must run on main (current: $branch)\" >&2; exit 1; fi",
     "version": "node scripts/sync-version.mjs && git add hub/package.json frontend/package.json hub/src/version.ts"
   },
   "packageManager": "pnpm@10.32.1+sha512.a706938f0e89ac1456b6563eab4edf1d1faf3368d1191fc5c59790e96dc918e4456ab2e67d613de1043d2e8c81f87303e6b40d4ffeca9df15ef1ad567348f2be",
