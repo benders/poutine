@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getArtists, artUrl } from "@/lib/subsonic";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
+import { useScrollRestoration } from "@/lib/useScrollRestoration";
 import { Search, Disc } from "lucide-react";
 
 function initials(name: string): string {
@@ -31,6 +32,8 @@ export function ArtistsPage() {
     queryFn: () => getArtists(),
     retry: false,
   });
+
+  useScrollRestoration("artists", !!artists);
 
   const filtered = useMemo(() => {
     if (!artists) return [];

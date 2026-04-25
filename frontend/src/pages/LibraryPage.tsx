@@ -5,6 +5,7 @@ import { getAlbumList2, artUrl } from "@/lib/subsonic";
 import type { SubsonicAlbum } from "@/lib/subsonic";
 import { Search, Disc, ChevronDown } from "lucide-react";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
+import { useScrollRestoration } from "@/lib/useScrollRestoration";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -27,6 +28,8 @@ export function LibraryPage() {
     queryFn: () => getAlbumList2({ size: 500 }),
     retry: false,
   });
+
+  useScrollRestoration("albums", !!albums);
 
   const filtered = useMemo(() => {
     if (!albums) return [];
