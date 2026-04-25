@@ -7,7 +7,7 @@ function getContainer(): HTMLElement | null {
 }
 
 export function useScrollRestoration(key: string, ready: boolean) {
-  const restored = useRef(false);
+  const restoredKey = useRef<string | null>(null);
 
   useEffect(() => {
     const container = getContainer();
@@ -29,15 +29,15 @@ export function useScrollRestoration(key: string, ready: boolean) {
     };
   }, [key]);
 
+  // Restore once per key. When `key` changes (e.g. switching between Albums
+  // sub-views), restore for the new key on next ready.
   useEffect(() => {
-    if (!ready || restored.current) return;
-    restored.current = true;
+    if (!ready || restoredKey.current === key) return;
+    restoredKey.current = key;
     const container = getContainer();
     if (!container) return;
     const saved = sessionStorage.getItem(PREFIX + key);
-    if (saved === null) return;
-    const top = Number(saved);
-    if (!Number.isFinite(top)) return;
-    container.scrollTop = top;
+    const top = saved === null ? 0 : Number(saved);
+    container.scrollTop = Number.isFinite(top) ? top : 0;
   }, [key, ready]);
 }

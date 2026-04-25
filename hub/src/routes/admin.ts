@@ -303,6 +303,30 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  // GET /admin/peers/summary — lightweight list for non-admin UI (sidebar).
+  // Skips the per-peer health fetch; returns just enough to render nav entries.
+  app.get("/peers/summary", { preHandler: requireOwner }, async () => {
+    const peers = Array.from(app.peerRegistry.peers.values());
+    const albumCountStmt = app.db.prepare<[string], { album_count: number }>(`
+      SELECT COUNT(DISTINCT urs.unified_release_id) AS album_count
+      FROM unified_release_sources urs
+      WHERE urs.instance_id = ?
+    `);
+    const nameStmt = app.db.prepare<[string], { name: string; status: string }>(
+      "SELECT name, status FROM instances WHERE id = ?",
+    );
+    return peers.map((peer) => {
+      const inst = nameStmt.get(peer.id);
+      const stats = albumCountStmt.get(peer.id) ?? { album_count: 0 };
+      return {
+        id: peer.id,
+        name: inst?.name ?? peer.id,
+        status: inst?.status ?? "offline",
+        albumCount: stats.album_count,
+      };
+    });
+  });
+
   // GET /admin/peers
   app.get("/peers", { preHandler: requireOwner }, async () => {
     const peers = Array.from(app.peerRegistry.peers.values());

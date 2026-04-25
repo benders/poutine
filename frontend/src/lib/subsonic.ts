@@ -234,24 +234,30 @@ async function subsonicFetch<T>(
 export async function getAlbumList2(params?: {
   type?: string;
   size?: number;
+  instanceId?: string;
 }): Promise<SubsonicAlbum[]> {
   const type = params?.type ?? "alphabeticalByName";
   const pageSize = Math.min(params?.size ?? 500, 500);
   const all: RawAlbum[] = [];
   let offset = 0;
+  // Random doesn't paginate meaningfully — server returns a fresh shuffle per
+  // call, so paging would just produce duplicates. One page is enough.
+  const single = type === "random";
   // Subsonic caps getAlbumList2 at 500 per call; page until a short page returns.
   for (;;) {
+    const extra: Record<string, string> = {
+      type,
+      size: String(pageSize),
+      offset: String(offset),
+    };
+    if (params?.instanceId) extra.instanceId = params.instanceId;
     const sr = await subsonicFetch<{ albumList2: { album?: RawAlbum[] } }>(
       "getAlbumList2",
-      {
-        type,
-        size: String(pageSize),
-        offset: String(offset),
-      },
+      extra,
     );
     const page = sr.albumList2.album ?? [];
     all.push(...page);
-    if (page.length < pageSize) break;
+    if (single || page.length < pageSize) break;
     offset += pageSize;
   }
   return all.map(parseAlbum);

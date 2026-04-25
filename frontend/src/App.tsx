@@ -3,7 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "@/stores/auth";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { LoginPage } from "@/pages/LoginPage";
-import { LibraryPage } from "@/pages/LibraryPage";
+import { AlbumsPage } from "@/pages/AlbumsPage";
 import { ArtistsPage } from "@/pages/ArtistsPage";
 import { ArtistDetailPage } from "@/pages/ArtistDetailPage";
 import { ReleaseGroupPage } from "@/pages/ReleaseGroupPage";
@@ -45,7 +45,9 @@ export function App() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<LibraryPage />} />
+        <Route index element={<Navigate to="/library/all" replace />} />
+        <Route path="library" element={<Navigate to="/library/all" replace />} />
+        <Route path="library/:view" element={<AlbumsPage />} />
         <Route path="artists" element={<ArtistsPage />} />
         <Route path="artists/:id" element={<ArtistDetailPage />} />
         <Route path="albums/:id" element={<ReleaseGroupPage />} />

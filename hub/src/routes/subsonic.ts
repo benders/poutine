@@ -471,10 +471,22 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const fromYear = q.fromYear ? parseInt(q.fromYear, 10) : undefined;
     const toYear = q.toYear ? parseInt(q.toYear, 10) : undefined;
     const genre = q.genre;
+    const instanceId = q.instanceId;
 
     let orderBy = "urg.created_at DESC";
     let where = "WHERE 1=1";
     const params: unknown[] = [];
+
+    // Poutine extension: filter to a single source instance (local or peer id).
+    // EXISTS avoids row multiplication when an album has multiple sources.
+    if (instanceId) {
+      where +=
+        " AND EXISTS (SELECT 1 FROM unified_releases ur2 " +
+        "JOIN unified_release_sources urs ON urs.unified_release_id = ur2.id " +
+        "JOIN instance_albums ia ON ia.id = urs.instance_album_id " +
+        "WHERE ur2.release_group_id = urg.id AND ia.instance_id = ?)";
+      params.push(instanceId);
+    }
 
     switch (type) {
       case "alphabeticalByName":

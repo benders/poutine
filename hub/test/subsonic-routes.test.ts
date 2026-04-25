@@ -618,6 +618,44 @@ describe("Subsonic routes — endpoints", () => {
     ).toBe(true);
   });
 
+  it("getAlbumList2 with instanceId=local returns only local-sourced albums", async () => {
+    await seedShareFixture(app);
+    // Add a peer-only album (no local source)
+    app.db.prepare(
+      "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id) VALUES ('urg-2','Peer Only','peer only','ua-1')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO unified_releases (id, release_group_id, name) VALUES ('ur-2','urg-2','Peer Only')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name) VALUES ('peer-x:PX-AL-2','peer-x','PX-AL-2','Peer Only','peer-x:PX-AR-1','Share Artist')",
+    ).run();
+    app.db.prepare(
+      "INSERT INTO unified_release_sources (unified_release_id, instance_album_id, instance_id) VALUES ('ur-2','peer-x:PX-AL-2','peer-x')",
+    ).run();
+
+    const local = await app.inject({
+      method: "GET",
+      url: "/rest/getAlbumList2?u=tester&p=secret&f=json&type=alphabeticalByName&size=50&instanceId=local",
+    });
+    const localAlbums = local.json()["subsonic-response"].albumList2.album as Array<{ name: string }>;
+    expect(localAlbums.map((a) => a.name).sort()).toEqual(["Share Album"]);
+
+    const peer = await app.inject({
+      method: "GET",
+      url: "/rest/getAlbumList2?u=tester&p=secret&f=json&type=alphabeticalByName&size=50&instanceId=peer-x",
+    });
+    const peerAlbums = peer.json()["subsonic-response"].albumList2.album as Array<{ name: string }>;
+    expect(peerAlbums.map((a) => a.name).sort()).toEqual(["Peer Only", "Share Album"]);
+
+    const all = await app.inject({
+      method: "GET",
+      url: "/rest/getAlbumList2?u=tester&p=secret&f=json&type=alphabeticalByName&size=50",
+    });
+    const allAlbums = all.json()["subsonic-response"].albumList2.album as Array<{ name: string }>;
+    expect(allAlbums.map((a) => a.name).sort()).toEqual(["Peer Only", "Share Album"]);
+  });
+
   it("search3 with unknown remote_id returns no results", async () => {
     await seedShareFixture(app);
     const res = await app.inject({

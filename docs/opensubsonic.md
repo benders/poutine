@@ -65,7 +65,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | Endpoint          | Status          | Notes                                                                                          |
 |-------------------|-----------------|------------------------------------------------------------------------------------------------|
 | `getAlbumList`    | NOT IMPLEMENTED |                                                                                                |
-| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random` |
+| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`. Poutine extension: `instanceId=<local\|peerId>` filters to albums sourced from a single instance. |
 | `getRandomSongs`  | NOT IMPLEMENTED |                                                                                                |
 | `getSongsByGenre` | NOT IMPLEMENTED |                                                                                                |
 | `getNowPlaying`   | Stub            | Always returns an empty list                                                                   |

@@ -1,5 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/stores/auth";
+import { getPeersSummary, peerDisplayName } from "@/lib/api";
 import {
   Library,
   Users,
@@ -7,11 +9,14 @@ import {
   Settings,
   LogOut,
   Disc3,
+  Shuffle,
+  HardDrive,
+  Server,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { NavGroup, NavGroupItem } from "./NavGroup";
 
-const navItems = [
-  { to: "/", icon: Library, label: "Library" },
+const flatNav = [
   { to: "/artists", icon: Users, label: "Artists" },
   { to: "/search", icon: Search, label: "Search" },
 ];
@@ -19,6 +24,14 @@ const navItems = [
 export function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+
+  const { data: peers } = useQuery({
+    queryKey: ["peers-summary"],
+    queryFn: getPeersSummary,
+    retry: false,
+    enabled: !!user,
+    staleTime: 60_000,
+  });
 
   const handleLogout = () => {
     logout();
@@ -32,12 +45,30 @@ export function Sidebar() {
         <span className="text-lg font-semibold">Poutine</span>
       </div>
 
-      <nav className="flex-1 px-2 py-2 space-y-0.5">
-        {navItems.map((item) => (
+      <nav className="flex-1 px-2 py-2 space-y-0.5 overflow-y-auto">
+        <NavGroup
+          label="Albums"
+          icon={Library}
+          to="/library/all"
+          storageKey="sidebar:albums:open"
+        >
+          <NavGroupItem to="/library/all" label="All" />
+          <NavGroupItem to="/library/random" label="Random" icon={Shuffle} />
+          <NavGroupItem to="/library/local" label="Local" icon={HardDrive} />
+          {peers?.map((peer) => (
+            <NavGroupItem
+              key={peer.id}
+              to={`/library/peer-${peer.id}`}
+              label={peerDisplayName(peer.name)}
+              icon={Server}
+            />
+          ))}
+        </NavGroup>
+
+        {flatNav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
-            end={item.to === "/"}
             className={({ isActive }) =>
               cn(
                 "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",

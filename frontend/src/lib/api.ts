@@ -202,6 +202,23 @@ export function getPeers() {
   return apiFetch<Peer[]>("/admin/peers");
 }
 
+export interface PeerSummary {
+  id: string;
+  name: string;
+  status: string;
+  albumCount: number;
+}
+
+export function getPeersSummary() {
+  return apiFetch<PeerSummary[]>("/admin/peers/summary");
+}
+
+/** Display name for a peer: drop anything from the first '.' onward. */
+export function peerDisplayName(name: string): string {
+  const dot = name.indexOf(".");
+  return dot === -1 ? name : name.slice(0, dot);
+}
+
 export function triggerSync() {
   return apiFetch<{ local: SyncResult; peers: SyncResult[] }>("/admin/sync", {
     method: "POST",
