@@ -1,5 +1,6 @@
 services:
   hub:
+    image: ghcr.io/benders/poutine:latest
     build:
       context: .
       dockerfile: hub/Dockerfile
@@ -21,7 +22,7 @@ services:
       # Override here only if you want to mount a custom frontend build.
     volumes:
       - hub-data:/app/data
-      - ${PEERS_CONFIG_HOST_PATH:-./peers.yaml}:/app/config/peers.yaml:ro
+      - ${POUTINE_CONFIG_HOST_PATH:-./config}:/app/config:ro
     depends_on:
       - navidrome
     networks:

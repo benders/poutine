@@ -4,48 +4,23 @@ Federated music player. Each instance bundles a [Navidrome](https://www.navidrom
 
 Designed for small groups (4–12 people) who want to share music without giving up ownership of their collections.
 
-## Architecture (one glance)
-
-```
-┌────────────────────────────────────────────┐
-│  Web Frontend (React SPA, served by hub)   │
-├────────────────────────────────────────────┤
-│  Poutine Hub (Fastify + SQLite)            │
-│    /rest/*         — Subsonic API          │
-│    /proxy/*        — auth proxy to Navidrome (Ed25519 / JWT / u+p) │
-│    /federation/*   — peer identity (Ed25519)│
-│    /admin/*        — owner management      │
-├────────────────────────────────────────────┤
-│  Bundled Navidrome (internal network only) │
-└────────────────────────────────────────────┘
-         ▲                     ▲
-         │ Subsonic clients    │ Ed25519-signed /proxy/* + /federation/*
-         ▼                     ▼
-   Web / mobile            Other hubs (peers)
-```
-
-See [docs/system-architecture.md](docs/system-architecture.md) for the system overview, [docs/federation-api.md](docs/federation-api.md) for the federation contract, and [docs/hub-internals.md](docs/hub-internals.md) for engineering internals.
-
 ## First-time setup
 
-Serves on `http://localhost:3000` (frontend and API on one port). SQLite and cover-art cache persist in the `hub-data` Docker volume. Override the host port with `POUTINE_HOST_PORT` in `.env`.
+Serves on `http://localhost:3000` (or `POUTINE_HOST_PORT`). SQLite and cover-art cache persist in the `hub-data` Docker volume.
 
-1. Edit `.env` to set owner credentials and instance ID:
-   ```
-   POUTINE_INSTANCE_ID=poutine-yourname
-   POUTINE_OWNER_USERNAME=owner
-   POUTINE_OWNER_PASSWORD=<password>
-   NAVIDROME_USERNAME=admin
-   NAVIDROME_PASSWORD=<password>
-   ```
-2. Put your music on disk and bind-mount it into the `navidrome` service in `docker-compose.yml`.
-3. `docker compose up --build`. Navidrome scans on startup; the hub's `AutoSyncService` picks up the scan and populates the unified library.
-4. Log in to `http://localhost:3000/admin` with the owner credentials.
-5. To federate with peers, edit `peers.yaml` on both sides — each peer entry needs `id`, `url`, `public_key`, and `proxy_url` (the reachable base URL for `/proxy/*`) — then reload (`docker compose kill -s HUP hub`).
+1. Copy `example.env` to `.env` and edit it
+2. Edit `.env` to set music path, owner credentials and instance ID.
+
+   Note: These users will be automatically created on first-boot. If you want to change them later, see `Resetting the owner password` below.
+
+3. `docker compose up`. (Use `docker compose up --build` to build from source.) Navidrome scans on startup; the hub's `AutoSyncService` picks up the scan and populates the unified library.
+4. Log in to `http://localhost:3000/` with the Poutine Owner credentials that you set.
+5. To federate with peers, edit `config/peers.yaml` on both sides — each peer entry needs `id`, `url`, and `public_key` — then reload (`docker compose kill -s HUP hub`). It is recommended that every peer in a cluster uses a copy of the same file.
+6. Your own public key can be found on hub startup logs (`"publicKey":"ed25519:fooBARbaz==","msg":"Poutine instance public key — share with peers"`) or on the Settings page of the running app
 
 Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-internals.md#environment-variables).
 
-## Local development
+## Local development (without Docker)
 
 ```bash
 pnpm install
@@ -75,7 +50,7 @@ Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static file
 
 See [docs/hub-internals.md#testing-notes](docs/hub-internals.md#testing-notes) for test patterns and gotchas.
 
-## Sharing albums and artists
+## Sharing links to albums or artists
 
 Each Album and Artist detail page has a **Share** button that copies a Poutine sharing ID to your clipboard. Paste that value into the Search box on a friend's hub to pull up the same entity there. The lookup works whenever both hubs sync the same underlying library (your Navidrome, your friend's, or any mutual peer); if the receiving hub doesn't sync an instance that has the item, search returns no results.
 
@@ -89,7 +64,7 @@ docker compose build hub
 docker compose up -d hub
 ```
 
-The hub serves the frontend as static files, so only the `hub` service needs rebuilding. Running containers use the compiled image, not live source — rebuild is required after any code change.
+Running containers use the compiled image, not live source — rebuild is required after any code change.
 
 ### Resetting the owner password
 
@@ -111,14 +86,6 @@ git push --follow-tags
 ```
 
 The `.github/workflows/release.yml` workflow verifies the tag matches `package.json`, builds `linux/amd64` + `linux/arm64`, and tags the image `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` (non-prerelease only). Pre-release tags (e.g. `v0.3.1-rc.0`) publish without `:latest` and are marked pre-release on GitHub.
-
-Operators can pull a pinned image instead of rebuilding from source:
-
-```bash
-docker pull ghcr.io/benders/poutine:latest
-```
-
-Or replace the `build:` block in `docker-compose.yml` with `image: ghcr.io/benders/poutine:X.Y.Z` to pin.
 
 ### Wiping the Navidrome volume
 

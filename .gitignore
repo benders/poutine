@@ -3,7 +3,7 @@ dist/
 data/
 cache/
 .env
-peers.yaml
+config/peers.yaml
 *.db
 *.db-wal
 *.db-shm
