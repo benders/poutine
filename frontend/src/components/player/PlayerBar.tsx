@@ -49,8 +49,20 @@ export function PlayerBar() {
       ? queue[currentIndex]
       : null;
 
+  // Base offset (seconds) for the current <audio> src. Non-zero when the
+  // server was asked to start mid-track via Subsonic timeOffset. The browser
+  // still reports audio.currentTime as 0 at the start of that response, so
+  // we add this to derive the real track time. (#109)
+  const baseOffsetRef = useRef(0);
+  // Pending seek target carried across an audio.src reset for transcoded
+  // streams: when the user drags past the buffered region we re-issue the
+  // request with timeOffset; the new response starts at that offset, so we
+  // leave audio.currentTime at 0.
+  const pendingBaseOffsetRef = useRef<number | null>(null);
+
   const currentStreamUrl = currentTrack ? streamUrl(currentTrack.id) : null;
   const streamed = currentTrack ? effectiveStream(currentTrack) : null;
+  const isTranscoded = streamed?.bitRateIsCap === true;
   const sourceLabel = currentTrack?.suffix && currentTrack.bitRate
     ? `Source: ${currentTrack.suffix.toUpperCase()} ${currentTrack.bitRate} kbps`
     : currentTrack?.suffix
@@ -73,6 +85,8 @@ export function PlayerBar() {
   // Reset error/retry state and seed duration from metadata when track changes
   useEffect(() => {
     retryAttemptedRef.current = false;
+    baseOffsetRef.current = 0;
+    pendingBaseOffsetRef.current = null;
     if (currentTrack) {
       setDuration(currentTrack.durationMs / 1000);
     }
@@ -89,6 +103,18 @@ export function PlayerBar() {
       audio.play().catch(() => {});
     }
   }, [currentStreamUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // True if `target` (track-time seconds) lies in any of audio.buffered's
+  // ranges, translated by the current base offset.
+  const isBuffered = (audio: HTMLAudioElement, target: number) => {
+    const local = target - baseOffsetRef.current;
+    if (local < 0) return false;
+    const ranges = audio.buffered;
+    for (let i = 0; i < ranges.length; i++) {
+      if (local >= ranges.start(i) && local <= ranges.end(i)) return true;
+    }
+    return false;
+  };
 
   // Sync play/pause state
   useEffect(() => {
@@ -111,15 +137,26 @@ export function PlayerBar() {
 
   const handleTimeUpdate = useCallback(() => {
     if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime);
+      setCurrentTime(audioRef.current.currentTime + baseOffsetRef.current);
     }
   }, [setCurrentTime]);
 
   const handleLoadedMetadata = useCallback(() => {
-    if (audioRef.current && isFinite(audioRef.current.duration)) {
-      setDuration(audioRef.current.duration);
+    const audio = audioRef.current;
+    if (!audio) return;
+    // Promote the pending base offset (set by a transcoded-seek re-request)
+    // now that the new response has loaded. Browser will report
+    // currentTime starting at 0; baseOffsetRef shifts it back to track time.
+    if (pendingBaseOffsetRef.current !== null) {
+      baseOffsetRef.current = pendingBaseOffsetRef.current;
+      pendingBaseOffsetRef.current = null;
+      setCurrentTime(baseOffsetRef.current);
+      return;
     }
-  }, [setDuration]);
+    if (isFinite(audio.duration)) {
+      setDuration(audio.duration);
+    }
+  }, [setDuration, setCurrentTime]);
 
   const handleEnded = useCallback(() => {
     next();
@@ -133,17 +170,18 @@ export function PlayerBar() {
       retryAttemptedRef.current = true;
       // Preserve playback position so a mid-track 401 retry resumes where
       // we were, instead of restarting the track from 0.
-      const resumeAt =
+      const trackTime =
         isFinite(audio.currentTime) && audio.currentTime > 0
-          ? audio.currentTime
+          ? audio.currentTime + baseOffsetRef.current
           : 0;
+      const resumeAt = trackTime;
       const newToken = await attemptRefresh();
       if (newToken) {
         const resume = () => {
           audio.removeEventListener("loadedmetadata", resume);
           if (resumeAt > 0) {
             try {
-              audio.currentTime = resumeAt;
+              audio.currentTime = resumeAt - baseOffsetRef.current;
             } catch {
               // Seeking can fail if the server rejects the Range request;
               // fall through and let playback start from 0.
@@ -179,10 +217,23 @@ export function PlayerBar() {
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
-    if (audioRef.current) {
-      audioRef.current.currentTime = time;
+    const audio = audioRef.current;
+    if (!audio || !currentTrack) return;
+
+    // Transcoded streams don't honor HTTP Range (#97 covers raw passthrough).
+    // For seeks past the buffered region, re-request the stream with
+    // Subsonic's timeOffset and play the new response from the start. (#109)
+    if (isTranscoded && !isBuffered(audio, time)) {
+      pendingBaseOffsetRef.current = time;
       setCurrentTime(time);
+      audio.src = streamUrl(currentTrack.id, { timeOffset: time });
+      audio.load();
+      if (isPlaying) audio.play().catch(() => setPlaying(false));
+      return;
     }
+
+    audio.currentTime = time - baseOffsetRef.current;
+    setCurrentTime(time);
   };
 
   if (!currentTrack) {

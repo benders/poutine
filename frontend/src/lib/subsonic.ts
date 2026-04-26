@@ -369,11 +369,22 @@ export function effectiveStream(
   return { format, bitRate: maxBitRate, bitRateIsCap: true };
 }
 
+export interface StreamUrlOptions {
+  format?: string;
+  maxBitRate?: number;
+  /** Seconds into the track to start streaming. Subsonic `timeOffset`. */
+  timeOffset?: number;
+}
+
 export function streamUrl(
   songId: string,
-  format: string = STREAM_FORMAT,
-  maxBitRate: number = STREAM_MAX_BITRATE,
+  options: StreamUrlOptions = {},
 ): string {
+  const {
+    format = STREAM_FORMAT,
+    maxBitRate = STREAM_MAX_BITRATE,
+    timeOffset,
+  } = options;
   // Auth via httpOnly access_token cookie (sent automatically by the browser).
   // Do NOT embed the JWT in the URL — the token baked in at render time goes
   // stale when the access token refreshes, causing playback to break mid-session.
@@ -384,6 +395,9 @@ export function streamUrl(
     format,
     maxBitRate: String(maxBitRate),
   });
+  if (timeOffset !== undefined && timeOffset > 0) {
+    params.set("timeOffset", String(Math.floor(timeOffset)));
+  }
   return `/rest/stream?${params}`;
 }
 
