@@ -2,6 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createDatabase } from "../src/db/client.js";
 import { mergeLibraries } from "../src/library/merge.js";
+import {
+  generateArtistId,
+  generateReleaseGroupId,
+  generateReleaseId,
+  generateTrackId,
+  generateTrackSourceId,
+} from "../src/library/id-generator.js";
 
 describe("mergeLibraries", () => {
   let db: Database.Database;
@@ -322,5 +329,206 @@ describe("mergeLibraries", () => {
     mergeLibraries(db);
     artists = db.prepare("SELECT * FROM unified_artists").all();
     expect(artists).toHaveLength(1);
+  });
+
+  it("should generate deterministic artist IDs based on MBID", () => {
+    const mbid = "artist-mbid-deterministic-test";
+    insertArtist(inst1, "a1", "Radiohead", mbid);
+    insertArtist(inst2, "a1", "Radiohead", mbid);
+
+    const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { trackCount: 1 });
+    const album2 = insertAlbum(inst2, "al1", "OK Computer", `${inst2}:a1`, { trackCount: 1 });
+    insertTrack(inst1, "t1", album1, "Paranoid Android", { trackNumber: 1 });
+    insertTrack(inst2, "t1", album2, "Paranoid Android", { trackNumber: 1 });
+
+    mergeLibraries(db);
+
+    const artists = db.prepare("SELECT * FROM unified_artists")
+      .all() as Array<Record<string, unknown>>;
+    expect(artists).toHaveLength(1);
+
+    // Verify ID matches expected deterministic generation
+    const expectedId = generateArtistId("Radiohead", mbid);
+    expect(artists[0].id).toBe(expectedId);
+  });
+
+  it("should generate deterministic artist IDs based on name when no MBID", () => {
+    insertArtist(inst1, "a1", "The Beatles");
+    insertArtist(inst2, "a1", "Beatles");
+
+    const album1 = insertAlbum(inst1, "al1", "Abbey Road", `${inst1}:a1`, { trackCount: 1 });
+    const album2 = insertAlbum(inst2, "al1", "Abbey Road", `${inst2}:a1`, { trackCount: 1 });
+    insertTrack(inst1, "t1", album1, "Come Together", { trackNumber: 1 });
+    insertTrack(inst2, "t1", album2, "Come Together", { trackNumber: 1 });
+
+    mergeLibraries(db);
+
+    const artists = db.prepare("SELECT * FROM unified_artists")
+      .all() as Array<Record<string, unknown>>;
+    expect(artists).toHaveLength(1);
+
+    // ID should be generated from the representative's name (first in group)
+    const expectedId = generateArtistId("The Beatles", null);
+    expect(artists[0].id).toBe(expectedId);
+  });
+
+  it("should generate deterministic release group IDs based on MBID", () => {
+    const artistMbid = "artist-mbid-1";
+    insertArtist(inst1, "a1", "Radiohead", artistMbid);
+    insertArtist(inst2, "a1", "Radiohead", artistMbid);
+
+    const rgMbid = "rg-mbid-deterministic-test";
+    const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, {
+      rgMbid,
+      trackCount: 12,
+    });
+    const album2 = insertAlbum(inst2, "al1", "OK Computer", `${inst2}:a1`, {
+      rgMbid,
+      trackCount: 12,
+    });
+    insertTrack(inst1, "t1", album1, "Airbag", { trackNumber: 1 });
+    insertTrack(inst2, "t1", album2, "Airbag", { trackNumber: 1 });
+
+    mergeLibraries(db);
+
+    const releaseGroups = db.prepare("SELECT * FROM unified_release_groups")
+      .all() as Array<Record<string, unknown>>;
+    expect(releaseGroups).toHaveLength(1);
+
+    // Get the unified artist ID first
+    const artists = db.prepare("SELECT id FROM unified_artists WHERE musicbrainz_id = ?")
+      .get() as { id: string };
+    const expectedId = generateReleaseGroupId("OK Computer", artists.id, rgMbid);
+    expect(releaseGroups[0].id).toBe(expectedId);
+  });
+
+  it("should generate deterministic track IDs based on recording MBID", () => {
+    const artistMbid = "artist-mbid-1";
+    insertArtist(inst1, "a1", "Radiohead", artistMbid);
+    insertArtist(inst2, "a1", "Radiohead", artistMbid);
+
+    const rgMbid = "rg-mbid-1";
+    const releaseMbid = "release-mbid-1";
+    const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, {
+      mbid: releaseMbid,
+      rgMbid,
+      trackCount: 1,
+    });
+    const album2 = insertAlbum(inst2, "al1", "OK Computer", `${inst2}:a1`, {
+      mbid: releaseMbid,
+      rgMbid,
+      trackCount: 1,
+    });
+
+    const recordingMbid = "recording-mbid-deterministic-test";
+    insertTrack(inst1, "t1", album1, "Paranoid Android", {
+      mbid: recordingMbid,
+      trackNumber: 1,
+      durationMs: 384000,
+      format: "flac",
+    });
+    insertTrack(inst2, "t1", album2, "Paranoid Android", {
+      mbid: recordingMbid,
+      trackNumber: 1,
+      durationMs: 384000,
+      format: "mp3",
+    });
+
+    mergeLibraries(db);
+
+    const tracks = db.prepare("SELECT * FROM unified_tracks")
+      .all() as Array<Record<string, unknown>>;
+    expect(tracks).toHaveLength(1);
+
+    // Get artist and release IDs to compute expected track ID
+    const artists = db.prepare("SELECT id FROM unified_artists WHERE musicbrainz_id = ?")
+      .get() as { id: string };
+    const releases = db.prepare("SELECT id FROM unified_releases WHERE musicbrainz_id = ?")
+      .get() as { id: string };
+    const expectedId = generateTrackId("Paranoid Android", artists.id, releases.id, recordingMbid, 1, 1);
+    expect(tracks[0].id).toBe(expectedId);
+  });
+
+  it("should generate deterministic track IDs based on metadata when no MBID", () => {
+    insertArtist(inst1, "a1", "Pink Floyd");
+    insertArtist(inst2, "a1", "Pink Floyd");
+
+    const album1 = insertAlbum(inst1, "al1", "The Wall", `${inst1}:a1`, { trackCount: 1 });
+    const album2 = insertAlbum(inst2, "al1", "The Wall", `${inst2}:a1`, { trackCount: 1 });
+
+    insertTrack(inst1, "t1", album1, "Comfortably Numb", {
+      trackNumber: 1,
+      durationMs: 382000,
+    });
+    insertTrack(inst2, "t1", album2, "Comfortably Numb", {
+      trackNumber: 1,
+      durationMs: 384000,
+    });
+
+    mergeLibraries(db);
+
+    const tracks = db.prepare("SELECT * FROM unified_tracks")
+      .all() as Array<Record<string, unknown>>;
+    expect(tracks).toHaveLength(1);
+
+    // Get artist and release IDs to compute expected track ID
+    const artists = db.prepare("SELECT id FROM unified_artists WHERE name = ?")
+      .get() as { id: string };
+    const releases = db.prepare("SELECT id FROM unified_releases")
+      .get() as { id: string };
+    const expectedId = generateTrackId("Comfortably Numb", artists.id, releases.id, null, 1, 1);
+    expect(tracks[0].id).toBe(expectedId);
+  });
+
+  it("should generate deterministic track source IDs", () => {
+    const artistMbid = "artist-mbid-1";
+    insertArtist(inst1, "a1", "Radiohead", artistMbid);
+    insertArtist(inst2, "a1", "Radiohead", artistMbid);
+
+    const releaseMbid = "release-mbid-1";
+    const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { mbid: releaseMbid, trackCount: 1 });
+    const album2 = insertAlbum(inst2, "al1", "OK Computer", `${inst2}:a1`, { mbid: releaseMbid, trackCount: 1 });
+
+    const recordingMbid = "recording-mbid-1";
+    insertTrack(inst1, "t1", album1, "Paranoid Android", { mbid: recordingMbid, format: "flac" });
+    insertTrack(inst2, "t1", album2, "Paranoid Android", { mbid: recordingMbid, format: "mp3" });
+
+    mergeLibraries(db);
+
+    const sources = db.prepare("SELECT * FROM track_sources")
+      .all() as Array<Record<string, unknown>>;
+    expect(sources).toHaveLength(2);
+
+    // Get the unified track ID
+    const tracks = db.prepare("SELECT id FROM unified_tracks WHERE musicbrainz_id = ?")
+      .all() as Array<{ id: string }>;
+    const trackId = tracks[0].id;
+
+    // Verify each source has deterministic ID
+    const source1Expected = generateTrackSourceId(trackId, inst1);
+    const source2Expected = generateTrackSourceId(trackId, inst2);
+
+    const sourceIds = sources.map((s) => s.id).sort();
+    expect(sourceIds).toContain(source1Expected);
+    expect(sourceIds).toContain(source2Expected);
+  });
+
+  it("should produce identical IDs on repeated merges (stability across rebuilds)", () => {
+    insertArtist(inst1, "a1", "Radiohead", "artist-mbid-stable");
+    const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { trackCount: 1 });
+    insertTrack(inst1, "t1", album1, "Airbag", { trackNumber: 1, mbid: "track-mbid-stable" });
+
+    mergeLibraries(db);
+    const firstArtists = db.prepare("SELECT id FROM unified_artists").all() as Array<{ id: string }>;
+    const firstTracks = db.prepare("SELECT id FROM unified_tracks").all() as Array<{ id: string }>;
+
+    // Merge again
+    mergeLibraries(db);
+    const secondArtists = db.prepare("SELECT id FROM unified_artists").all() as Array<{ id: string }>;
+    const secondTracks = db.prepare("SELECT id FROM unified_tracks").all() as Array<{ id: string }>;
+
+    // IDs should be identical across merges
+    expect(firstArtists[0].id).toBe(secondArtists[0].id);
+    expect(firstTracks[0].id).toBe(secondTracks[0].id);
   });
 });
