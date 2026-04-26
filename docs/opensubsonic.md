@@ -94,7 +94,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 
 | Endpoint            | Status          | Notes                                                                          |
 |---------------------|-----------------|--------------------------------------------------------------------------------|
-| `stream`            | Implemented     | Supports `format` and `maxBitRate`; selects best source across federated peers |
+| `stream`            | Implemented     | Supports `format` and `maxBitRate`; selects best source across federated peers. HTTP `Range` forwarded for raw passthrough (206 + `Content-Range`); dropped when transcoding (#97) |
 | `download`          | Implemented     | Alias for `stream`; clients use them interchangeably                           |
 | `hls`               | NOT IMPLEMENTED |                                                                                |
 | `getCaptions`       | NOT IMPLEMENTED |                                                                                |

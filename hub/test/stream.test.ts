@@ -137,9 +137,30 @@ function buildFakeNavidromeHandler(opts: {
     }
 
     // All other requests (stream, getCoverArt, ping, etc.) → audio bytes
+    const rangeHeader = req.headers.range;
+    const total = audioPayload.length;
+    if (typeof rangeHeader === "string") {
+      const m = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
+      if (m) {
+        const start = Number(m[1]);
+        const end = m[2] === "" ? total - 1 : Math.min(Number(m[2]), total - 1);
+        if (start <= end && start < total) {
+          const slice = audioPayload.subarray(start, end + 1);
+          res.writeHead(206, {
+            "content-type": audioContentType,
+            "content-length": String(slice.length),
+            "accept-ranges": "bytes",
+            "content-range": `bytes ${start}-${end}/${total}`,
+          });
+          res.end(slice);
+          return;
+        }
+      }
+    }
     res.writeHead(200, {
       "content-type": audioContentType,
-      "content-length": String(audioPayload.length),
+      "content-length": String(total),
+      "accept-ranges": "bytes",
     });
     res.end(audioPayload);
   };
@@ -302,6 +323,41 @@ describe("stream — local source", () => {
     expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
   });
 
+  it("forwards Range to Navidrome and returns 206 + content-range (#97)", async () => {
+    const track = app.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${track.id}`,
+      headers: { range: "bytes=2-5" },
+    });
+
+    expect(res.statusCode).toBe(206);
+    expect(res.headers["content-range"]).toBe(`bytes 2-5/${FAKE_AUDIO.length}`);
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO.subarray(2, 6));
+  });
+
+  it("does NOT forward Range when transcoding (format requested)", async () => {
+    const track = app.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+
+    // Source is mp3 320 kbps; ask for opus @ 128 kbps cap → applyTranscodeRule
+    // keeps `format` (cap < source bitrate → real transcode). Range must be
+    // dropped: full body 200.
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${track.id}&format=opus&maxBitRate=128`,
+      headers: { range: "bytes=2-5" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
+  });
+
   it("/rest/download alias behaves identically to /rest/stream", async () => {
     const track = app.db
       .prepare("SELECT id FROM unified_tracks LIMIT 1")
@@ -438,6 +494,22 @@ describe("stream — peer source", () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toMatch(/audio\/mpeg/);
     expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
+  });
+
+  it("forwards Range through federation → 206 + content-range (#97)", async () => {
+    const track = appA.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+
+    const res = await appA.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${track.id}`,
+      headers: { range: "bytes=1-4" },
+    });
+
+    expect(res.statusCode).toBe(206);
+    expect(res.headers["content-range"]).toBe(`bytes 1-4/${FAKE_AUDIO.length}`);
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO.subarray(1, 5));
   });
 });
 

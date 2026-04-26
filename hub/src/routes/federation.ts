@@ -68,6 +68,14 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
     const isHttps = targetUrl.protocol === "https:";
     const agent = isHttps ? httpsAgent : httpAgent;
 
+    // Forward Range from peer caller so the upstream can return 206 + bytes
+    // (#97). Other headers stay out of the federation passthrough.
+    const upstreamHeaders: Record<string, string> = {};
+    const incomingRange = request.headers.range;
+    if (typeof incomingRange === "string") {
+      upstreamHeaders.range = incomingRange;
+    }
+
     const upstreamResponse = await new Promise<http.IncomingMessage>(
       (resolve, reject) => {
         const options: http.RequestOptions = {
@@ -75,6 +83,7 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
           port: targetUrl.port || (isHttps ? 443 : 80),
           path: `${targetUrl.pathname}${targetUrl.search}`,
           method: "GET",
+          headers: upstreamHeaders,
           agent,
         };
 

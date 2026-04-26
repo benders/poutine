@@ -244,11 +244,14 @@ export class SubsonicClient {
   private async rawRequest(
     path: string,
     extraParams?: Record<string, string>,
+    extraHeaders?: Record<string, string>,
   ): Promise<Response> {
     const url = this.buildUrl(path, extraParams);
-    const response = await fetch(url, { headers: FETCH_HEADERS });
+    const headers: Record<string, string> = { ...FETCH_HEADERS, ...extraHeaders };
+    const response = await fetch(url, { headers });
 
-    if (!response.ok) {
+    // 200 OK and 206 Partial Content are both success for byte-range streams.
+    if (!response.ok && response.status !== 206) {
       throw new Error(
         `Subsonic HTTP error: ${response.status} ${response.statusText}`,
       );
@@ -327,6 +330,7 @@ export class SubsonicClient {
       maxBitRate?: number;
       timeOffset?: number;
       estimateContentLength?: boolean;
+      range?: string;
     },
   ): Promise<Response> {
     const extra: Record<string, string> = { id };
@@ -338,7 +342,10 @@ export class SubsonicClient {
     if (params?.estimateContentLength)
       extra.estimateContentLength = "true";
 
-    return this.rawRequest("/rest/stream", extra);
+    const headers: Record<string, string> | undefined = params?.range
+      ? { range: params.range }
+      : undefined;
+    return this.rawRequest("/rest/stream", extra, headers);
   }
 
   async getCoverArt(id: string, size?: number): Promise<Response> {

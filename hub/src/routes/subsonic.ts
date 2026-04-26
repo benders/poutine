@@ -1008,6 +1008,22 @@ try {
     format: best.format,
     bitrate: best.bitrate,
   });
+
+  // Forward Range only for raw passthrough streams. If transcoding is in
+  // play, byte offsets in the upstream response would not map to the
+  // transcoded bytes the caller expects. (#97 — transcoded seek tracked
+  // separately.)
+  const cap = Number(streamParams.get("maxBitRate")) || Infinity;
+  const srcBr = best.bitrate ?? Infinity;
+  const isRaw =
+    !streamParams.has("format") &&
+    !streamParams.has("timeOffset") &&
+    srcBr <= cap;
+  const rangeHeader =
+    isRaw && typeof request.headers.range === "string"
+      ? request.headers.range
+      : undefined;
+
   let response: Response;
   let bytesTransferred = 0;
 
@@ -1018,7 +1034,7 @@ try {
       password: app.config.navidromePassword,
     });
     try {
-      const opts: { format?: string; maxBitRate?: number; timeOffset?: number; estimateContentLength?: boolean } = {};
+      const opts: { format?: string; maxBitRate?: number; timeOffset?: number; estimateContentLength?: boolean; range?: string } = {};
       const fmt = streamParams.get("format");
       const br = streamParams.get("maxBitRate");
       const to = streamParams.get("timeOffset");
@@ -1027,6 +1043,7 @@ try {
       if (br) opts.maxBitRate = parseInt(br, 10);
       if (to) opts.timeOffset = parseInt(to, 10);
       if (ecl === "true") opts.estimateContentLength = true;
+      if (rangeHeader) opts.range = rangeHeader;
       response = await client.stream(best.remote_id, opts);
     } catch {
       sendBinaryError(reply, 502, "Stream error");
@@ -1044,7 +1061,10 @@ try {
       response = await app.federatedFetch(
         peer,
         path,
-        { asUser: request.subsonicUser.username },
+        {
+          asUser: request.subsonicUser.username,
+          headers: rangeHeader ? { range: rangeHeader } : undefined,
+        },
       );
     } catch {
       sendBinaryError(reply, 502, "Peer stream error");
@@ -1062,6 +1082,10 @@ try {
   };
   const contentLength = response.headers.get("content-length");
   if (contentLength) headers["content-length"] = contentLength;
+  const acceptRanges = response.headers.get("accept-ranges");
+  if (acceptRanges) headers["accept-ranges"] = acceptRanges;
+  const contentRange = response.headers.get("content-range");
+  if (contentRange) headers["content-range"] = contentRange;
 
   reply.raw.writeHead(response.status, headers);
   const nodeStream = Readable.fromWeb(
