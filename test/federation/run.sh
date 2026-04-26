@@ -402,6 +402,18 @@ assert_search_finds 3012 "$SHARE_B" "Other Album" "B"
 assert_search_finds 3012 "$SHARE_C" "Third Album" "C"
 assert_search_empty  3012 "ffffffffffffffffffffffffffffffff" "D"
 
+# ── 3rd-party Subsonic client compatibility (py-sonic) ───────────────────────
+# Drives all three hubs through the libsonic Python client to verify real-world
+# Subsonic clients (DSub, Symfonium, Substreamer, etc.) can talk to Poutine.
+
+echo ""
+echo "==> Running py-sonic Subsonic client compatibility harness..."
+HARNESS_DIR="$REPO_ROOT/test/subsonic-compat"
+POUTINE_USER="$SUB_USER" \
+POUTINE_PASS="$SUB_PASS" \
+POUTINE_TARGETS="hub-a=http://localhost:3011,hub-b=http://localhost:3012,hub-c=http://localhost:3013" \
+  "$HARNESS_DIR/run.sh"
+
 echo ""
 echo "==> All assertions passed!"
 PASSED=1

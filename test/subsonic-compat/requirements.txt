@@ -1,0 +1,2 @@
+py-sonic>=1.0.1
+pytest>=8.0
