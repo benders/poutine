@@ -1,6 +1,12 @@
-import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import { normalizeName } from "./normalize.js";
+import {
+  generateArtistId,
+  generateReleaseGroupId,
+  generateReleaseId,
+  generateTrackId,
+  generateTrackSourceId,
+} from "./id-generator.js";
 
 /**
  * Run the full merge pipeline: take all instance_* data and produce unified_* tables.
@@ -57,10 +63,10 @@ export function mergeLibraries(db: Database.Database): void {
     const instanceArtistToUnified = new Map<string, string>();
 
     for (const [mbid, group] of artistByMbid) {
-      const id = crypto.randomUUID();
       const representative = group[0];
       const name = representative.name as string;
       const nameNormalized = normalizeName(name);
+      const id = generateArtistId(name, mbid);
 
       const artistCoverArtId = representative.image_url as string | null;
       // Check if this is a Last.fm URL or a cover art ID
@@ -102,8 +108,8 @@ export function mergeLibraries(db: Database.Database): void {
 
     // Create unified artists for remaining name-only groups
     for (const [norm, group] of artistByNorm) {
-      const id = crypto.randomUUID();
       const representative = group[0];
+      const id = generateArtistId(representative.name as string, null);
 
       const artistCoverArtId2 = representative.image_url as string | null;
       let encodedArtistArt2: string | null = null;
@@ -168,10 +174,10 @@ export function mergeLibraries(db: Database.Database): void {
     const instanceAlbumToArtist = new Map<string, string>();
 
     for (const [mbid, group] of rgByMbid) {
-      const id = crypto.randomUUID();
       const representative = group[0];
       const name = representative.name as string;
       const unifiedArtistId = instanceArtistToUnified.get(representative.artist_id as string) ?? "unknown";
+      const id = generateReleaseGroupId(name, unifiedArtistId, mbid);
 
       // Encode cover art ID as instanceId:coverArtId for the /api/art/:id endpoint
       const coverArtId = representative.cover_art_id as string | null;
@@ -209,10 +215,10 @@ export function mergeLibraries(db: Database.Database): void {
     }
 
     for (const [, group] of rgByKey) {
-      const id = crypto.randomUUID();
       const representative = group[0];
       const name = representative.name as string;
       const unifiedArtistId = instanceArtistToUnified.get(representative.artist_id as string) ?? "unknown";
+      const id = generateReleaseGroupId(name, unifiedArtistId, null);
 
       const coverArtId2 = representative.cover_art_id as string | null;
       const encodedArt2 = coverArtId2
@@ -281,8 +287,8 @@ export function mergeLibraries(db: Database.Database): void {
       }
 
       for (const [mbid, group] of byMbid) {
-        const id = crypto.randomUUID();
         const rep = group[0];
+        const id = generateReleaseId(rep.name as string, rgId, mbid);
         insertRelease.run(
           id,
           rgId,
@@ -309,8 +315,8 @@ export function mergeLibraries(db: Database.Database): void {
       }
 
       for (const [, group] of byTrackCount) {
-        const id = crypto.randomUUID();
         const rep = group[0];
+        const id = generateReleaseId(rep.name as string, rgId, null);
         insertRelease.run(
           id,
           rgId,
@@ -376,10 +382,17 @@ export function mergeLibraries(db: Database.Database): void {
       }> = [];
 
       for (const [mbid, group] of byMbid) {
-        const id = crypto.randomUUID();
         const rep = group[0];
         const artistId = instanceAlbumToArtist.get(rep.album_id as string) ?? "unknown";
         const titleNorm = normalizeName(rep.title as string);
+        const id = generateTrackId(
+          rep.title as string,
+          artistId,
+          releaseId,
+          mbid,
+          rep.track_number as number | null,
+          rep.disc_number as number | null,
+        );
 
         insertTrack.run(
           id,
@@ -396,7 +409,7 @@ export function mergeLibraries(db: Database.Database): void {
 
         for (const track of group) {
           insertTrackSource.run(
-            crypto.randomUUID(),
+            generateTrackSourceId(id, track.instance_id as string),
             id,
             track.instance_id as string,
             track.id as string,
@@ -430,7 +443,7 @@ export function mergeLibraries(db: Database.Database): void {
           ) {
             // Add as additional source
             insertTrackSource.run(
-              crypto.randomUUID(),
+              generateTrackSourceId(existing.unifiedId, track.instance_id as string),
               existing.unifiedId,
               track.instance_id as string,
               track.id as string,
@@ -445,8 +458,15 @@ export function mergeLibraries(db: Database.Database): void {
 
         if (!matched) {
           // Create a new unified track
-          const id = crypto.randomUUID();
           const artistId = instanceAlbumToArtist.get(track.album_id as string) ?? "unknown";
+          const id = generateTrackId(
+            track.title as string,
+            artistId,
+            releaseId,
+            null,
+            trackNumber,
+            track.disc_number as number | null,
+          );
 
           insertTrack.run(
             id,
@@ -462,7 +482,7 @@ export function mergeLibraries(db: Database.Database): void {
           );
 
           insertTrackSource.run(
-            crypto.randomUUID(),
+            generateTrackSourceId(id, track.instance_id as string),
             id,
             track.instance_id as string,
             track.id as string,
