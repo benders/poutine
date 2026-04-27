@@ -20,21 +20,33 @@ export function isAuthErrorCode(code: unknown): boolean {
  * Returns null when the user isn't logged in.
  */
 function authParams(): URLSearchParams | null {
-  const creds = getSubsonicCreds();
-  if (!creds) return null;
+  return authParamsWithSalt(freshSalt());
+}
+
+function freshSalt(): string {
   const saltBytes = new Uint8Array(8);
   crypto.getRandomValues(saltBytes);
-  const salt = Array.from(saltBytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(saltBytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function authParamsWithSalt(salt: string): URLSearchParams | null {
+  const creds = getSubsonicCreds();
+  if (!creds) return null;
   const token = md5(creds.password + salt);
-  const params = new URLSearchParams({
+  return new URLSearchParams({
     u: creds.username,
     t: token,
     s: salt,
     v: SUBSONIC_VERSION,
     c: CLIENT,
   });
-  return params;
 }
+
+// Stable per-session salt for cover-art URLs. Reusing a salt is acceptable
+// here: if it were fresh per call, every render would produce a new <img src>
+// and the browser would re-fetch getCoverArt in a tight loop. A stable URL
+// also lets the HTTP cache do its job. (#112)
+const ART_SALT = freshSalt();
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -417,7 +429,7 @@ export function artUrl(coverArtId: string, size?: number): string | null {
   if (coverArtId.startsWith("http://") || coverArtId.startsWith("https://")) {
     return coverArtId;
   }
-  const params = authParams();
+  const params = authParamsWithSalt(ART_SALT);
   if (!params) return null;
   params.set("id", coverArtId);
   if (size) params.set("size", String(size));
