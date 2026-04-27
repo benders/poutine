@@ -10,7 +10,7 @@ COPY hub/package.json hub/
 COPY frontend/package.json frontend/
 RUN pnpm install --frozen-lockfile
 
-# Install production dependencies only — native addons (argon2, better-sqlite3) compiled here
+# Install production dependencies only — better-sqlite3 native addon compiled here
 FROM base AS prod-deps
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY hub/package.json hub/

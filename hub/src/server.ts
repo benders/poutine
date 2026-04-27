@@ -16,8 +16,9 @@ import { createFederationFetcher } from "./federation/sign-request.js";
 import { seedSyntheticInstances } from "./library/seed-instances.js";
 import { pruneOrphanInstances } from "./library/prune-instances.js";
 import { mergeLibraries } from "./library/merge.js";
-import { hashPassword } from "./auth/passwords.js";
+import { setPassword } from "./auth/passwords.js";
 import { ensureJwtSecret } from "./auth/jwt-secret.js";
+import { loadOrCreatePasswordKey } from "./auth/password-crypto.js";
 import { AutoSyncService } from "./services/auto-sync.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
@@ -37,6 +38,7 @@ declare module "fastify" {
   peerRegistry: PeerRegistry;
   privateKey: KeyObject;
   publicKeySpec: string;
+  passwordKey: Buffer;
   federatedFetch: ReturnType<typeof FetcherFactory>;
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
@@ -50,22 +52,51 @@ declare module "fastify" {
  * are configured, creates the owner with is_admin=1. Idempotent: no-op if any
  * user already exists.
  */
-async function seedOwner(
+/**
+ * Seed (or recover) the owner user.
+ *
+ * - First boot (users table effectively empty): inserts the owner row.
+ * - Post-migration (owner row exists but password_enc is empty): re-sets
+ *   the encrypted password from POUTINE_OWNER_PASSWORD. This is the
+ *   recovery path for issue #106 — the Argon2id → AES-256-GCM migration
+ *   wipes all stored passwords.
+ */
+function seedOwner(
   db: Database.Database,
   config: Config,
-): Promise<void> {
+  passwordKey: Buffer,
+): void {
   if (!config.poutineOwnerUsername || !config.poutineOwnerPassword) return;
 
-  const existing = db
-    .prepare("SELECT COUNT(*) as count FROM users")
-    .get() as { count: number };
-  if (existing.count > 0) return;
+  const existingByName = db
+    .prepare("SELECT id, password_enc FROM users WHERE username = ?")
+    .get(config.poutineOwnerUsername) as
+    | { id: string; password_enc: string }
+    | undefined;
 
-  const passwordHash = await hashPassword(config.poutineOwnerPassword);
+  if (existingByName) {
+    if (!existingByName.password_enc) {
+      const enc = setPassword(config.poutineOwnerPassword, passwordKey);
+      db.prepare(
+        "UPDATE users SET password_enc = ?, is_admin = 1, updated_at = datetime('now') WHERE id = ?",
+      ).run(enc, existingByName.id);
+    }
+    return;
+  }
+
+  // Treat a single __system__ placeholder as "no real users yet".
+  const realUsers = db
+    .prepare(
+      "SELECT COUNT(*) as count FROM users WHERE username != '__system__'",
+    )
+    .get() as { count: number };
+  if (realUsers.count > 0) return;
+
+  const enc = setPassword(config.poutineOwnerPassword, passwordKey);
   const id = crypto.randomUUID();
   db.prepare(
-    "INSERT INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, 1)",
-  ).run(id, config.poutineOwnerUsername, passwordHash);
+    "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 1)",
+  ).run(id, config.poutineOwnerUsername, enc);
 }
 
 export async function buildApp(configOverrides?: Partial<Config>) {
@@ -102,6 +133,10 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   }
   app.decorate("lastFmClient", lastFmClient);
 
+  // Password encryption key (AES-256-GCM, on disk beside the federation key)
+  const passwordKey = loadOrCreatePasswordKey(config.poutinePasswordKeyPath);
+  app.decorate("passwordKey", passwordKey);
+
   // Federation keys and peer registry
   const { privateKey, publicKeyBase64 } = loadOrCreatePrivateKey(
     config.poutinePrivateKeyPath,
@@ -131,8 +166,8 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     }),
   );
 
-  // Seed owner user on first boot if configured
-  await seedOwner(db, config);
+  // Seed (or recover) owner user
+  seedOwner(db, config, passwordKey);
 
   // Seed synthetic instance rows (local Navidrome + known peers) — idempotent
   seedSyntheticInstances(db, config, peerRegistry);

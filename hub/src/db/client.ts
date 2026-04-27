@@ -19,6 +19,31 @@ function dropLegacyTables(db: Database.Database): void {
  * Apply additive column migrations for existing databases.
  * SQLite supports ADD COLUMN idempotently via PRAGMA table_info check.
  */
+/**
+ * Migrate users.password_hash (Argon2id) → users.password_enc (AES-256-GCM).
+ *
+ * Argon2id was one-way; we now need reversible storage so the server can
+ * answer Subsonic u+t+s (MD5 token+salt) auth. Old hashes cannot be converted
+ * — admins must reset passwords post-upgrade. Owner reset happens
+ * automatically via seedOwner() when POUTINE_OWNER_PASSWORD is set; other
+ * users must be re-set via the admin UI.
+ */
+function migrateUserPasswords(db: Database.Database): void {
+  const cols = db
+    .prepare("PRAGMA table_info(users)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+
+  if (!names.has("password_enc")) {
+    db.exec(
+      "ALTER TABLE users ADD COLUMN password_enc TEXT NOT NULL DEFAULT ''",
+    );
+  }
+  if (names.has("password_hash")) {
+    db.exec("ALTER TABLE users DROP COLUMN password_hash");
+  }
+}
+
 function ensureColumns(db: Database.Database): void {
   const instanceCols = db
     .prepare("PRAGMA table_info(instances)")
@@ -122,6 +147,9 @@ export function createDatabase(dbPath: string): Database.Database {
 
   // Drop tables removed in Phase 5
   dropLegacyTables(db);
+
+  // Migrate users.password_hash → password_enc (issue #106)
+  migrateUserPasswords(db);
 
   // Apply additive column migrations for existing DBs
   ensureColumns(db);

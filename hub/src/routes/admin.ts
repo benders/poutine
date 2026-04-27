@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
-import { verifyPassword, hashPassword } from "../auth/passwords.js";
+import { verifyPassword, setPassword } from "../auth/passwords.js";
 import { createAccessToken, createRefreshToken, verifyRefreshToken, verifyToken } from "../auth/jwt.js";
 import { syncAll } from "../library/sync.js";
 import { SyncOperationService } from "../services/sync-operations.js";
@@ -63,17 +63,17 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
       const user = app.db
         .prepare(
-          "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
+          "SELECT id, username, password_enc, is_admin FROM users WHERE username = ?",
         )
         .get(username) as
-        | { id: string; username: string; password_hash: string; is_admin: number }
+        | { id: string; username: string; password_enc: string; is_admin: number }
         | undefined;
 
       if (!user) {
         return reply.code(401).send({ error: "Invalid credentials" });
       }
 
-      const valid = await verifyPassword(user.password_hash, password);
+      const valid = verifyPassword(user.password_enc, password, app.passwordKey);
       if (!valid) {
         return reply.code(401).send({ error: "Invalid credentials" });
       }
@@ -209,13 +209,13 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(409).send({ error: "Username already taken" });
       }
 
-      const passwordHash = await hashPassword(password);
+      const enc = setPassword(password, app.passwordKey);
       const id = crypto.randomUUID();
       app.db
         .prepare(
-          "INSERT INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, 0)",
+          "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 0)",
         )
-        .run(id, username, passwordHash);
+        .run(id, username, enc);
 
       return reply.code(201).send({ id, username, isAdmin: false });
     },

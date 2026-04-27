@@ -33,7 +33,7 @@ export function seedSyntheticInstances(
         "Register a real user to replace this.",
     );
     db.prepare(
-      `INSERT OR IGNORE INTO users (id, username, password_hash, is_admin) VALUES (?, '__system__', '__placeholder__', 0)`,
+      `INSERT OR IGNORE INTO users (id, username, password_enc, is_admin) VALUES (?, '__system__', '', 0)`,
     ).run(ownerId);
   }
 
