@@ -14,6 +14,7 @@ export interface Config {
   navidromePassword: string;
   poutineInstanceId: string;
   poutinePrivateKeyPath: string;
+  poutinePasswordKeyPath: string;
   poutinePeersConfig: string;
   poutineOwnerUsername: string;
   poutineOwnerPassword: string;
@@ -67,6 +68,8 @@ export function loadConfig(): Config {
     ),
     poutinePrivateKeyPath:
       process.env.POUTINE_PRIVATE_KEY_PATH || "./data/poutine_ed25519.pem",
+    poutinePasswordKeyPath:
+      process.env.POUTINE_PASSWORD_KEY_PATH || "./data/poutine_password_key",
     poutinePeersConfig:
       process.env.POUTINE_PEERS_CONFIG || "./config/peers.yaml",
     poutineOwnerUsername: requireInProd(
