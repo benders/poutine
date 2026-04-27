@@ -197,7 +197,9 @@ export function PlayerBar() {
     if (isTranscoded && !isBuffered(audio, time)) {
       pendingBaseOffsetRef.current = time;
       setCurrentTime(time);
-      audio.src = streamUrl(currentTrack.id, { timeOffset: time });
+      const url = streamUrl(currentTrack.id, { timeOffset: time });
+      if (!url) return;
+      audio.src = url;
       audio.load();
       if (isPlaying) audio.play().catch(() => setPlaying(false));
       return;
@@ -236,7 +238,7 @@ export function PlayerBar() {
         >
           {currentTrack?.coverArt ? (
             <img
-              src={artUrl(currentTrack.coverArt, 48)}
+              src={artUrl(currentTrack.coverArt, 48) ?? undefined}
               alt={currentTrack.album || "Album art"}
               className="w-full h-full object-cover"
             />

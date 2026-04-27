@@ -399,9 +399,10 @@ export interface StreamUrlOptions {
 export function streamUrl(
   songId: string,
   options: StreamUrlOptions = {},
-): string {
+): string | null {
   const { format = STREAM_FORMAT, maxBitRate = STREAM_MAX_BITRATE, timeOffset } = options;
-  const params = authParams() ?? new URLSearchParams({ v: SUBSONIC_VERSION, c: CLIENT });
+  const params = authParams();
+  if (!params) return null;
   params.set("id", songId);
   params.set("format", format);
   params.set("maxBitRate", String(maxBitRate));
@@ -411,12 +412,13 @@ export function streamUrl(
   return `/rest/stream?${params}`;
 }
 
-export function artUrl(coverArtId: string, size?: number): string {
+export function artUrl(coverArtId: string, size?: number): string | null {
   // Last.fm and other absolute URLs are returned as-is.
   if (coverArtId.startsWith("http://") || coverArtId.startsWith("https://")) {
     return coverArtId;
   }
-  const params = authParams() ?? new URLSearchParams({ v: SUBSONIC_VERSION, c: CLIENT });
+  const params = authParams();
+  if (!params) return null;
   params.set("id", coverArtId);
   if (size) params.set("size", String(size));
   return `/rest/getCoverArt?${params}`;

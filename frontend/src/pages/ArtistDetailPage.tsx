@@ -62,7 +62,7 @@ export function ArtistDetailPage() {
         <div className="w-28 h-28 rounded-full flex items-center justify-center shrink-0 overflow-hidden bg-[color:var(--artist-bg, hsl(0, 40%, 30%))]">
           {artist.coverArt ? (
             <img
-              src={artUrl(artist.coverArt, 300)}
+              src={artUrl(artist.coverArt, 300) ?? undefined}
               alt={artist.name}
               className="w-full h-full object-cover"
             />
@@ -125,7 +125,7 @@ function AlbumCard({
       >
         {album.coverArt ? (
           <img
-            src={artUrl(album.coverArt, 300)}
+            src={artUrl(album.coverArt, 300) ?? undefined}
             alt={album.name}
             className="w-full h-full object-cover"
             loading="lazy"

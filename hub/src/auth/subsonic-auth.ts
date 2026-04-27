@@ -50,6 +50,9 @@ function verifySubsonicCreds(
     return verifyPassword(passwordEnc, creds.password, passwordKey);
   }
   if (creds.token && creds.salt) {
+    // Subsonic spec requires salt ≥ 6 chars; reject short salts as
+    // defense-in-depth (real clients use ≥36 random chars).
+    if (creds.salt.length < 6) return false;
     const stored = getStoredPassword(passwordEnc, passwordKey);
     if (stored === null) return false;
     const expected = crypto
