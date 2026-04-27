@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { PlayerBar } from "./PlayerBar";
 import { usePlayer } from "@/stores/player";
@@ -7,7 +7,7 @@ import { setSubsonicCreds } from "@/lib/api";
 import { streamUrl } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 
-function track(id: string): SubsonicSong {
+function track(id: string, coverArt?: string): SubsonicSong {
   return {
     id,
     title: "T",
@@ -16,6 +16,7 @@ function track(id: string): SubsonicSong {
     artist: "Ar",
     artistId: "ar-1",
     durationMs: 1000,
+    coverArt,
   };
 }
 
@@ -65,5 +66,38 @@ describe("PlayerBar render stability", () => {
     );
     errorSpy.mockRestore();
     expect(sawMaxUpdate).toBe(false);
+  });
+
+  it("cover-art <img src> is stable across re-renders (regression: refetch loop)", () => {
+    // artUrl() also generates a fresh u+t+s salt per call. If it isn't
+    // memoized, every parent re-render (e.g. from currentTime updates) gives
+    // the <img> a new src URL — the browser re-fetches getCoverArt
+    // continuously. See PR #110 follow-up.
+    usePlayer.setState({
+      queue: [track("trk-1", "art-1")],
+      currentIndex: 0,
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+    const firstSrc = img!.getAttribute("src");
+    expect(firstSrc).toContain("id=art-1");
+
+    // Force a re-render by mutating unrelated player state.
+    act(() => {
+      usePlayer.setState({ currentTime: 1 });
+    });
+    act(() => {
+      usePlayer.setState({ currentTime: 2 });
+    });
+
+    const sameImg = container.querySelector("img");
+    expect(sameImg!.getAttribute("src")).toBe(firstSrc);
   });
 });
