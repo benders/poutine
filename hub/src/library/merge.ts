@@ -66,7 +66,7 @@ export function mergeLibraries(db: Database.Database): void {
       const representative = group[0];
       const name = representative.name as string;
       const nameNormalized = normalizeName(name);
-      const id = generateArtistId(name, mbid);
+      const id = generateArtistId(nameNormalized, mbid);
 
       const artistCoverArtId = representative.image_url as string | null;
       // Check if this is a Last.fm URL or a cover art ID
@@ -109,7 +109,7 @@ export function mergeLibraries(db: Database.Database): void {
     // Create unified artists for remaining name-only groups
     for (const [norm, group] of artistByNorm) {
       const representative = group[0];
-      const id = generateArtistId(representative.name as string, null);
+      const id = generateArtistId(norm, null);
 
       const artistCoverArtId2 = representative.image_url as string | null;
       let encodedArtistArt2: string | null = null;
@@ -176,8 +176,9 @@ export function mergeLibraries(db: Database.Database): void {
     for (const [mbid, group] of rgByMbid) {
       const representative = group[0];
       const name = representative.name as string;
+      const nameNormalized = normalizeName(name);
       const unifiedArtistId = instanceArtistToUnified.get(representative.artist_id as string) ?? "unknown";
-      const id = generateReleaseGroupId(name, unifiedArtistId, mbid);
+      const id = generateReleaseGroupId(nameNormalized, unifiedArtistId, mbid);
 
       // Encode cover art ID as instanceId:coverArtId for the /api/art/:id endpoint
       const coverArtId = representative.cover_art_id as string | null;
@@ -217,8 +218,9 @@ export function mergeLibraries(db: Database.Database): void {
     for (const [, group] of rgByKey) {
       const representative = group[0];
       const name = representative.name as string;
+      const nameNormalized = normalizeName(name);
       const unifiedArtistId = instanceArtistToUnified.get(representative.artist_id as string) ?? "unknown";
-      const id = generateReleaseGroupId(name, unifiedArtistId, null);
+      const id = generateReleaseGroupId(nameNormalized, unifiedArtistId, null);
 
       const coverArtId2 = representative.cover_art_id as string | null;
       const encodedArt2 = coverArtId2
@@ -386,7 +388,7 @@ export function mergeLibraries(db: Database.Database): void {
         const artistId = instanceAlbumToArtist.get(rep.album_id as string) ?? "unknown";
         const titleNorm = normalizeName(rep.title as string);
         const id = generateTrackId(
-          rep.title as string,
+          titleNorm,
           artistId,
           releaseId,
           mbid,
@@ -460,7 +462,7 @@ export function mergeLibraries(db: Database.Database): void {
           // Create a new unified track
           const artistId = instanceAlbumToArtist.get(track.album_id as string) ?? "unknown";
           const id = generateTrackId(
-            track.title as string,
+            titleNorm,
             artistId,
             releaseId,
             null,
