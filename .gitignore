@@ -8,6 +8,7 @@ config/peers.yaml
 *.db-wal
 *.db-shm
 *.pem
+poutine_password_key
 *.data.json
 artists.json
 coverage/
