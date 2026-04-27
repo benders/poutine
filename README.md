@@ -66,6 +66,14 @@ docker compose up -d hub
 
 Running containers use the compiled image, not live source — rebuild is required after any code change.
 
+#### Upgrading to 0.4.0 — password reset required
+
+0.4.0 changes how user passwords are stored (Argon2id → AES-256-GCM, reversible storage so Subsonic `u+t+s` works). All existing passwords are wiped on the upgrade — every user must have their password re-set.
+
+1. Make sure `POUTINE_OWNER_USERNAME` and `POUTINE_OWNER_PASSWORD` are set in your env. On boot, the hub recovers the owner row by re-encrypting `POUTINE_OWNER_PASSWORD`.
+2. After the hub starts, log in as the owner and re-create or re-set passwords for any other users via the admin UI.
+3. Back up `data/poutine_password_key` (auto-generated on first boot, mode 0600) alongside your SQLite DB. **Losing the key file makes every stored password unrecoverable.** Override the path with `POUTINE_PASSWORD_KEY_PATH` if needed.
+
 ### Resetting the owner password
 
 Owner seeding only runs on first boot (when `users` is empty). To reset a password while the hub is running:
@@ -99,7 +107,7 @@ Navidrome's admin-bootstrap env vars only run on a fresh volume. To force a rese
 
 | Layer     | Tech                                                      |
 |-----------|-----------------------------------------------------------|
-| Hub       | TypeScript, Fastify, better-sqlite3, jose (JWT), argon2   |
+| Hub       | TypeScript, Fastify, better-sqlite3, jose (JWT), AES-GCM  |
 | Frontend  | React 19, Vite, Tailwind CSS, Zustand, TanStack Query     |
 | Per-peer  | Navidrome (Subsonic / OpenSubsonic API)                   |
 | Transcode | FFmpeg (via Navidrome, never on the hub)                  |

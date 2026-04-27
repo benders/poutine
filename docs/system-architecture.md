@@ -31,7 +31,7 @@ Only the hub's HTTP port is exposed. Navidrome is internal-only. Navidrome crede
 
 ### Clients
 
-The React SPA (served by the hub) or any third-party Subsonic-compatible app. Both speak to `/rest/*`. Auth is JWT (header, cookie, or query) for the SPA; third-party clients can also use the legacy Subsonic `u`+`p` query-param auth.
+The React SPA (served by the hub) or any third-party Subsonic-compatible app. Both speak to `/rest/*` using standard Subsonic auth — `u+p` (plaintext / `enc:<hex>`) or `u+t+s` (MD5 token+salt). The SPA uses `u+t+s` after the user logs in via `/admin/login` (see [authentication.md](authentication.md)).
 
 ### Hub
 
@@ -104,10 +104,11 @@ Transcoding happens on whichever Navidrome owns the bytes, never on the hub.
 
 | Concern         | Approach                                                             |
 |-----------------|----------------------------------------------------------------------|
-| User passwords  | Argon2id                                                             |
-| Session tokens  | JWT: 15 min access (cookie + header) + 7 d refresh (cookie, path-scoped) |
+| User passwords  | AES-256-GCM (reversible — needed for Subsonic `u+t+s`). Key on disk. |
+| Session tokens  | JWT for `/admin/*` only: 15 min access + 7 d refresh                 |
+| Subsonic auth   | `u+p` or `u+t+s` (MD5 token+salt). SPA + 3rd-party clients use either |
 | Peer auth       | Ed25519 signature on every `/federation/*` and `/proxy/*` request    |
-| Proxy auth      | Unified: Ed25519 (peers) → JWT (SPA) → Subsonic u+p (3rd-party clients) |
+| Proxy auth      | Unified: Ed25519 (peers) → JWT (admin) → Subsonic `u+p`/`u+t+s`     |
 | Navidrome auth  | Env-var creds, never in DB; internal network only                    |
 | Transport       | HTTPS required in prod for peer-to-peer reachability                 |
 
