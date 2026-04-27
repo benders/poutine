@@ -24,6 +24,24 @@ Both JSON (`f=json`, default) and XML (`f=xml`) supported. Default is JSON.
 
 Both forms are fully supported as of 0.4.0. Earlier versions (which stored Argon2id hashes) accepted only `u+p`. There is no JWT auth on `/rest/*` — the bundled SPA also uses `u+t+s`.
 
+### Auth-related error codes
+
+The SPA's `subsonicFetch` (`frontend/src/lib/subsonic.ts`) clears local creds and redirects to `/login` on any **credential-related** error code. Code 50 is authorization (insufficient privilege), not authentication, and must surface as a normal error without redirecting.
+
+| Code | Meaning                                          | SPA redirect to /login? |
+|------|--------------------------------------------------|-------------------------|
+| 10   | Required parameter missing                       | Yes (implies creds absent) |
+| 20   | Incompatible client (must upgrade)               | No                      |
+| 30   | Incompatible server (must upgrade)               | No                      |
+| 40   | Wrong username or password                       | **Yes**                 |
+| 41   | Token auth not supported (LDAP user)             | **Yes**                 |
+| 42   | Provided auth mechanism not supported            | **Yes**                 |
+| 43   | Multiple conflicting auth mechanisms             | **Yes**                 |
+| 44   | Invalid API key                                  | **Yes**                 |
+| 50   | User not authorized for operation                | No (authz, not authn)   |
+| 60   | Trial period over                                | No                      |
+| 70   | Data not found                                   | No                      |
+
 See [authentication.md](authentication.md) for the full auth reference.
 
 ## Endpoint compatibility

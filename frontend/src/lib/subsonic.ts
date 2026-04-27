@@ -4,6 +4,16 @@ import { getSubsonicCreds, clearTokens } from "./api.js";
 const SUBSONIC_VERSION = "1.16.1";
 const CLIENT = "poutine";
 
+// Subsonic/OpenSubsonic credential-related error codes. Code 50 (not authorized
+// for operation) is authorization, not authentication, and must NOT redirect.
+// Code 10 (required parameter missing) lands here when the SPA's stored creds
+// were cleared/never set — treat as "not logged in".
+const AUTH_ERROR_CODES = new Set<number>([10, 40, 41, 42, 43, 44]);
+
+export function isAuthErrorCode(code: unknown): boolean {
+  return typeof code === "number" && AUTH_ERROR_CODES.has(code);
+}
+
 /**
  * Build the Subsonic u+t+s auth params for one request.
  * Salt is fresh per call so the URL/request can't be replayed at scale.
@@ -227,8 +237,7 @@ async function subsonicFetch<T>(
   const data = await res.json();
   const sr = data["subsonic-response"];
   if (sr.status !== "ok") {
-    // Subsonic auth errors are codes 40 (wrong creds) and 41 (token unsupported).
-    if (sr.error?.code === 40 || sr.error?.code === 41) {
+    if (isAuthErrorCode(sr.error?.code)) {
       clearTokens();
       window.location.replace("/login");
     }
