@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
-import { verifyPassword, setPassword } from "../auth/passwords.js";
+import { verifyPassword, setPassword, getStoredPassword } from "../auth/passwords.js";
 import { createAccessToken, createRefreshToken, verifyRefreshToken, verifyToken } from "../auth/jwt.js";
 import { syncAll } from "../library/sync.js";
 import { SyncOperationService } from "../services/sync-operations.js";
@@ -98,9 +98,16 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         maxAge: 7 * 24 * 60 * 60,
       });
 
+      // Return the plaintext password to the SPA so it can authenticate
+      // /rest/* via Subsonic u+t+s. The SPA stashes these in localStorage
+      // (same threat surface as the JWT). See docs/authentication.md.
+      const plaintext = getStoredPassword(user.password_enc, app.passwordKey);
       return {
         user: { id: user.id, username: user.username, isAdmin: true },
         accessToken,
+        subsonicCredentials: plaintext
+          ? { username: user.username, password: plaintext }
+          : null,
       };
     },
   );

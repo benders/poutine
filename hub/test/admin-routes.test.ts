@@ -63,7 +63,7 @@ describe("admin — login", () => {
     await app.close();
   });
 
-  it("correct credentials → 200 with user info and accessToken", async () => {
+  it("correct credentials → 200 with user info, accessToken, and subsonic creds", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/admin/login",
@@ -75,6 +75,11 @@ describe("admin — login", () => {
     expect(body.user.isAdmin).toBe(true);
     expect(typeof body.accessToken).toBe("string");
     expect(body.accessToken.length).toBeGreaterThan(0);
+    // SPA needs the plaintext password to compute u+t+s for /rest/* (#106)
+    expect(body.subsonicCredentials).toEqual({
+      username: "owner",
+      password: "adminpass",
+    });
   });
 
   it("wrong password → 401", async () => {

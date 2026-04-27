@@ -2,6 +2,35 @@
 let accessToken: string | null = localStorage.getItem("accessToken");
 let refreshPromise: Promise<string | null> | null = null;
 
+export interface SubsonicCreds {
+  username: string;
+  password: string;
+}
+
+function readSubsonicCreds(): SubsonicCreds | null {
+  const username = localStorage.getItem("subsonicUser");
+  const password = localStorage.getItem("subsonicPass");
+  if (!username || !password) return null;
+  return { username, password };
+}
+
+let subsonicCreds: SubsonicCreds | null = readSubsonicCreds();
+
+export function getSubsonicCreds(): SubsonicCreds | null {
+  return subsonicCreds;
+}
+
+export function setSubsonicCreds(creds: SubsonicCreds | null) {
+  subsonicCreds = creds;
+  if (creds) {
+    localStorage.setItem("subsonicUser", creds.username);
+    localStorage.setItem("subsonicPass", creds.password);
+  } else {
+    localStorage.removeItem("subsonicUser");
+    localStorage.removeItem("subsonicPass");
+  }
+}
+
 export async function attemptRefresh(): Promise<string | null> {
   if (!refreshPromise) {
     refreshPromise = (async () => {
@@ -29,6 +58,7 @@ export function setToken(token: string) {
 export function clearTokens() {
   accessToken = null;
   localStorage.removeItem("accessToken");
+  setSubsonicCreds(null);
 }
 
 export function getAccessToken() {
@@ -97,8 +127,10 @@ export async function login(username: string, password: string) {
   const data = await res.json() as {
     user: { id: string; username: string; isAdmin: boolean };
     accessToken: string;
+    subsonicCredentials: SubsonicCreds | null;
   };
   setToken(data.accessToken);
+  setSubsonicCreds(data.subsonicCredentials);
   return data.user;
 }
 

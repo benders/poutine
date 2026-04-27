@@ -1,12 +1,30 @@
-import { getAccessToken, clearTokens, attemptRefresh } from "./api.js";
+import { md5 } from "js-md5";
+import { getSubsonicCreds, clearTokens } from "./api.js";
 
 const SUBSONIC_VERSION = "1.16.1";
 const CLIENT = "poutine";
 
-// ── Legacy credential cleanup ─────────────────────────────────────────────────
-// Remove plaintext passwords stored by older versions
-localStorage.removeItem("subsonicUser");
-localStorage.removeItem("subsonicPass");
+/**
+ * Build the Subsonic u+t+s auth params for one request.
+ * Salt is fresh per call so the URL/request can't be replayed at scale.
+ * Returns null when the user isn't logged in.
+ */
+function authParams(): URLSearchParams | null {
+  const creds = getSubsonicCreds();
+  if (!creds) return null;
+  const saltBytes = new Uint8Array(8);
+  crypto.getRandomValues(saltBytes);
+  const salt = Array.from(saltBytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  const token = md5(creds.password + salt);
+  const params = new URLSearchParams({
+    u: creds.username,
+    t: token,
+    s: salt,
+    v: SUBSONIC_VERSION,
+    c: CLIENT,
+  });
+  return params;
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -187,31 +205,19 @@ function parseSong(raw: RawSong): SubsonicSong {
 async function subsonicFetch<T>(
   endpoint: string,
   extra?: Record<string, string>,
-  _retry = true,
 ): Promise<T> {
-  const token = getAccessToken();
-  if (!token) throw new SubsonicError("Not authenticated", 10);
-
-  const params = new URLSearchParams({
-    v: SUBSONIC_VERSION,
-    c: CLIENT,
-    f: "json",
-  });
+  const params = authParams();
+  if (!params) throw new SubsonicError("Not authenticated", 10);
+  params.set("f", "json");
   if (extra) {
     for (const [k, v] of Object.entries(extra)) {
       params.set(k, v);
     }
   }
 
-  const res = await fetch(`/rest/${endpoint}?${params}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await fetch(`/rest/${endpoint}?${params}`);
   if (!res.ok) {
     if (res.status === 401) {
-      if (_retry) {
-        const newToken = await attemptRefresh();
-        if (newToken) return subsonicFetch<T>(endpoint, extra, false);
-      }
       clearTokens();
       window.location.replace("/login");
     }
@@ -221,6 +227,11 @@ async function subsonicFetch<T>(
   const data = await res.json();
   const sr = data["subsonic-response"];
   if (sr.status !== "ok") {
+    // Subsonic auth errors are codes 40 (wrong creds) and 41 (token unsupported).
+    if (sr.error?.code === 40 || sr.error?.code === 41) {
+      clearTokens();
+      window.location.replace("/login");
+    }
     throw new SubsonicError(
       sr.error?.message ?? "Unknown error",
       sr.error?.code ?? 0,
@@ -380,21 +391,11 @@ export function streamUrl(
   songId: string,
   options: StreamUrlOptions = {},
 ): string {
-  const {
-    format = STREAM_FORMAT,
-    maxBitRate = STREAM_MAX_BITRATE,
-    timeOffset,
-  } = options;
-  // Auth via httpOnly access_token cookie (sent automatically by the browser).
-  // Do NOT embed the JWT in the URL — the token baked in at render time goes
-  // stale when the access token refreshes, causing playback to break mid-session.
-  const params = new URLSearchParams({
-    v: SUBSONIC_VERSION,
-    c: CLIENT,
-    id: songId,
-    format,
-    maxBitRate: String(maxBitRate),
-  });
+  const { format = STREAM_FORMAT, maxBitRate = STREAM_MAX_BITRATE, timeOffset } = options;
+  const params = authParams() ?? new URLSearchParams({ v: SUBSONIC_VERSION, c: CLIENT });
+  params.set("id", songId);
+  params.set("format", format);
+  params.set("maxBitRate", String(maxBitRate));
   if (timeOffset !== undefined && timeOffset > 0) {
     params.set("timeOffset", String(Math.floor(timeOffset)));
   }
@@ -402,20 +403,12 @@ export function streamUrl(
 }
 
 export function artUrl(coverArtId: string, size?: number): string {
-  // Auth via httpOnly access_token cookie (sent automatically by the browser).
-  // Do NOT embed the JWT in the URL — the token baked in at render time goes
-  // stale when the access token refreshes, causing images to 401.
-  
-  // If coverArtId is already a full URL (e.g., Last.fm), return it directly
+  // Last.fm and other absolute URLs are returned as-is.
   if (coverArtId.startsWith("http://") || coverArtId.startsWith("https://")) {
     return coverArtId;
   }
-  
-  const params = new URLSearchParams({
-    v: SUBSONIC_VERSION,
-    c: CLIENT,
-    id: coverArtId,
-  });
+  const params = authParams() ?? new URLSearchParams({ v: SUBSONIC_VERSION, c: CLIENT });
+  params.set("id", coverArtId);
   if (size) params.set("size", String(size));
   return `/rest/getCoverArt?${params}`;
 }
