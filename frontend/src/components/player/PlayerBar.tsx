@@ -4,7 +4,6 @@ import { usePlayer } from "@/stores/player";
 import { useToasts } from "@/stores/toast";
 import { formatDuration } from "@/lib/format";
 import { streamUrl, artUrl, effectiveStream } from "@/lib/subsonic";
-import { attemptRefresh, clearTokens } from "@/lib/api";
 import {
   Play,
   Pause,
@@ -23,7 +22,6 @@ export function PlayerBar() {
   const navigate = useNavigate();
   const audioRef = useRef<HTMLAudioElement>(null);
   const pushToast = useToasts((s) => s.push);
-  const retryAttemptedRef = useRef(false);
   const {
     queue,
     currentIndex,
@@ -82,9 +80,8 @@ export function PlayerBar() {
     }
   };
 
-  // Reset error/retry state and seed duration from metadata when track changes
+  // Seed duration from metadata when track changes
   useEffect(() => {
-    retryAttemptedRef.current = false;
     baseOffsetRef.current = 0;
     pendingBaseOffsetRef.current = null;
     if (currentTrack) {
@@ -162,58 +159,25 @@ export function PlayerBar() {
     next();
   }, [next]);
 
-  const handleError = useCallback(async () => {
+  const handleError = useCallback(() => {
     const audio = audioRef.current;
-    if (!audio || !currentStreamUrl) return;
-
-    if (!retryAttemptedRef.current) {
-      retryAttemptedRef.current = true;
-      // Preserve playback position so a mid-track 401 retry resumes where
-      // we were, instead of restarting the track from 0.
-      const trackTime =
-        isFinite(audio.currentTime) && audio.currentTime > 0
-          ? audio.currentTime + baseOffsetRef.current
-          : 0;
-      const resumeAt = trackTime;
-      const newToken = await attemptRefresh();
-      if (newToken) {
-        const resume = () => {
-          audio.removeEventListener("loadedmetadata", resume);
-          if (resumeAt > 0) {
-            try {
-              audio.currentTime = resumeAt - baseOffsetRef.current;
-            } catch {
-              // Seeking can fail if the server rejects the Range request;
-              // fall through and let playback start from 0.
-            }
-          }
-          if (isPlaying) audio.play().catch(() => setPlaying(false));
-        };
-        audio.addEventListener("loadedmetadata", resume);
-        audio.src = currentStreamUrl;
-        audio.load();
-      } else {
-        clearTokens();
-        window.location.replace("/login");
-      }
-    } else {
-      const code = audio.error?.code;
-      const detail =
-        code === MediaError.MEDIA_ERR_NETWORK
-          ? "Network error while streaming"
-          : code === MediaError.MEDIA_ERR_DECODE
-            ? "Audio decode error"
-            : code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
-              ? "Stream format not supported"
-              : "Stream request failed";
-      pushToast({
-        kind: "error",
-        title: `Playback failed: ${currentTrack?.title ?? "track"}`,
-        detail,
-      });
-      setPlaying(false);
-    }
-  }, [currentStreamUrl, currentTrack, isPlaying, pushToast, setPlaying]);
+    if (!audio) return;
+    const code = audio.error?.code;
+    const detail =
+      code === MediaError.MEDIA_ERR_NETWORK
+        ? "Network error while streaming"
+        : code === MediaError.MEDIA_ERR_DECODE
+          ? "Audio decode error"
+          : code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+            ? "Stream format not supported"
+            : "Stream request failed";
+    pushToast({
+      kind: "error",
+      title: `Playback failed: ${currentTrack?.title ?? "track"}`,
+      detail,
+    });
+    setPlaying(false);
+  }, [currentTrack, pushToast, setPlaying]);
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
