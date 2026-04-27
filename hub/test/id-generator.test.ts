@@ -37,15 +37,14 @@ describe("generateArtistId", () => {
   });
 
   it("should use name when no MBID", () => {
-    const id1 = generateArtistId("Radiohead", null);
-    const id2 = generateArtistId("Radiohead", null);
+    const id1 = generateArtistId("radiohead", null);
+    const id2 = generateArtistId("radiohead", null);
     expect(id1).toBe(id2);
   });
 
   it("should produce same ID for same name regardless of display name variants", () => {
-    // Note: The caller should normalize the name before passing it
-    const id1 = generateArtistId("the beatles", null);
-    const id2 = generateArtistId("the beatles", null);
+    const id1 = generateArtistId("beatles", null);
+    const id2 = generateArtistId("beatles", null);
     expect(id1).toBe(id2);
   });
 
@@ -64,8 +63,8 @@ describe("generateReleaseGroupId", () => {
   });
 
   it("should use artist ID + name when no MBID", () => {
-    const id1 = generateReleaseGroupId("OK Computer", "artist-id-123", null);
-    const id2 = generateReleaseGroupId("OK Computer", "artist-id-123", null);
+    const id1 = generateReleaseGroupId("ok computer", "artist-id-123", null);
+    const id2 = generateReleaseGroupId("ok computer", "artist-id-123", null);
     expect(id1).toBe(id2);
   });
 
@@ -84,8 +83,8 @@ describe("generateReleaseId", () => {
   });
 
   it("should use release group ID + name when no MBID", () => {
-    const id1 = generateReleaseId("OK Computer", "rg-id-123", null);
-    const id2 = generateReleaseId("OK Computer", "rg-id-123", null);
+    const id1 = generateReleaseId("ok computer", "rg-id-123", null);
+    const id2 = generateReleaseId("ok computer", "rg-id-123", null);
     expect(id1).toBe(id2);
   });
 
@@ -104,26 +103,26 @@ describe("generateTrackId", () => {
   });
 
   it("should use artist + release + title + position when no MBID", () => {
-    const id1 = generateTrackId("Paranoid Android", "artist-id", "release-id", null, 1, 1);
-    const id2 = generateTrackId("Paranoid Android", "artist-id", "release-id", null, 1, 1);
+    const id1 = generateTrackId("paranoid android", "artist-id", "release-id", null, 1, 1);
+    const id2 = generateTrackId("paranoid android", "artist-id", "release-id", null, 1, 1);
     expect(id1).toBe(id2);
   });
 
   it("should produce different IDs for different track numbers", () => {
-    const id1 = generateTrackId("Track", "artist-id", "release-id", null, 1, 1);
-    const id2 = generateTrackId("Track", "artist-id", "release-id", null, 2, 1);
+    const id1 = generateTrackId("track", "artist-id", "release-id", null, 1, 1);
+    const id2 = generateTrackId("track", "artist-id", "release-id", null, 2, 1);
     expect(id1).not.toBe(id2);
   });
 
   it("should produce different IDs for different disc numbers", () => {
-    const id1 = generateTrackId("Track", "artist-id", "release-id", null, 1, 1);
-    const id2 = generateTrackId("Track", "artist-id", "release-id", null, 1, 2);
+    const id1 = generateTrackId("track", "artist-id", "release-id", null, 1, 1);
+    const id2 = generateTrackId("track", "artist-id", "release-id", null, 1, 2);
     expect(id1).not.toBe(id2);
   });
 
   it("should handle null track numbers", () => {
-    const id1 = generateTrackId("Track", "artist-id", "release-id", null, null, null);
-    const id2 = generateTrackId("Track", "artist-id", "release-id", null, null, null);
+    const id1 = generateTrackId("track", "artist-id", "release-id", null, null, null);
+    const id2 = generateTrackId("track", "artist-id", "release-id", null, null, null);
     expect(id1).toBe(id2);
   });
 });
@@ -177,9 +176,8 @@ describe("Cross-peer ID stability", () => {
   });
 
   it("should produce identical IDs for fallback matching across peers", () => {
-    // Same track without MBID, same metadata on both peers
     const peer1Id = generateTrackId(
-      "Comfortably Numb",
+      "comfortably numb",
       "pink-floyd-id",
       "the-wall-id",
       null,
@@ -187,7 +185,7 @@ describe("Cross-peer ID stability", () => {
       1,
     );
     const peer2Id = generateTrackId(
-      "Comfortably Numb",
+      "comfortably numb",
       "pink-floyd-id",
       "the-wall-id",
       null,

@@ -367,8 +367,8 @@ describe("mergeLibraries", () => {
       .all() as Array<Record<string, unknown>>;
     expect(artists).toHaveLength(1);
 
-    // ID should be generated from the representative's name (first in group)
-    const expectedId = generateArtistId("The Beatles", null);
+    // ID should be generated from the normalized name
+    const expectedId = generateArtistId("beatles", null);
     expect(artists[0].id).toBe(expectedId);
   });
 
@@ -397,8 +397,8 @@ describe("mergeLibraries", () => {
 
     // Get the unified artist ID first
     const artists = db.prepare("SELECT id FROM unified_artists WHERE musicbrainz_id = ?")
-      .get() as { id: string };
-    const expectedId = generateReleaseGroupId("OK Computer", artists.id, rgMbid);
+      .get(mbid) as { id: string };
+    const expectedId = generateReleaseGroupId("ok computer", artists.id, rgMbid);
     expect(releaseGroups[0].id).toBe(expectedId);
   });
 
@@ -442,10 +442,10 @@ describe("mergeLibraries", () => {
 
     // Get artist and release IDs to compute expected track ID
     const artists = db.prepare("SELECT id FROM unified_artists WHERE musicbrainz_id = ?")
-      .get() as { id: string };
+      .get(artistMbid) as { id: string };
     const releases = db.prepare("SELECT id FROM unified_releases WHERE musicbrainz_id = ?")
-      .get() as { id: string };
-    const expectedId = generateTrackId("Paranoid Android", artists.id, releases.id, recordingMbid, 1, 1);
+      .get(releaseMbid) as { id: string };
+    const expectedId = generateTrackId("paranoid android", artists.id, releases.id, recordingMbid, 1, 1);
     expect(tracks[0].id).toBe(expectedId);
   });
 
@@ -472,11 +472,11 @@ describe("mergeLibraries", () => {
     expect(tracks).toHaveLength(1);
 
     // Get artist and release IDs to compute expected track ID
-    const artists = db.prepare("SELECT id FROM unified_artists WHERE name = ?")
-      .get() as { id: string };
+    const artists = db.prepare("SELECT id FROM unified_artists WHERE name_normalized = ?")
+      .get("pink floyd") as { id: string };
     const releases = db.prepare("SELECT id FROM unified_releases")
       .get() as { id: string };
-    const expectedId = generateTrackId("Comfortably Numb", artists.id, releases.id, null, 1, 1);
+    const expectedId = generateTrackId("comfortably numb", artists.id, releases.id, null, 1, 1);
     expect(tracks[0].id).toBe(expectedId);
   });
 
