@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { usePlayer } from "@/stores/player";
 import { useToasts } from "@/stores/toast";
@@ -58,7 +58,14 @@ export function PlayerBar() {
   // leave audio.currentTime at 0.
   const pendingBaseOffsetRef = useRef<number | null>(null);
 
-  const currentStreamUrl = currentTrack ? streamUrl(currentTrack.id) : null;
+  // streamUrl() generates a fresh u+t+s salt per call, so we MUST memoize
+  // by track id — otherwise every render produces a new string, every
+  // [currentStreamUrl] effect re-fires, and React throws "Maximum update
+  // depth exceeded" (#185) the moment a track loads. See PlayerBar.test.tsx.
+  const currentStreamUrl = useMemo(
+    () => (currentTrack ? streamUrl(currentTrack.id) : null),
+    [currentTrack?.id],
+  );
   const streamed = currentTrack ? effectiveStream(currentTrack) : null;
   const isTranscoded = streamed?.bitRateIsCap === true;
   const sourceLabel = currentTrack?.suffix && currentTrack.bitRate
