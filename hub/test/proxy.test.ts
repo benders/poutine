@@ -282,6 +282,25 @@ describe("proxy — auth accept: Subsonic u+p", () => {
     });
     expect(res.statusCode).toBe(200);
   });
+
+  it("allows a request with valid u+t+s (#106)", async () => {
+    const { createHash } = await import("node:crypto");
+    const salt = "deadbeef";
+    const token = createHash("md5").update("secret" + salt).digest("hex");
+    const res = await setup.app.inject({
+      method: "GET",
+      url: `/proxy/rest/ping?u=tester&t=${token}&s=${salt}&f=json`,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("rejects u+t+s with wrong token (#106)", async () => {
+    const res = await setup.app.inject({
+      method: "GET",
+      url: `/proxy/rest/ping?u=tester&t=${"0".repeat(32)}&s=any&f=json`,
+    });
+    expect(res.statusCode).toBe(401);
+  });
 });
 
 // ── Auth reject tests ──────────────────────────────────────────────────────────
