@@ -87,4 +87,27 @@ describe("subsonicFetch — redirect on auth error codes", () => {
     await expect(getArtists()).rejects.toBeInstanceOf(SubsonicError);
     expect(replaceSpy).not.toHaveBeenCalled();
   });
+
+  it("redirects to /login when Subsonic creds are missing client-side (#111 upgrade path)", async () => {
+    // Pre-#106 install: JWT survives in localStorage but
+    // subsonicUser/subsonicPass were never written. authParams() returns
+    // null and subsonicFetch must redirect rather than just throwing
+    // SubsonicError(10) — otherwise the SPA shows "Subsonic error code 10"
+    // and stays put.
+    setSubsonicCreds(null);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await expect(getArtists()).rejects.toBeInstanceOf(SubsonicError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(replaceSpy).toHaveBeenCalledWith("/login");
+  });
+
+  it("does NOT redirect when already on /login (avoid redirect loop)", async () => {
+    setSubsonicCreds(null);
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, pathname: "/login", replace: replaceSpy },
+    });
+    await expect(getArtists()).rejects.toBeInstanceOf(SubsonicError);
+    expect(replaceSpy).not.toHaveBeenCalled();
+  });
 });
