@@ -153,18 +153,14 @@ export function createRequireProxyAuth(deps: {
     }
 
     const user = db
-      .prepare("SELECT id, username, password_hash FROM users WHERE username = ?")
-      .get(username) as { id: string; username: string; password_hash: string } | undefined;
+      .prepare("SELECT id, username, password_enc FROM users WHERE username = ?")
+      .get(username) as { id: string; username: string; password_enc: string } | undefined;
 
     if (!user) {
       reply.code(401).send({ error: "Wrong username or password" });
       return;
     }
 
-    // u+p plaintext (or enc:<hex>) auth
-    // Note: Subsonic u+t+s token auth (MD5 over password+salt) is not supported
-    // because Poutine stores Argon2id hashes, not plaintext passwords. Clients
-    // using t+s that also send u+p will fall through to the u+p check below.
     let password = q.p;
     if (!password) {
       reply.code(401).send({ error: "Authentication required" });
@@ -175,7 +171,7 @@ export function createRequireProxyAuth(deps: {
       password = Buffer.from(password.slice(4), "hex").toString("utf8");
     }
 
-    const valid = await verifyPassword(user.password_hash, password);
+    const valid = verifyPassword(user.password_enc, password, app.passwordKey);
     if (!valid) {
       reply.code(401).send({ error: "Wrong username or password" });
       return;

@@ -11,7 +11,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,                -- UUID
   username TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,        -- Argon2id
+  password_enc TEXT NOT NULL DEFAULT '', -- AES-256-GCM(plaintext) ‖ tag, base64
   is_admin INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))

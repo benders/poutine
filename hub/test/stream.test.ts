@@ -18,7 +18,7 @@ import fs from "node:fs";
 import type { AddressInfo } from "node:net";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/server.js";
-import { hashPassword } from "../src/auth/passwords.js";
+import { setPassword } from "../src/auth/passwords.js";
 import { loadOrCreatePrivateKey } from "../src/federation/signing.js";
 import { syncPeer } from "../src/library/sync-peer.js";
 import { mergeLibraries } from "../src/library/merge.js";
@@ -200,17 +200,17 @@ function writeYaml(filePath: string, content: string) {
   fs.writeFileSync(filePath, content, "utf8");
 }
 
-async function seedUser(
+function seedUser(
   app: FastifyInstance,
   username = "tester",
   password = "secret",
 ) {
-  const hash = await hashPassword(password);
+  const enc = setPassword(password, app.passwordKey);
   app.db
     .prepare(
-      "INSERT INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, 1)",
+      "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 1)",
     )
-    .run("user-1", username, hash);
+    .run("user-1", username, enc);
 }
 
 function seedLocalTrack(app: FastifyInstance) {
@@ -246,7 +246,7 @@ describe("stream — error cases", () => {
   beforeEach(async () => {
     app = await buildApp({ databasePath: ":memory:", jwtSecret: "test-secret" });
     await app.ready();
-    await seedUser(app);
+    seedUser(app);
   });
 
   afterEach(async () => {
@@ -298,7 +298,7 @@ describe("stream — local source", () => {
     });
     await app.ready();
 
-    await seedUser(app);
+    seedUser(app);
     seedLocalTrack(app);
   });
 
@@ -459,7 +459,7 @@ describe("stream — peer source", () => {
     mergeLibraries(appA.db);
 
     // Seed A's user so Subsonic auth passes
-    await seedUser(appA);
+    seedUser(appA);
   });
 
   afterEach(async () => {
@@ -637,7 +637,7 @@ async function buildSharedTrackSetup(opts: {
   await syncPeer(appA.db, peerB!, appA.federatedFetch, "tester");
   mergeLibraries(appA.db);
 
-  await seedUser(appA);
+  seedUser(appA);
 
   return { appA, appB, navA, navB, keyPathA, keyPathB, peersYamlA, peersYamlB };
 }

@@ -16,7 +16,7 @@ import fs from "node:fs";
 import type { AddressInfo } from "node:net";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/server.js";
-import { hashPassword } from "../src/auth/passwords.js";
+import { setPassword } from "../src/auth/passwords.js";
 import { createAccessToken } from "../src/auth/jwt.js";
 import {
   loadOrCreatePrivateKey,
@@ -68,18 +68,18 @@ function startFakeNavidrome(response = FAKE_AUDIO): Promise<{
   });
 }
 
-async function seedUser(
+function seedUser(
   app: FastifyInstance,
   username = "tester",
   password = "secret",
-): Promise<{ id: string; username: string }> {
-  const hash = await hashPassword(password);
+): { id: string; username: string } {
+  const enc = setPassword(password, app.passwordKey);
   const id = "user-proxy-test";
   app.db
     .prepare(
-      "INSERT OR IGNORE INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, 1)",
+      "INSERT OR IGNORE INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 1)",
     )
-    .run(id, username, hash);
+    .run(id, username, enc);
   return { id, username };
 }
 
@@ -217,7 +217,7 @@ describe("proxy — auth accept: JWT", () => {
 
   beforeEach(async () => {
     setup = await buildTestSetup();
-    ({ id: userId } = await seedUser(setup.app));
+    ({ id: userId } = seedUser(setup.app));
   });
 
   afterEach(async () => {
@@ -259,7 +259,7 @@ describe("proxy — auth accept: Subsonic u+p", () => {
 
   beforeEach(async () => {
     setup = await buildTestSetup();
-    await seedUser(setup.app);
+    seedUser(setup.app);
   });
 
   afterEach(async () => {
@@ -291,7 +291,7 @@ describe("proxy — auth reject", () => {
 
   beforeEach(async () => {
     setup = await buildTestSetup();
-    await seedUser(setup.app);
+    seedUser(setup.app);
   });
 
   afterEach(async () => {
@@ -375,7 +375,7 @@ describe("proxy — streaming passthrough", () => {
 
   beforeEach(async () => {
     setup = await buildTestSetup();
-    ({ id: userId } = await seedUser(setup.app));
+    ({ id: userId } = seedUser(setup.app));
   });
 
   afterEach(async () => {
@@ -483,7 +483,7 @@ describe("proxy — streaming passthrough", () => {
       navidromePassword: "admin",
     });
     await appLocal.ready();
-    const { id: uid } = await seedUser(appLocal, "enc-user", "enc-pass");
+    const { id: uid } = seedUser(appLocal, "enc-user", "enc-pass");
     const jwt = await createAccessToken(uid, appLocal.config);
 
     try {
@@ -565,7 +565,7 @@ describe("proxy — concurrency smoke test", () => {
       pubKeyBase64A: "",
     };
 
-    ({ id: userId } = await seedUser(app));
+    ({ id: userId } = seedUser(app));
   });
 
   afterEach(async () => {

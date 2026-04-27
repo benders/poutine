@@ -83,10 +83,10 @@ export async function requireSubsonicAuth(
 
   const user = db
     .prepare(
-      "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
+      "SELECT id, username, password_enc, is_admin FROM users WHERE username = ?",
     )
     .get(username) as
-    | { id: string; username: string; password_hash: string; is_admin: number }
+    | { id: string; username: string; password_enc: string; is_admin: number }
     | undefined;
 
   if (!user) {
@@ -94,7 +94,7 @@ export async function requireSubsonicAuth(
     return;
   }
 
-  const valid = await verifyPassword(user.password_hash, password);
+  const valid = verifyPassword(user.password_enc, password, app.passwordKey);
   if (!valid) {
     sendSubsonicError(reply, 40, "Wrong username or password", query);
     return;
@@ -158,10 +158,10 @@ export async function requireSubsonicAuthBinary(
 
   const user = db
     .prepare(
-      "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
+      "SELECT id, username, password_enc, is_admin FROM users WHERE username = ?",
     )
     .get(username) as
-    | { id: string; username: string; password_hash: string; is_admin: number }
+    | { id: string; username: string; password_enc: string; is_admin: number }
     | undefined;
 
   if (!user) {
@@ -169,7 +169,7 @@ export async function requireSubsonicAuthBinary(
     return;
   }
 
-  const valid = await verifyPassword(user.password_hash, password);
+  const valid = verifyPassword(user.password_enc, password, app.passwordKey);
   if (!valid) {
     sendBinaryError(reply, 401, "Wrong username or password");
     return;

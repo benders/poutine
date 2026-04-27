@@ -1,17 +1,33 @@
-import argon2 from "argon2";
+import {
+  encryptPassword,
+  decryptPassword,
+  constantTimeEqual,
+} from "./password-crypto.js";
 
-export async function hashPassword(password: string): Promise<string> {
-  return argon2.hash(password, {
-    type: argon2.argon2id,
-    memoryCost: 65536,
-    timeCost: 3,
-    parallelism: 4,
-  });
+export function setPassword(plain: string, key: Buffer): string {
+  return encryptPassword(plain, key);
 }
 
-export async function verifyPassword(
-  hash: string,
-  password: string
-): Promise<boolean> {
-  return argon2.verify(hash, password);
+export function verifyPassword(
+  enc: string,
+  candidate: string,
+  key: Buffer,
+): boolean {
+  if (!enc) return false;
+  let stored: string;
+  try {
+    stored = decryptPassword(enc, key);
+  } catch {
+    return false;
+  }
+  return constantTimeEqual(stored, candidate);
+}
+
+export function getStoredPassword(enc: string, key: Buffer): string | null {
+  if (!enc) return null;
+  try {
+    return decryptPassword(enc, key);
+  } catch {
+    return null;
+  }
 }

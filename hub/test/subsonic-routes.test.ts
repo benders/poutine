@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { buildApp } from "../src/server.js";
-import { hashPassword } from "../src/auth/passwords.js";
+import { setPassword } from "../src/auth/passwords.js";
 import type { FastifyInstance } from "fastify";
 import type { Config } from "../src/config.js";
 
@@ -9,17 +9,17 @@ const testConfig: Partial<Config> = {
   jwtSecret: "test-secret-key-for-testing-purposes",
 };
 
-async function seedUser(
+function seedUser(
   app: FastifyInstance,
   username = "tester",
   password = "secret",
 ) {
-  const hash = await hashPassword(password);
+  const enc = setPassword(password, app.passwordKey);
   app.db
     .prepare(
-      "INSERT INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, 1)",
+      "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 1)",
     )
-    .run("user-1", username, hash);
+    .run("user-1", username, enc);
 }
 
 describe("Subsonic routes — auth", () => {
@@ -28,7 +28,7 @@ describe("Subsonic routes — auth", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedUser(app);
+    seedUser(app);
   });
 
   afterEach(async () => {
@@ -151,7 +151,7 @@ describe("Subsonic routes — endpoints", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedUser(app);
+    seedUser(app);
   });
 
   afterEach(async () => {

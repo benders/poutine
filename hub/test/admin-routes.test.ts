@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/server.js";
-import { hashPassword } from "../src/auth/passwords.js";
+import { setPassword } from "../src/auth/passwords.js";
 import type { Config } from "../src/config.js";
 
 const testConfig: Partial<Config> = {
@@ -15,17 +15,17 @@ const testConfig: Partial<Config> = {
   jwtSecret: "test-secret-key-for-admin-tests",
 };
 
-async function seedAdmin(
+function seedAdmin(
   app: FastifyInstance,
   username = "owner",
   password = "adminpass",
-): Promise<string> {
-  const hash = await hashPassword(password);
+): string {
+  const enc = setPassword(password, app.passwordKey);
   app.db
     .prepare(
-      "INSERT INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, 1)",
+      "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 1)",
     )
-    .run("admin-1", username, hash);
+    .run("admin-1", username, enc);
   return password;
 }
 
@@ -56,7 +56,7 @@ describe("admin — login", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedAdmin(app);
+    seedAdmin(app);
   });
 
   afterEach(async () => {
@@ -105,12 +105,12 @@ describe("admin — login", () => {
   });
 
   it("non-admin user → 403", async () => {
-    const hash = await hashPassword("guestpass1");
+    const enc = setPassword("guestpass1", app.passwordKey);
     app.db
       .prepare(
-        "INSERT INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, 0)",
+        "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 0)",
       )
-      .run("guest-1", "guest", hash);
+      .run("guest-1", "guest", enc);
 
     const res = await app.inject({
       method: "POST",
@@ -135,7 +135,7 @@ describe("admin — me", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedAdmin(app);
+    seedAdmin(app);
     token = await loginAs(app, "owner", "adminpass");
   });
 
@@ -165,7 +165,7 @@ describe("admin — users CRUD", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedAdmin(app);
+    seedAdmin(app);
     token = await loginAs(app, "owner", "adminpass");
   });
 
@@ -281,7 +281,7 @@ describe("admin — peers", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedAdmin(app);
+    seedAdmin(app);
     token = await loginAs(app, "owner", "adminpass");
   });
 
@@ -309,7 +309,7 @@ describe("admin — delete peer data", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedAdmin(app);
+    seedAdmin(app);
     token = await loginAs(app, "owner", "adminpass");
 
     // Seed a fake peer instance and some peer data
@@ -390,7 +390,7 @@ describe("admin — sync", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedAdmin(app);
+    seedAdmin(app);
     token = await loginAs(app, "owner", "adminpass");
   });
 
@@ -431,7 +431,7 @@ describe("admin — instance", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedAdmin(app);
+    seedAdmin(app);
     token = await loginAs(app, "owner", "adminpass");
 
     fetchMock = vi.fn();
@@ -546,7 +546,7 @@ describe("admin — cache", () => {
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
-    await seedAdmin(app);
+    seedAdmin(app);
     token = await loginAs(app, "owner", "adminpass");
   });
 

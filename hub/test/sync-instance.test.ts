@@ -123,7 +123,7 @@ describe("multi-instance merge via proxy", () => {
 
     ownerId = crypto.randomUUID();
     db.prepare(
-      "INSERT INTO users (id, username, password_hash, is_admin) VALUES (?, ?, ?, ?)",
+      "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, ?)",
     ).run(ownerId, "admin", "fakehash", 1);
 
     db.prepare(
