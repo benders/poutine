@@ -191,7 +191,7 @@ function AlbumCard({
       >
         {album.coverArt ? (
           <img
-            src={artUrl(album.coverArt, 300)}
+            src={artUrl(album.coverArt, 300) ?? undefined}
             alt={album.name}
             className="w-full h-full object-cover"
             loading="lazy"

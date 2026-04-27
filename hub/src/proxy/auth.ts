@@ -172,6 +172,11 @@ export function createRequireProxyAuth(deps: {
         }
         valid = verifyPassword(user.password_enc, password, app.passwordKey);
       } else if (hasToken) {
+        // Subsonic spec requires salt ≥ 6 chars; reject short salts.
+        if (q.s.length < 6) {
+          reply.code(401).send({ error: "Salt too short (minimum 6 characters)" });
+          return;
+        }
         const stored = getStoredPassword(user.password_enc, app.passwordKey);
         if (stored !== null) {
           const expected = crypto

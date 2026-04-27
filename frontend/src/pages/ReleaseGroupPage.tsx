@@ -66,7 +66,7 @@ export function ReleaseGroupPage() {
         >
           {album.coverArt ? (
             <img
-              src={artUrl(album.coverArt, 400)}
+              src={artUrl(album.coverArt, 400) ?? undefined}
               alt={album.name}
               className="w-full h-full object-cover"
             />

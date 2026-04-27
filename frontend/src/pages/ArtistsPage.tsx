@@ -65,7 +65,7 @@ export function ArtistsPage() {
           >
             {artist.coverArt ? (
               <img
-                src={artUrl(artist.coverArt, 300)}
+                src={artUrl(artist.coverArt, 300) ?? undefined}
                 alt={artist.name}
                 className="w-full h-full object-cover"
                 loading="lazy"
