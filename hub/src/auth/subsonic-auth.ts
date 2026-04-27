@@ -1,5 +1,6 @@
+import crypto from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { verifyPassword } from "./passwords.js";
+import { verifyPassword, getStoredPassword } from "./passwords.js";
 import { verifyToken } from "./jwt.js";
 import { sendSubsonicError, sendBinaryError } from "../routes/subsonic-response.js";
 
@@ -23,6 +24,65 @@ function extractJwt(request: FastifyRequest): string | undefined {
   if (query?.token) return query.token;
 
   return undefined;
+}
+
+interface SubsonicCreds {
+  hasAny: boolean;     // u present plus any of (p | t+s)
+  username?: string;
+  password?: string;   // decoded plaintext password (if u+p path)
+  token?: string;      // md5 hex (if u+t+s path)
+  salt?: string;       // salt (if u+t+s path)
+}
+
+function readSubsonicCreds(query: Record<string, string>): SubsonicCreds {
+  const username = query.u;
+  if (!username) return { hasAny: false };
+
+  if (query.t && query.s) {
+    return {
+      hasAny: true,
+      username,
+      token: query.t.toLowerCase(),
+      salt: query.s,
+    };
+  }
+
+  if (query.p) {
+    let password = query.p;
+    if (password.startsWith("enc:")) {
+      password = Buffer.from(password.slice(4), "hex").toString("utf8");
+    }
+    return { hasAny: true, username, password };
+  }
+
+  return { hasAny: false, username };
+}
+
+/**
+ * Verify u+p (plaintext or enc:<hex>) or u+t+s (MD5 token+salt).
+ * Returns true on success. Both forms are supported per Subsonic spec.
+ */
+function verifySubsonicCreds(
+  creds: SubsonicCreds,
+  passwordEnc: string,
+  passwordKey: Buffer,
+): boolean {
+  if (creds.password !== undefined) {
+    return verifyPassword(passwordEnc, creds.password, passwordKey);
+  }
+  if (creds.token && creds.salt) {
+    const stored = getStoredPassword(passwordEnc, passwordKey);
+    if (stored === null) return false;
+    const expected = crypto
+      .createHash("md5")
+      .update(stored + creds.salt)
+      .digest("hex");
+    const a = Buffer.from(expected, "utf8");
+    const b = Buffer.from(creds.token, "utf8");
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  }
+  return false;
 }
 
 export async function requireSubsonicAuth(
@@ -53,20 +113,16 @@ export async function requireSubsonicAuth(
         return;
       }
     } catch {
-      // JWT invalid/expired — fall through to Subsonic param auth if u+p present
+      // JWT invalid/expired — fall through to Subsonic param auth if creds present
     }
   }
 
-  // ── Fall back to Subsonic query-param auth (u+p) for third-party clients ──
-  const username = query.u;
-  let password = query.p;
-
-  if (!username || !password) {
-    // A JWT was presented but failed verification and there are no legacy
-    // Subsonic params to fall back to. This is the SPA path (expired access
-    // token); return HTTP 401 so the browser's silent-refresh logic kicks in.
-    // Without this, the SPA sees a 200 + Subsonic envelope error 10 and has
-    // no way to know it should refresh (issue #43).
+  // ── Subsonic query-param auth: u+p or u+t+s ──────────────────────────────────
+  const creds = readSubsonicCreds(query);
+  if (!creds.hasAny) {
+    // A JWT was presented but failed verification and there are no Subsonic
+    // params to fall back to. SPA path (expired access token) — return HTTP 401
+    // so the browser's silent-refresh logic kicks in (issue #43).
     if (jwt) {
       reply.code(401).send({ error: "Authentication required" });
       return;
@@ -75,27 +131,15 @@ export async function requireSubsonicAuth(
     return;
   }
 
-  // Decode enc:<HEX> prefix — Subsonic clients sometimes send hex-encoded passwords
-  if (password.startsWith("enc:")) {
-    const hex = password.slice(4);
-    password = Buffer.from(hex, "hex").toString("utf8");
-  }
-
   const user = db
     .prepare(
       "SELECT id, username, password_enc, is_admin FROM users WHERE username = ?",
     )
-    .get(username) as
+    .get(creds.username!) as
     | { id: string; username: string; password_enc: string; is_admin: number }
     | undefined;
 
-  if (!user) {
-    sendSubsonicError(reply, 40, "Wrong username or password", query);
-    return;
-  }
-
-  const valid = verifyPassword(user.password_enc, password, app.passwordKey);
-  if (!valid) {
+  if (!user || !verifySubsonicCreds(creds, user?.password_enc ?? "", app.passwordKey)) {
     sendSubsonicError(reply, 40, "Wrong username or password", query);
     return;
   }
@@ -143,34 +187,21 @@ export async function requireSubsonicAuthBinary(
     }
   }
 
-  const username = query.u;
-  let password = query.p;
-
-  if (!username || !password) {
+  const creds = readSubsonicCreds(query);
+  if (!creds.hasAny) {
     sendBinaryError(reply, 401, "Authentication required");
     return;
-  }
-
-  if (password.startsWith("enc:")) {
-    const hex = password.slice(4);
-    password = Buffer.from(hex, "hex").toString("utf8");
   }
 
   const user = db
     .prepare(
       "SELECT id, username, password_enc, is_admin FROM users WHERE username = ?",
     )
-    .get(username) as
+    .get(creds.username!) as
     | { id: string; username: string; password_enc: string; is_admin: number }
     | undefined;
 
-  if (!user) {
-    sendBinaryError(reply, 401, "Wrong username or password");
-    return;
-  }
-
-  const valid = verifyPassword(user.password_enc, password, app.passwordKey);
-  if (!valid) {
+  if (!user || !verifySubsonicCreds(creds, user?.password_enc ?? "", app.passwordKey)) {
     sendBinaryError(reply, 401, "Wrong username or password");
     return;
   }

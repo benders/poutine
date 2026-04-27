@@ -15,7 +15,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { FEDERATION_API_VERSION } from "../version.js";
 import { canonicalSigningPayload, verifyRequest } from "../federation/signing.js";
 import { verifyToken } from "../auth/jwt.js";
-import { verifyPassword } from "../auth/passwords.js";
+import { verifyPassword, getStoredPassword } from "../auth/passwords.js";
 import type { PeerRegistry } from "../federation/peers.js";
 
 export interface ProxyAuthInfo {
@@ -152,27 +152,40 @@ export function createRequireProxyAuth(deps: {
       return;
     }
 
-    const user = db
-      .prepare("SELECT id, username, password_enc FROM users WHERE username = ?")
-      .get(username) as { id: string; username: string; password_enc: string } | undefined;
-
-    if (!user) {
-      reply.code(401).send({ error: "Wrong username or password" });
-      return;
-    }
-
-    let password = q.p;
-    if (!password) {
+    const hasPlaintext = typeof q.p === "string" && q.p.length > 0;
+    const hasToken = typeof q.t === "string" && typeof q.s === "string";
+    if (!hasPlaintext && !hasToken) {
       reply.code(401).send({ error: "Authentication required" });
       return;
     }
 
-    if (password.startsWith("enc:")) {
-      password = Buffer.from(password.slice(4), "hex").toString("utf8");
+    const user = db
+      .prepare("SELECT id, username, password_enc FROM users WHERE username = ?")
+      .get(username) as { id: string; username: string; password_enc: string } | undefined;
+
+    let valid = false;
+    if (user) {
+      if (hasPlaintext) {
+        let password = q.p;
+        if (password.startsWith("enc:")) {
+          password = Buffer.from(password.slice(4), "hex").toString("utf8");
+        }
+        valid = verifyPassword(user.password_enc, password, app.passwordKey);
+      } else if (hasToken) {
+        const stored = getStoredPassword(user.password_enc, app.passwordKey);
+        if (stored !== null) {
+          const expected = crypto
+            .createHash("md5")
+            .update(stored + q.s)
+            .digest("hex");
+          const a = Buffer.from(expected, "utf8");
+          const b = Buffer.from(q.t.toLowerCase(), "utf8");
+          valid = a.length === b.length && crypto.timingSafeEqual(a, b);
+        }
+      }
     }
 
-    const valid = verifyPassword(user.password_enc, password, app.passwordKey);
-    if (!valid) {
+    if (!user || !valid) {
       reply.code(401).send({ error: "Wrong username or password" });
       return;
     }

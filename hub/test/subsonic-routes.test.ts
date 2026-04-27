@@ -133,6 +133,48 @@ describe("Subsonic routes — auth", () => {
     expect(res.json()["subsonic-response"].status).toBe("ok");
   });
 
+  // ── u+t+s (MD5 token+salt) auth — issue #106 ──────────────────────────────
+  it("ping with valid u+t+s → status ok", async () => {
+    const { createHash } = await import("node:crypto");
+    const salt = "abc123";
+    const token = createHash("md5").update("secret" + salt).digest("hex");
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/ping?u=tester&t=${token}&s=${salt}&f=json`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()["subsonic-response"].status).toBe("ok");
+  });
+
+  it("ping with u+t+s wrong token → error code 40", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/ping?u=tester&t=${"0".repeat(32)}&s=abc&f=json`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()["subsonic-response"].error.code).toBe(40);
+  });
+
+  it("ping with u+t+s wrong salt → error code 40", async () => {
+    const { createHash } = await import("node:crypto");
+    const token = createHash("md5").update("secret" + "good-salt").digest("hex");
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/ping?u=tester&t=${token}&s=bad-salt&f=json`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()["subsonic-response"].error.code).toBe(40);
+  });
+
+  it("ping with u+t+s unknown user → error code 40 (no enumeration)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/ping?u=nobody&t=${"0".repeat(32)}&s=abc&f=json`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()["subsonic-response"].error.code).toBe(40);
+  });
+
   it("ping with unknown username → error code 40", async () => {
     const res = await app.inject({
       method: "GET",
