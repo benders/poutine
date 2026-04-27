@@ -27,9 +27,10 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `NAVIDROME_USERNAME`         | prod     | —                            | Navidrome admin user                                            |
 | `NAVIDROME_PASSWORD`         | prod     | —                            | Navidrome admin password                                        |
 | `POUTINE_INSTANCE_ID`        | prod     | —                            | Unique instance ID (e.g. `poutine-alice`)                       |
-| `POUTINE_OWNER_USERNAME`     | no       | —                            | Seeds owner on first boot if `users` is empty                   |
-| `POUTINE_OWNER_PASSWORD`     | no       | —                            | Seeds owner on first boot if `users` is empty                   |
-| `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Auto-generated if absent                                        |
+| `POUTINE_OWNER_USERNAME`     | no       | —                            | Seeds owner on first boot; also used to recover post-#106 migration |
+| `POUTINE_OWNER_PASSWORD`     | no       | —                            | Seeds owner on first boot; also used to recover post-#106 migration |
+| `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Ed25519 federation key. Auto-generated if absent                |
+| `POUTINE_PASSWORD_KEY_PATH`  | no       | `./data/poutine_password_key`| AES-256 password encryption key (32 bytes, base64, mode 0600). Auto-generated if absent. **Back this up — losing it makes every stored password unrecoverable.** |
 | `POUTINE_PEERS_CONFIG`       | no       | `./config/peers.yaml`        | Peer registry file                                              |
 | `PUBLIC_DIR`                 | no       | —                            | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
 
@@ -39,8 +40,8 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 
 | Surface           | Prefix          | Auth                                                             | Purpose                                   |
 |-------------------|-----------------|------------------------------------------------------------------|--------------------------------------------|
-| Subsonic          | `/rest/*`       | JWT or Subsonic `u`+`p` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art — see [opensubsonic.md](opensubsonic.md) for compatibility |
-| Proxy             | `/proxy/*`      | Ed25519, JWT, or Subsonic `u`+`p` (unified — see below)          | Authenticated transparent proxy to Navidrome |
+| Subsonic          | `/rest/*`       | Subsonic `u+p` or `u+t+s` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art — see [opensubsonic.md](opensubsonic.md) for compatibility |
+| Proxy             | `/proxy/*`      | Ed25519, JWT, or Subsonic `u+p`/`u+t+s` (unified — see below)    | Authenticated transparent proxy to Navidrome |
 | Federation        | `/federation/*` | Ed25519-signed (see [federation-api.md](federation-api.md))      | Peer-to-peer only                         |
 | Admin             | `/admin/*`      | JWT (see [authentication.md](authentication.md))                 | Users CRUD, peers, sync, cache, instance  |
 | Health            | `/api/health`   | None                                                             | `{ status, appVersion, apiVersion }`      |
@@ -59,7 +60,7 @@ Transparent authenticated proxy to the local Navidrome. Introduced in Phase 1 (i
 
 1. **Ed25519** — all four `x-poutine-*` headers present → validated against `peers.yaml` registry (same logic as federation). `request.proxyAuth.kind = "peer"`.
 2. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param → verified with `verifyToken`. `request.proxyAuth.kind = "jwt"`.
-3. **Subsonic u+p** — `u` + `p` query params (plaintext or `enc:<hex>`), verified via Argon2id. `request.proxyAuth.kind = "subsonic"`. Note: `u+t+s` (MD5 token auth) is not supported — Poutine stores Argon2id hashes, not plaintext.
+3. **Subsonic u+p / u+t+s** — `u` + `p` (plaintext or `enc:<hex>`) **or** `u` + `t` + `s` (MD5 token+salt). Verified by AES-decrypting `users.password_enc` and either constant-time comparing the plaintext or recomputing `md5(plaintext + salt)`. `request.proxyAuth.kind = "subsonic"`.
 
 Returns `401` if all three methods fail.
 
@@ -92,7 +93,7 @@ Contract: [federation-api.md](federation-api.md). Read before modifying `/federa
 - **`track_sources`** keys each source by `instance_id` (matches `instances.id` — `'local'` for the bundled Navidrome, peer id for federated peers). Streaming routes branch on whether `instance_id === 'local'`; peer routes use `instance_id` to look up the peer in the registry. `remote_id` is fetched from `instance_tracks` via JOIN when needed for streaming.
 - **`selectBestSource()`** (`hub/src/library/source-selection.ts`) scores sources by format quality → bitrate → local tie-break. Single decision point for stream routing.
 - **Catalog sync flow (Phase 2+):**
-  - `syncLocal` (`sync-local.ts`) reads the local Navidrome by hitting its Subsonic API directly with t+s creds (via `createLocalProxyFetch` pointed at `config.navidromeUrl` — bypasses `/proxy/*` to avoid an internal Argon2id round-trip).
+  - `syncLocal` (`sync-local.ts`) reads the local Navidrome by hitting its Subsonic API directly with t+s creds (via `createLocalProxyFetch` pointed at `config.navidromeUrl` — bypasses `/proxy/*` to avoid an internal password-decrypt round-trip).
   - `syncPeer` (`sync-peer.ts`) reads a peer's Navidrome via the peer's `/proxy/rest/*` using Ed25519-signed requests (`createFederationFetcher`). The signing path includes `/proxy` prefix as seen by the peer's Fastify router.
   - Both funnel through `readNavidromeViaProxy` (`sync-instance.ts`) which calls `getArtists` → `getArtist` (per-artist) → `getAlbum` (per-album), upserts into `instance_*` tables, and prunes stale rows on success (tracks/albums/artists no longer returned get deleted from `instance_*`).
 - **Track dedup across hubs** requires: (1) matching normalized title + `track_number` + duration (±3 s); AND (2) falling under the same `unified_release`, which requires their parent albums share normalized artist name, normalized album name, AND `track_count`. Mismatched `track_count` creates a separate release even within the same release group.
@@ -172,7 +173,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 - **`hub/Dockerfile`** — multi-stage: `deps` (all deps) → `prod-deps` (prod-only deps, compiles native addons) → `build` (`tsc` + `vite build` + copy sql) → `runtime` (`node:22-slim`, no build tools — copies pre-built node_modules from `prod-deps`). Frontend `dist/` copied into `hub/public/`. `PUBLIC_DIR=/app/hub/public` baked in. `deps` and `prod-deps` run independently and can be parallelized by BuildKit.
 - **`docker-compose.yml`** — hub (port `${POUTINE_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports). Single service for both API and SPA. `PEERS_CONFIG_HOST_PATH` overrides the peers.yaml bind-mount source (default `./peers.yaml`).
-- **Native deps:** `argon2` and `better-sqlite3` need `python3 make g++`. Root `package.json` has `pnpm.onlyBuiltDependencies` to allow their postinstall scripts. pnpm v10+ ignores build scripts by default — any new native dep must be added there.
+- **Native deps:** `better-sqlite3` needs `python3 make g++`. Root `package.json` has `pnpm.onlyBuiltDependencies` to allow its postinstall scripts. pnpm v10+ ignores build scripts by default — any new native dep must be added there.
 - **Rebuild after source changes.** Running containers use the compiled image, not live source. `docker compose build <service> && docker compose up -d <service>` or stale routes/assets will be served.
 
 ## Release process

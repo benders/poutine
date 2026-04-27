@@ -17,12 +17,12 @@ Both JSON (`f=json`, default) and XML (`f=xml`) supported. Default is JSON.
 
 ## Auth
 
-Two methods accepted on all `/rest/*` endpoints, tried in order:
+`/rest/*` accepts standard Subsonic credential params:
 
-1. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param.
-2. **Subsonic `u`+`p`** — username + password query params. Supports `enc:<hex>` prefix (hex-encoded password). Plaintext only; see limitation below.
+1. **`u+p`** — username + password. Supports `enc:<hex>` prefix (hex-encoded password).
+2. **`u+t+s`** — username + `md5(password + salt)` + salt.
 
-**`u+t+s` (MD5 token auth) is NOT supported.** Poutine stores passwords as Argon2id hashes, not plaintext, so it cannot reconstruct the MD5 token. Clients must use `u`+`p` instead.
+Both forms are fully supported as of 0.4.0. Earlier versions (which stored Argon2id hashes) accepted only `u+p`. There is no JWT auth on `/rest/*` — the bundled SPA also uses `u+t+s`.
 
 See [authentication.md](authentication.md) for the full auth reference.
 
