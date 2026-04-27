@@ -44,7 +44,8 @@ fi
 # Hash + update inside the container
 # ---------------------------------------------------------------------------
 RESULT=$(docker exec "$CONTAINER" node -e "
-const { hashPassword } = require('/app/hub/dist/auth/passwords.js');
+const { setPassword } = require('/app/hub/dist/auth/passwords.js');
+const { loadOrCreatePasswordKey } = require('/app/hub/dist/auth/password-crypto.js');
 const { execSync } = require('child_process');
 const bsqDir = execSync(
   'find /app/node_modules/.pnpm -maxdepth 3 -name better-sqlite3 -type d 2>/dev/null | head -1'
@@ -65,10 +66,14 @@ if (!user) {
   process.exit(0);
 }
 
-hashPassword(process.argv[2]).then(hash => {
-  db.prepare('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?').run(hash, process.argv[1]);
-  console.log('OK');
-});
+// Reversible AES-256-GCM encryption using the hub's password key file.
+// The key MUST match what the running hub loaded — same container, same
+// path resolution, so this is safe.
+const keyPath = process.env.POUTINE_PASSWORD_KEY_PATH || '/app/data/poutine_password_key';
+const key = loadOrCreatePasswordKey(keyPath);
+const enc = setPassword(process.argv[2], key);
+db.prepare('UPDATE users SET password_enc = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?').run(enc, process.argv[1]);
+console.log('OK');
 " -- "$USERNAME" "$PASSWORD")
 
 case "$RESULT" in
