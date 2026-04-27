@@ -14,6 +14,16 @@ export function isAuthErrorCode(code: unknown): boolean {
   return typeof code === "number" && AUTH_ERROR_CODES.has(code);
 }
 
+// Centralizes the "stored creds are no good, send the user back to /login"
+// path. Idempotent: calling it from the /login page is a no-op so we don't
+// thrash on auth-error toasts during login itself.
+function redirectToLogin(): void {
+  clearTokens();
+  if (window.location.pathname !== "/login") {
+    window.location.replace("/login");
+  }
+}
+
 /**
  * Build the Subsonic u+t+s auth params for one request.
  * Salt is fresh per call so the URL/request can't be replayed at scale.
@@ -229,7 +239,13 @@ async function subsonicFetch<T>(
   extra?: Record<string, string>,
 ): Promise<T> {
   const params = authParams();
-  if (!params) throw new SubsonicError("Not authenticated", 10);
+  if (!params) {
+    // No stored Subsonic creds — typically the upgrade path from a
+    // pre-#106 install where the JWT survived but `subsonicUser`/`subsonicPass`
+    // were never written. Redirect to /login same as a 40/41/etc. response.
+    redirectToLogin();
+    throw new SubsonicError("Not authenticated", 10);
+  }
   params.set("f", "json");
   if (extra) {
     for (const [k, v] of Object.entries(extra)) {
@@ -240,8 +256,7 @@ async function subsonicFetch<T>(
   const res = await fetch(`/rest/${endpoint}?${params}`);
   if (!res.ok) {
     if (res.status === 401) {
-      clearTokens();
-      window.location.replace("/login");
+      redirectToLogin();
     }
     throw new SubsonicError(res.statusText);
   }
@@ -250,8 +265,7 @@ async function subsonicFetch<T>(
   const sr = data["subsonic-response"];
   if (sr.status !== "ok") {
     if (isAuthErrorCode(sr.error?.code)) {
-      clearTokens();
-      window.location.replace("/login");
+      redirectToLogin();
     }
     throw new SubsonicError(
       sr.error?.message ?? "Unknown error",
