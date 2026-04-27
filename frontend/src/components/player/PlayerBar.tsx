@@ -66,6 +66,13 @@ export function PlayerBar() {
     () => (currentTrack ? streamUrl(currentTrack.id) : null),
     [currentTrack?.id],
   );
+  // Same fresh-salt-per-call hazard for artUrl(): without memoization the
+  // <img> src changes on every render and the browser re-fetches
+  // getCoverArt in a tight loop.
+  const currentArtUrl = useMemo(
+    () => (currentTrack?.coverArt ? artUrl(currentTrack.coverArt, 48) : null),
+    [currentTrack?.coverArt],
+  );
   const streamed = currentTrack ? effectiveStream(currentTrack) : null;
   const isTranscoded = streamed?.bitRateIsCap === true;
   const sourceLabel = currentTrack?.suffix && currentTrack.bitRate
@@ -238,7 +245,7 @@ export function PlayerBar() {
         >
           {currentTrack?.coverArt ? (
             <img
-              src={artUrl(currentTrack.coverArt, 48) ?? undefined}
+              src={currentArtUrl ?? undefined}
               alt={currentTrack.album || "Album art"}
               className="w-full h-full object-cover"
             />
