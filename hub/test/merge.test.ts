@@ -316,6 +316,53 @@ describe("mergeLibraries", () => {
     expect(preferred[0].instance_id).toBe("local");
   });
 
+  it("should not collide on PK when one source splits an album into multiple instance_albums sharing name+artist+RG but with different track counts (no MBIDs)", () => {
+    // Reproduces the Leonard Cohen "Old Ideas" failure: a single physical album
+    // gets split by Navidrome into N instance_albums (because of inconsistent
+    // per-track date tags) — same name, same artist, no MBID. They land in the
+    // same release group, then in different byTrackCount buckets, and used to
+    // hash to the same unified_releases.id.
+    insertArtist(inst1, "lc", "Leonard Cohen");
+    const aBig = insertAlbum(inst1, "ol-big", "Old Ideas", `${inst1}:lc`, { trackCount: 8 });
+    const aSmallA = insertAlbum(inst1, "ol-a", "Old Ideas", `${inst1}:lc`, { trackCount: 1 });
+    const aSmallB = insertAlbum(inst1, "ol-b", "Old Ideas", `${inst1}:lc`, { trackCount: 1 });
+    insertTrack(inst1, "t-big-1", aBig, "Going Home", { trackNumber: 1 });
+    insertTrack(inst1, "t-a-1", aSmallA, "Show Me the Place", { trackNumber: 3 });
+    insertTrack(inst1, "t-b-1", aSmallB, "Darkness", { trackNumber: 4 });
+
+    expect(() => mergeLibraries(db)).not.toThrow();
+
+    // The two trackCount=1 splits collapse together (same RG, same name, same
+    // count); the trackCount=8 split stays separate. Two unified releases, both
+    // named "Old Ideas", with distinct ids.
+    const releases = db.prepare("SELECT id, name, track_count FROM unified_releases ORDER BY track_count").all() as Array<Record<string, unknown>>;
+    expect(releases).toHaveLength(2);
+    const ids = new Set(releases.map(r => r.id as string));
+    expect(ids.size).toBe(2);
+    expect(releases.every(r => r.name === "Old Ideas")).toBe(true);
+    expect(releases.map(r => r.track_count)).toEqual([1, 8]);
+  });
+
+  it("should not collide on PK when the same recording MBID appears on two different releases", () => {
+    // Reproduces the Chemical Brothers "Setting Sun" failure: the same recording
+    // MBID exists on a single (322s) and on the album (329s). Two distinct
+    // releases → must produce two unified_tracks rather than colliding.
+    const recordingMbid = "7a7d7fb7-075b-4fdc-8c5e-9b5e03ee00b3";
+    insertArtist(inst1, "cb", "The Chemical Brothers");
+    const single = insertAlbum(inst1, "ss-single", "Setting Sun", `${inst1}:cb`, { trackCount: 1, mbid: "release-mbid-single" });
+    const album = insertAlbum(inst1, "dig-your-own-hole", "Dig Your Own Hole", `${inst1}:cb`, { trackCount: 11, mbid: "release-mbid-album" });
+    insertTrack(inst1, "t-single", single, "Setting Sun (full length version)", { mbid: recordingMbid, trackNumber: 1, durationMs: 322000 });
+    insertTrack(inst1, "t-album", album, "Setting Sun", { mbid: recordingMbid, trackNumber: 5, durationMs: 329000 });
+
+    expect(() => mergeLibraries(db)).not.toThrow();
+
+    const tracks = db.prepare("SELECT id, title, release_id, musicbrainz_id, duration_ms FROM unified_tracks ORDER BY duration_ms").all() as Array<Record<string, unknown>>;
+    expect(tracks).toHaveLength(2);
+    expect(new Set(tracks.map(t => t.id))).toHaveProperty("size", 2);
+    expect(tracks.every(t => t.musicbrainz_id === recordingMbid)).toBe(true);
+    expect(new Set(tracks.map(t => t.release_id)).size).toBe(2);
+  });
+
   it("should clear and rebuild on re-merge", () => {
     insertArtist(inst1, "a1", "Radiohead");
     const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { trackCount: 1 });

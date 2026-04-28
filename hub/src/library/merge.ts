@@ -82,13 +82,27 @@ export function mergeLibraries(db: Database.Database): void {
         }
       }
 
-      insertUnifiedArtist.run(
-        id,
-        name,
-        nameNormalized,
-        mbid,
-        encodedArtistArt,
-      );
+      try {
+        insertUnifiedArtist.run(
+          id,
+          name,
+          nameNormalized,
+          mbid,
+          encodedArtistArt,
+        );
+      } catch (err) {
+        const existing = db
+          .prepare("SELECT id, name, name_normalized, musicbrainz_id FROM unified_artists WHERE id = ?")
+          .get(id);
+        console.error("[merge] insertUnifiedArtist (mbid path) failed", {
+          id, name, nameNormalized, mbid,
+          groupSize: group.length,
+          sourceInstanceIds: group.map(g => g.instance_id),
+          sourceInstanceArtistIds: group.map(g => g.id),
+          existingRow: existing,
+        });
+        throw err;
+      }
 
       for (const ia of group) {
         insertArtistSource.run(id, ia.id as string, ia.instance_id as string);
@@ -123,13 +137,27 @@ export function mergeLibraries(db: Database.Database): void {
         }
       }
 
-      insertUnifiedArtist.run(
-        id,
-        representative.name as string,
-        norm,
-        null,
-        encodedArtistArt2,
-      );
+      try {
+        insertUnifiedArtist.run(
+          id,
+          representative.name as string,
+          norm,
+          null,
+          encodedArtistArt2,
+        );
+      } catch (err) {
+        const existing = db
+          .prepare("SELECT id, name, name_normalized, musicbrainz_id FROM unified_artists WHERE id = ?")
+          .get(id);
+        console.error("[merge] insertUnifiedArtist (name path) failed", {
+          id, name: representative.name, norm,
+          groupSize: group.length,
+          sourceInstanceIds: group.map(g => g.instance_id),
+          sourceInstanceArtistIds: group.map(g => g.id),
+          existingRow: existing,
+        });
+        throw err;
+      }
 
       for (const ia of group) {
         insertArtistSource.run(id, ia.id as string, ia.instance_id as string);
@@ -186,16 +214,31 @@ export function mergeLibraries(db: Database.Database): void {
         ? `${representative.instance_id as string}:${coverArtId}`
         : null;
 
-      insertReleaseGroup.run(
-        id,
-        name,
-        normalizeName(name),
-        unifiedArtistId,
-        mbid,
-        representative.year as number | null,
-        representative.genre as string | null,
-        encodedArt,
-      );
+      try {
+        insertReleaseGroup.run(
+          id,
+          name,
+          normalizeName(name),
+          unifiedArtistId,
+          mbid,
+          representative.year as number | null,
+          representative.genre as string | null,
+          encodedArt,
+        );
+      } catch (err) {
+        const existing = db
+          .prepare("SELECT id, name, artist_id, musicbrainz_id FROM unified_release_groups WHERE id = ?")
+          .get(id);
+        console.error("[merge] insertReleaseGroup (mbid path) failed", {
+          id, name, nameNormalized, unifiedArtistId, mbid,
+          groupSize: group.length,
+          sourceInstanceIds: group.map(g => g.instance_id),
+          sourceInstanceAlbumIds: group.map(g => g.id),
+          sourceInstanceArtistIds: group.map(g => g.artist_id),
+          existingRow: existing,
+        });
+        throw err;
+      }
 
       for (const ia of group) {
         instanceAlbumToReleaseGroup.set(ia.id as string, id);
@@ -227,16 +270,31 @@ export function mergeLibraries(db: Database.Database): void {
         ? `${representative.instance_id as string}:${coverArtId2}`
         : null;
 
-      insertReleaseGroup.run(
-        id,
-        name,
-        normalizeName(name),
-        unifiedArtistId,
-        null,
-        representative.year as number | null,
-        representative.genre as string | null,
-        encodedArt2,
-      );
+      try {
+        insertReleaseGroup.run(
+          id,
+          name,
+          normalizeName(name),
+          unifiedArtistId,
+          null,
+          representative.year as number | null,
+          representative.genre as string | null,
+          encodedArt2,
+        );
+      } catch (err) {
+        const existing = db
+          .prepare("SELECT id, name, artist_id, musicbrainz_id FROM unified_release_groups WHERE id = ?")
+          .get(id);
+        console.error("[merge] insertReleaseGroup (name path) failed", {
+          id, name, nameNormalized, unifiedArtistId,
+          groupSize: group.length,
+          sourceInstanceIds: group.map(g => g.instance_id),
+          sourceInstanceAlbumIds: group.map(g => g.id),
+          sourceInstanceArtistIds: group.map(g => g.artist_id),
+          existingRow: existing,
+        });
+        throw err;
+      }
 
       for (const ia of group) {
         instanceAlbumToReleaseGroup.set(ia.id as string, id);
@@ -292,14 +350,31 @@ export function mergeLibraries(db: Database.Database): void {
         const rep = group[0];
         const nameNormalized = normalizeName(rep.name as string);
         const id = generateReleaseId(nameNormalized, rgId, mbid);
-        insertRelease.run(
-          id,
-          rgId,
-          rep.name as string,
-          mbid,
-          null,
-          rep.track_count as number ?? 0,
-        );
+        try {
+          insertRelease.run(
+            id,
+            rgId,
+            rep.name as string,
+            mbid,
+            null,
+            rep.track_count as number ?? 0,
+          );
+        } catch (err) {
+          const existing = db
+            .prepare("SELECT id, name, release_group_id, musicbrainz_id, track_count FROM unified_releases WHERE id = ?")
+            .get(id);
+          console.error("[merge] insertRelease (mbid path) failed", {
+            id, rgId, name: rep.name, nameNormalized, mbid,
+            trackCount: rep.track_count,
+            groupSize: group.length,
+            sourceInstanceIds: group.map(a => a.instance_id),
+            sourceInstanceAlbumIds: group.map(a => a.id),
+            sourceMbids: group.map(a => a.musicbrainz_id),
+            sourceTrackCounts: group.map(a => a.track_count),
+            existingRow: existing,
+          });
+          throw err;
+        }
         for (const album of group) {
           insertReleaseSource.run(id, album.id as string, album.instance_id as string);
           instanceAlbumToRelease.set(album.id as string, id);
@@ -320,15 +395,31 @@ export function mergeLibraries(db: Database.Database): void {
       for (const [, group] of byTrackCount) {
         const rep = group[0];
         const nameNormalized = normalizeName(rep.name as string);
-        const id = generateReleaseId(nameNormalized, rgId, null);
-        insertRelease.run(
-          id,
-          rgId,
-          rep.name as string,
-          null,
-          null,
-          rep.track_count as number ?? 0,
-        );
+        const id = generateReleaseId(nameNormalized, rgId, null, rep.track_count as number ?? 0);
+        try {
+          insertRelease.run(
+            id,
+            rgId,
+            rep.name as string,
+            null,
+            null,
+            rep.track_count as number ?? 0,
+          );
+        } catch (err) {
+          const existing = db
+            .prepare("SELECT id, name, release_group_id, musicbrainz_id, track_count FROM unified_releases WHERE id = ?")
+            .get(id);
+          console.error("[merge] insertRelease (name path) failed", {
+            id, rgId, name: rep.name, nameNormalized,
+            trackCount: rep.track_count,
+            groupSize: group.length,
+            sourceInstanceIds: group.map(a => a.instance_id),
+            sourceInstanceAlbumIds: group.map(a => a.id),
+            sourceTrackCounts: group.map(a => a.track_count),
+            existingRow: existing,
+          });
+          throw err;
+        }
         for (const album of group) {
           insertReleaseSource.run(id, album.id as string, album.instance_id as string);
           instanceAlbumToRelease.set(album.id as string, id);
@@ -400,18 +491,38 @@ export function mergeLibraries(db: Database.Database): void {
           durationMs,
         );
 
-        insertTrack.run(
-          id,
-          rep.title as string,
-          titleNorm,
-          releaseId,
-          artistId,
-          mbid,
-          rep.track_number as number | null,
-          rep.disc_number as number | null,
-          rep.duration_ms as number | null,
-          rep.genre as string | null,
-        );
+        try {
+          insertTrack.run(
+            id,
+            rep.title as string,
+            titleNorm,
+            releaseId,
+            artistId,
+            mbid,
+            rep.track_number as number | null,
+            rep.disc_number as number | null,
+            rep.duration_ms as number | null,
+            rep.genre as string | null,
+          );
+        } catch (err) {
+          const existing = db
+            .prepare("SELECT id, title, release_id, artist_id, musicbrainz_id, track_number, disc_number, duration_ms FROM unified_tracks WHERE id = ?")
+            .get(id);
+          const existingSources = db
+            .prepare("SELECT instance_id, instance_track_id FROM track_sources WHERE unified_track_id = ?")
+            .all(id);
+          console.error("[merge] insertTrack (mbid path) failed", {
+            id, releaseId, artistId, title: rep.title, titleNorm, mbid,
+            trackNumber: rep.track_number, discNumber: rep.disc_number,
+            durationMs: rep.duration_ms,
+            groupSize: group.length,
+            sourceInstanceIds: group.map(t => t.instance_id),
+            sourceInstanceTrackIds: group.map(t => t.id),
+            existingRow: existing,
+            existingSources,
+          });
+          throw err;
+        }
 
         for (const track of group) {
           insertTrackSource.run(
@@ -476,18 +587,38 @@ export function mergeLibraries(db: Database.Database): void {
             durationMs,
           );
 
-          insertTrack.run(
-            id,
-            track.title as string,
-            titleNorm,
-            releaseId,
-            artistId,
-            null,
-            trackNumber,
-            track.disc_number as number | null,
-            durationMs,
-            track.genre as string | null,
-          );
+          try {
+            insertTrack.run(
+              id,
+              track.title as string,
+              titleNorm,
+              releaseId,
+              artistId,
+              null,
+              trackNumber,
+              track.disc_number as number | null,
+              durationMs,
+              track.genre as string | null,
+            );
+          } catch (err) {
+            const existing = db
+              .prepare("SELECT id, title, release_id, artist_id, musicbrainz_id, track_number, disc_number, duration_ms FROM unified_tracks WHERE id = ?")
+              .get(id);
+            const existingSources = db
+              .prepare("SELECT instance_id, instance_track_id FROM track_sources WHERE unified_track_id = ?")
+              .all(id);
+            console.error("[merge] insertTrack (name path) failed", {
+              id, releaseId, artistId,
+              title: track.title, titleNorm,
+              trackNumber, discNumber: track.disc_number, durationMs,
+              instanceId: track.instance_id,
+              instanceTrackId: track.id,
+              instanceAlbumId: track.album_id,
+              existingRow: existing,
+              existingSources,
+            });
+            throw err;
+          }
 
           insertTrackSource.run(
             generateTrackSourceId(id, track.instance_id as string),
