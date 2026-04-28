@@ -177,7 +177,7 @@ interface MergedHistoryItem {
 }
 
 const ACTIVE_PAGE_SIZE = 10;
-const HISTORY_PAGE_SIZE = 50;
+const HISTORY_PAGE_SIZE = 20;
 
 function Pager({
   page,
