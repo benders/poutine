@@ -154,6 +154,27 @@ describe("StreamTrackingService", () => {
       const recent = service.getRecent(100);
       expect(recent.length).toBe(3);
     });
+
+    it("does not prune rows whose stream is still active", () => {
+      service.setMaxRows(2);
+      // 2 finished + 1 active = 3 rows; with maxRows=2 only the oldest finished
+      // should be pruned. The active row must survive even though it's the
+      // 3rd-newest by started_at (its finished_at is NULL).
+      const f1 = service.start(makeStart({ trackId: "f:1" }));
+      service.finish(f1, 1000, null);
+      const f2 = service.start(makeStart({ trackId: "f:2" }));
+      service.finish(f2, 1000, null);
+      const active = service.start(makeStart({ trackId: "a:1" }));
+
+      service.pruneToCount();
+
+      const ids = (db.prepare("SELECT id FROM stream_operations").all() as Array<{ id: string }>).map((r) => r.id);
+      expect(ids).toContain(active);
+      // finish() then succeeds and persists bytes_transferred for the active row.
+      service.finish(active, 9999, null);
+      const row = db.prepare("SELECT bytes_transferred FROM stream_operations WHERE id = ?").get(active) as { bytes_transferred: number };
+      expect(row.bytes_transferred).toBe(9999);
+    });
   });
 
   describe("clearAll", () => {

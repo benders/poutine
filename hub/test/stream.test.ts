@@ -428,6 +428,9 @@ describe("stream — peer source", () => {
     };
     appB = await buildApp(configB);
     await appB.ready();
+    // Seed B's local instance_tracks so /federation/stream/:id can resolve the
+    // unified-track metadata for proxy stream tracking (#121).
+    seedLocalTrack(appB);
     await appB.listen({ port: 0, host: "127.0.0.1" });
     portB = (appB.server.address() as AddressInfo).port;
 
@@ -510,6 +513,33 @@ describe("stream — peer source", () => {
     expect(res.statusCode).toBe(206);
     expect(res.headers["content-range"]).toBe(`bytes 1-4/${FAKE_AUDIO.length}`);
     expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO.subarray(1, 5));
+  });
+
+  it("records a kind='proxy' stream on the source hub when a peer fetches via /federation/stream (#121)", async () => {
+    const track = appA.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+
+    // Streaming on A routes through /federation/stream/:remote_id on B.
+    const res = await appA.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${track.id}`,
+    });
+    expect(res.statusCode).toBe(200);
+
+    // finish() runs after B's pipeline() resolves; allow microtasks to settle.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const recent = appB.streamTracking.getRecent(10);
+    expect(recent.length).toBeGreaterThanOrEqual(1);
+    const proxyRow = recent.find((r) => r.kind === "proxy");
+    expect(proxyRow).toBeDefined();
+    expect(proxyRow!.peerId).toBe("poutine-a");
+    expect(proxyRow!.username).toBe("tester");
+    expect(proxyRow!.sourceKind).toBe("local");
+    expect(proxyRow!.bytesTransferred).toBe(FAKE_AUDIO.length);
+    expect(proxyRow!.finishedAt).toBeTruthy();
+    expect(proxyRow!.error).toBeNull();
   });
 });
 

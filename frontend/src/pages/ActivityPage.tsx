@@ -51,9 +51,12 @@ function streamSourceLabel(
   return "—";
 }
 
-function streamClientLabel(s: StreamOperation | ActiveStream): string {
+function streamClientLabel(
+  s: StreamOperation | ActiveStream,
+  peerName: (id: string) => string,
+): string {
   if (s.kind === "proxy") {
-    return s.peerId ? `peer ${s.peerId}` : "peer";
+    return s.peerId ? peerName(s.peerId) : "peer";
   }
   if (!s.clientName) return "—";
   return s.clientVersion ? `${s.clientName} v${s.clientVersion}` : s.clientName;
@@ -80,7 +83,7 @@ function ActiveStreamRow({
       <span className="col-span-2 truncate text-text-secondary">{streamFormatLine(s)}</span>
       <span className="col-span-1 truncate text-text-secondary">{streamSourceLabel(s, peerName)}</span>
       <span className="col-span-1 truncate text-text-secondary">{streamUserLabel(s)}</span>
-      <span className="col-span-2 truncate text-text-secondary">{streamClientLabel(s)}</span>
+      <span className="col-span-2 truncate text-text-secondary">{streamClientLabel(s, peerName)}</span>
       <span className="col-span-1 text-right tabular-nums text-text-secondary">{formatBytes(s.bytesTransferred)}</span>
     </div>
   );
@@ -104,7 +107,7 @@ function HistoryStreamRow({
       <span className="col-span-2 truncate text-text-secondary">{streamFormatLine(s)}</span>
       <span className="col-span-1 truncate text-text-secondary">{streamSourceLabel(s, peerName)}</span>
       <span className="col-span-1 truncate text-text-secondary">{streamUserLabel(s)}</span>
-      <span className="col-span-2 truncate text-text-secondary">{streamClientLabel(s)}</span>
+      <span className="col-span-2 truncate text-text-secondary">{streamClientLabel(s, peerName)}</span>
       <span className="col-span-1 text-right tabular-nums text-text-secondary">
         {formatBytes(s.bytesTransferred)}
         {s.error && <AlertCircle className="inline w-3 h-3 text-error ml-1" aria-label={s.error} />}
