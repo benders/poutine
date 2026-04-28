@@ -42,6 +42,7 @@ export function generateTrackId(
   musicbrainzId: string | null,
   trackNumber: number | null,
   discNumber: number | null,
+  durationMs: number | null = null,
 ): string {
   if (musicbrainzId) {
     return generateDeterministicId("track", musicbrainzId);
@@ -53,6 +54,7 @@ export function generateTrackId(
     titleNormalized,
     trackNumber?.toString() ?? "null",
     discNumber?.toString() ?? "null",
+    durationMs?.toString() ?? "null",
   );
 }
 
