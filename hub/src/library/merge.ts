@@ -387,6 +387,7 @@ export function mergeLibraries(db: Database.Database): void {
         const rep = group[0];
         const artistId = instanceAlbumToArtist.get(rep.album_id as string) ?? "unknown";
         const titleNorm = normalizeName(rep.title as string);
+        const durationMs = rep.duration_ms as number | null;
         const id = generateTrackId(
           titleNorm,
           artistId,
@@ -394,6 +395,7 @@ export function mergeLibraries(db: Database.Database): void {
           mbid,
           rep.track_number as number | null,
           rep.disc_number as number | null,
+          durationMs,
         );
 
         insertTrack.run(
@@ -461,6 +463,7 @@ export function mergeLibraries(db: Database.Database): void {
         if (!matched) {
           // Create a new unified track
           const artistId = instanceAlbumToArtist.get(track.album_id as string) ?? "unknown";
+          const durationMs = track.duration_ms as number | null;
           const id = generateTrackId(
             titleNorm,
             artistId,
@@ -468,6 +471,7 @@ export function mergeLibraries(db: Database.Database): void {
             null,
             trackNumber,
             track.disc_number as number | null,
+            durationMs,
           );
 
           insertTrack.run(

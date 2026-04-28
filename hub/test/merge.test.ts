@@ -397,7 +397,7 @@ describe("mergeLibraries", () => {
 
     // Get the unified artist ID first
     const artists = db.prepare("SELECT id FROM unified_artists WHERE musicbrainz_id = ?")
-      .get(mbid) as { id: string };
+      .get(artistMbid) as { id: string };
     const expectedId = generateReleaseGroupId("ok computer", artists.id, rgMbid);
     expect(releaseGroups[0].id).toBe(expectedId);
   });
@@ -445,7 +445,7 @@ describe("mergeLibraries", () => {
       .get(artistMbid) as { id: string };
     const releases = db.prepare("SELECT id FROM unified_releases WHERE musicbrainz_id = ?")
       .get(releaseMbid) as { id: string };
-    const expectedId = generateTrackId("paranoid android", artists.id, releases.id, recordingMbid, 1, 1);
+    const expectedId = generateTrackId("paranoid android", artists.id, releases.id, recordingMbid, 1, 1, 384000);
     expect(tracks[0].id).toBe(expectedId);
   });
 
@@ -476,7 +476,7 @@ describe("mergeLibraries", () => {
       .get("pink floyd") as { id: string };
     const releases = db.prepare("SELECT id FROM unified_releases")
       .get() as { id: string };
-    const expectedId = generateTrackId("comfortably numb", artists.id, releases.id, null, 1, 1);
+    const expectedId = generateTrackId("comfortably numb", artists.id, releases.id, null, 1, 1, 382000);
     expect(tracks[0].id).toBe(expectedId);
   });
 
@@ -501,7 +501,7 @@ describe("mergeLibraries", () => {
 
     // Get the unified track ID
     const tracks = db.prepare("SELECT id FROM unified_tracks WHERE musicbrainz_id = ?")
-      .all() as Array<{ id: string }>;
+      .all(recordingMbid) as Array<{ id: string }>;
     const trackId = tracks[0].id;
 
     // Verify each source has deterministic ID

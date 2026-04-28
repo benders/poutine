@@ -103,26 +103,26 @@ describe("generateTrackId", () => {
   });
 
   it("should use artist + release + title + position when no MBID", () => {
-    const id1 = generateTrackId("paranoid android", "artist-id", "release-id", null, 1, 1);
-    const id2 = generateTrackId("paranoid android", "artist-id", "release-id", null, 1, 1);
+    const id1 = generateTrackId("paranoid android", "artist-id", "release-id", null, 1, 1, 384000);
+    const id2 = generateTrackId("paranoid android", "artist-id", "release-id", null, 1, 1, 384000);
     expect(id1).toBe(id2);
   });
 
   it("should produce different IDs for different track numbers", () => {
-    const id1 = generateTrackId("track", "artist-id", "release-id", null, 1, 1);
-    const id2 = generateTrackId("track", "artist-id", "release-id", null, 2, 1);
+    const id1 = generateTrackId("track", "artist-id", "release-id", null, 1, 1, 384000);
+    const id2 = generateTrackId("track", "artist-id", "release-id", null, 2, 1, 384000);
     expect(id1).not.toBe(id2);
   });
 
   it("should produce different IDs for different disc numbers", () => {
-    const id1 = generateTrackId("track", "artist-id", "release-id", null, 1, 1);
-    const id2 = generateTrackId("track", "artist-id", "release-id", null, 1, 2);
+    const id1 = generateTrackId("track", "artist-id", "release-id", null, 1, 1, 384000);
+    const id2 = generateTrackId("track", "artist-id", "release-id", null, 1, 2, 384000);
     expect(id1).not.toBe(id2);
   });
 
   it("should handle null track numbers", () => {
-    const id1 = generateTrackId("track", "artist-id", "release-id", null, null, null);
-    const id2 = generateTrackId("track", "artist-id", "release-id", null, null, null);
+    const id1 = generateTrackId("track", "artist-id", "release-id", null, null, null, null);
+    const id2 = generateTrackId("track", "artist-id", "release-id", null, null, null, null);
     expect(id1).toBe(id2);
   });
 });
@@ -183,6 +183,7 @@ describe("Cross-peer ID stability", () => {
       null,
       6,
       1,
+      384000,
     );
     const peer2Id = generateTrackId(
       "comfortably numb",
@@ -191,6 +192,7 @@ describe("Cross-peer ID stability", () => {
       null,
       6,
       1,
+      384000,
     );
     expect(peer1Id).toBe(peer2Id);
   });
