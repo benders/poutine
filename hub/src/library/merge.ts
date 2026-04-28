@@ -525,7 +525,7 @@ export function mergeLibraries(db: Database.Database): void {
         }
 
         for (const track of group) {
-          const tsId = generateTrackSourceId(id, track.instance_id as string);
+          const tsId = generateTrackSourceId(id, track.instance_id as string, track.id as string);
           try {
             insertTrackSource.run(
               tsId,
@@ -579,7 +579,7 @@ export function mergeLibraries(db: Database.Database): void {
             durationWithinTolerance(existing.durationMs, durationMs, 3000)
           ) {
             // Add as additional source
-            const tsId = generateTrackSourceId(existing.unifiedId, track.instance_id as string);
+            const tsId = generateTrackSourceId(existing.unifiedId, track.instance_id as string, track.id as string);
             try {
               insertTrackSource.run(
                 tsId,
@@ -658,7 +658,7 @@ export function mergeLibraries(db: Database.Database): void {
             throw err;
           }
 
-          const tsId = generateTrackSourceId(id, track.instance_id as string);
+          const tsId = generateTrackSourceId(id, track.instance_id as string, track.id as string);
           try {
             insertTrackSource.run(
               tsId,
