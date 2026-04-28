@@ -525,15 +525,35 @@ export function mergeLibraries(db: Database.Database): void {
         }
 
         for (const track of group) {
-          insertTrackSource.run(
-            generateTrackSourceId(id, track.instance_id as string),
-            id,
-            track.instance_id as string,
-            track.id as string,
-            track.format as string | null,
-            track.bitrate as number | null,
-            track.size as number | null,
-          );
+          const tsId = generateTrackSourceId(id, track.instance_id as string);
+          try {
+            insertTrackSource.run(
+              tsId,
+              id,
+              track.instance_id as string,
+              track.id as string,
+              track.format as string | null,
+              track.bitrate as number | null,
+              track.size as number | null,
+            );
+          } catch (err) {
+            const existing = db
+              .prepare("SELECT id, unified_track_id, instance_id, instance_track_id, format, bitrate FROM track_sources WHERE id = ?")
+              .get(tsId);
+            console.error("[merge] insertTrackSource (mbid path) failed", {
+              id: tsId,
+              unifiedTrackId: id,
+              instanceId: track.instance_id,
+              instanceTrackId: track.id,
+              instanceAlbumId: track.album_id,
+              releaseId, mbid, title: track.title, titleNorm,
+              durationMs: track.duration_ms,
+              groupSize: group.length,
+              groupInstanceTrackIds: group.map(t => t.id),
+              existingRow: existing,
+            });
+            throw err;
+          }
         }
 
         createdTracks.push({
@@ -559,15 +579,33 @@ export function mergeLibraries(db: Database.Database): void {
             durationWithinTolerance(existing.durationMs, durationMs, 3000)
           ) {
             // Add as additional source
-            insertTrackSource.run(
-              generateTrackSourceId(existing.unifiedId, track.instance_id as string),
-              existing.unifiedId,
-              track.instance_id as string,
-              track.id as string,
-              track.format as string | null,
-              track.bitrate as number | null,
-              track.size as number | null,
-            );
+            const tsId = generateTrackSourceId(existing.unifiedId, track.instance_id as string);
+            try {
+              insertTrackSource.run(
+                tsId,
+                existing.unifiedId,
+                track.instance_id as string,
+                track.id as string,
+                track.format as string | null,
+                track.bitrate as number | null,
+                track.size as number | null,
+              );
+            } catch (err) {
+              const prior = db
+                .prepare("SELECT id, unified_track_id, instance_id, instance_track_id, format, bitrate FROM track_sources WHERE id = ?")
+                .get(tsId);
+              console.error("[merge] insertTrackSource (fuzzy match path) failed", {
+                id: tsId,
+                unifiedTrackId: existing.unifiedId,
+                instanceId: track.instance_id,
+                instanceTrackId: track.id,
+                instanceAlbumId: track.album_id,
+                releaseId, title: track.title, titleNorm,
+                trackNumber, durationMs,
+                existingRow: prior,
+              });
+              throw err;
+            }
             matched = true;
             break;
           }
@@ -620,15 +658,33 @@ export function mergeLibraries(db: Database.Database): void {
             throw err;
           }
 
-          insertTrackSource.run(
-            generateTrackSourceId(id, track.instance_id as string),
-            id,
-            track.instance_id as string,
-            track.id as string,
-            track.format as string | null,
-            track.bitrate as number | null,
-            track.size as number | null,
-          );
+          const tsId = generateTrackSourceId(id, track.instance_id as string);
+          try {
+            insertTrackSource.run(
+              tsId,
+              id,
+              track.instance_id as string,
+              track.id as string,
+              track.format as string | null,
+              track.bitrate as number | null,
+              track.size as number | null,
+            );
+          } catch (err) {
+            const prior = db
+              .prepare("SELECT id, unified_track_id, instance_id, instance_track_id, format, bitrate FROM track_sources WHERE id = ?")
+              .get(tsId);
+            console.error("[merge] insertTrackSource (name path, new track) failed", {
+              id: tsId,
+              unifiedTrackId: id,
+              instanceId: track.instance_id,
+              instanceTrackId: track.id,
+              instanceAlbumId: track.album_id,
+              releaseId, title: track.title, titleNorm,
+              trackNumber, durationMs,
+              existingRow: prior,
+            });
+            throw err;
+          }
 
           createdTracks.push({
             unifiedId: id,
