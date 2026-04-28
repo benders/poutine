@@ -514,47 +514,41 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(204).send();
   });
 
-  // GET /admin/activity/sync — get recent sync operations
-  app.get("/activity/sync", { preHandler: requireOwner }, async (request) => {
-    const limit = parseInt((request.query as Record<string, string>).limit ?? "100", 10);
-    return app.syncOpService.getRecent(Math.min(limit, 500));
+  // GET /admin/activity/active — combined active streams + running syncs
+  app.get("/activity/active", { preHandler: requireOwner }, async () => {
+    return {
+      streams: app.streamTracking.getActive(),
+      syncs: app.syncOpService.getRunning(),
+    };
   });
 
-  // GET /admin/activity/sync/running — get currently running sync operations
-  app.get("/activity/sync/running", { preHandler: requireOwner }, async () => {
-    return app.syncOpService.getRunning();
+  // GET /admin/activity/history?kinds=stream,sync&limit=N — combined timeline
+  app.get("/activity/history", { preHandler: requireOwner }, async (request) => {
+    const q = request.query as Record<string, string>;
+    const limit = Math.min(parseInt(q.limit ?? "200", 10), 1000);
+    const kindsParam = (q.kinds ?? "stream,sync").toLowerCase();
+    const wantStreams = kindsParam.includes("stream");
+    const wantSyncs = kindsParam.includes("sync");
+
+    const streams = wantStreams ? app.streamTracking.getRecent(limit) : [];
+    const syncs = wantSyncs ? app.syncOpService.getRecent(limit) : [];
+    return { streams, syncs };
   });
 
-  // DELETE /admin/activity/sync — clear sync operation history
-  app.delete("/activity/sync", { preHandler: requireOwner }, async () => {
+  // DELETE /admin/activity — clear all activity history
+  app.delete("/activity", { preHandler: requireOwner }, async () => {
+    app.streamTracking.clearAll();
     app.syncOpService.clearAll();
     return { cleared: true };
   });
 
-  // GET /admin/activity/streams — get recent stream operations
-  app.get("/activity/streams", { preHandler: requireOwner }, async (request) => {
-    const limit = parseInt((request.query as Record<string, string>).limit ?? "100", 10);
-    return app.streamTracking.getRecent(Math.min(limit, 500));
-  });
-
-  // GET /admin/activity/streams/active — get currently active streams
-  app.get("/activity/streams/active", { preHandler: requireOwner }, async () => {
-    return app.streamTracking.getActive();
-  });
-
-  // DELETE /admin/activity/streams — clear stream operation history
-  app.delete("/activity/streams", { preHandler: requireOwner }, async () => {
-    app.streamTracking.clearAll();
-    return { cleared: true };
-  });
-
-  // GET /admin/activity/summary — get activity summary
+  // GET /admin/activity/summary — dashboard summary
   app.get("/activity/summary", { preHandler: requireOwner }, async () => {
     const activeStreams = app.streamTracking.getActiveCount();
     const runningSyncs = app.syncOpService.getRunning().length;
     const recentSyncs = app.syncOpService.getRecent(10);
     const recentStreams = app.streamTracking.getRecent(10);
-    
+
     return {
       activeStreams,
       runningSyncs,
@@ -564,4 +558,37 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       lastStream: recentStreams[0] ?? null,
     };
   });
+
+  // GET /admin/settings/activity — retention settings
+  app.get("/settings/activity", { preHandler: requireOwner }, async () => {
+    return {
+      maxEvents: app.streamTracking.getMaxRows(),
+    };
+  });
+
+  // PUT /admin/settings/activity
+  app.put<{ Body: { maxEvents?: number } }>(
+    "/settings/activity",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { maxEvents } = request.body ?? {};
+      if (maxEvents !== undefined) {
+        if (typeof maxEvents !== "number" || maxEvents < 0) {
+          return reply
+            .code(400)
+            .send({ error: "maxEvents must be a non-negative number" });
+        }
+        const n = Math.round(maxEvents);
+        app.streamTracking.setMaxRows(n);
+        app.syncOpService.setMaxRows(n);
+        app.db
+          .prepare(
+            `INSERT INTO settings (key, value) VALUES ('activity_history_max_events', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          )
+          .run(String(n));
+      }
+      return { maxEvents: app.streamTracking.getMaxRows() };
+    },
+  );
 };

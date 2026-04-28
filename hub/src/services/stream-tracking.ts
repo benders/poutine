@@ -1,162 +1,218 @@
 import type Database from "better-sqlite3";
 
-export interface StreamOperation {
-  id: string;
+export type StreamKind = "subsonic" | "proxy";
+export type SourceKind = "local" | "peer";
+
+export interface StreamStartOptions {
+  kind: StreamKind;
   username: string;
   trackId: string;
   trackTitle: string;
   artistName: string;
+  clientName?: string | null;
+  clientVersion?: string | null;
+  peerId?: string | null;
+  sourceKind?: SourceKind | null;
+  sourcePeerId?: string | null;
+  format?: string | null;
+  bitrate?: number | null;
+  transcoded?: boolean;
+  maxBitrate?: number | null;
+}
+
+export interface StreamOperation {
+  id: string;
+  kind: StreamKind;
+  username: string;
+  trackId: string;
+  trackTitle: string;
+  artistName: string;
+  clientName: string | null;
+  clientVersion: string | null;
+  peerId: string | null;
+  sourceKind: SourceKind | null;
+  sourcePeerId: string | null;
+  format: string | null;
+  bitrate: number | null;
+  transcoded: boolean;
+  maxBitrate: number | null;
   startedAt: string;
   finishedAt: string | null;
   durationMs: number | null;
   bytesTransferred: number | null;
+  error: string | null;
 }
 
-export interface ActiveStream {
-  id: string;
-  username: string;
-  trackId: string;
-  trackTitle: string;
-  artistName: string;
-  startedAt: string;
-  durationMs: number | null; // null if still playing
+export interface ActiveStream extends Omit<StreamOperation, "finishedAt" | "durationMs" | "error"> {
+  bytesTransferred: number;
 }
 
-/**
- * In-memory tracking of currently active streams.
- * Keys are stream operation IDs.
- */
-interface ActiveStreamEntry {
-  operationId: string;
-  username: string;
-  trackId: string;
-  trackTitle: string;
-  artistName: string;
+interface ActiveEntry {
+  opts: StreamStartOptions;
   startedAt: Date;
+  bytesTransferred: number;
 }
 
 export class StreamTrackingService {
-  private activeStreams = new Map<string, ActiveStreamEntry>();
+  private active = new Map<string, ActiveEntry>();
+  private maxRows = 10000;
 
   constructor(private readonly db: Database.Database) {}
 
-  /**
-   * Start tracking a new stream.
-   * Returns the operation ID for later updates.
-   */
-  start(
-    username: string,
-    trackId: string,
-    trackTitle: string,
-    artistName: string,
-  ): string {
+  setMaxRows(n: number): void {
+    this.maxRows = Math.max(0, Math.floor(n));
+    this.pruneToCount();
+  }
+
+  getMaxRows(): number {
+    return this.maxRows;
+  }
+
+  start(opts: StreamStartOptions): string {
     const id = crypto.randomUUID();
-    
-    // Insert into database
     this.db
       .prepare(
-        `INSERT INTO stream_operations (id, username, track_id, track_title, artist_name, started_at)
-         VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+        `INSERT INTO stream_operations (
+           id, kind, username, track_id, track_title, artist_name,
+           client_name, client_version, peer_id,
+           source_kind, source_peer_id, format, bitrate, transcoded, max_bitrate,
+           started_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
       )
-      .run(id, username, trackId, trackTitle, artistName);
+      .run(
+        id,
+        opts.kind,
+        opts.username,
+        opts.trackId,
+        opts.trackTitle,
+        opts.artistName,
+        opts.clientName ?? null,
+        opts.clientVersion ?? null,
+        opts.peerId ?? null,
+        opts.sourceKind ?? null,
+        opts.sourcePeerId ?? null,
+        opts.format ?? null,
+        opts.bitrate ?? null,
+        opts.transcoded ? 1 : 0,
+        opts.maxBitrate ?? null,
+      );
 
-    // Track in memory as active
-    this.activeStreams.set(id, {
-      operationId: id,
-      username,
-      trackId,
-      trackTitle,
-      artistName,
+    this.active.set(id, {
+      opts,
       startedAt: new Date(),
+      bytesTransferred: 0,
     });
 
     return id;
   }
 
   /**
-   * Mark a stream as finished with optional duration and bytes.
+   * Update bytes-transferred counter for an active stream (in-memory only).
    */
-  finish(operationId: string, durationMs: number | null = null, bytesTransferred: number | null = null): void {
-    // Update database
+  updateBytes(operationId: string, bytes: number): void {
+    const entry = this.active.get(operationId);
+    if (entry) entry.bytesTransferred = bytes;
+  }
+
+  finish(
+    operationId: string,
+    bytesTransferred: number | null = null,
+    error: string | null = null,
+  ): void {
     this.db
       .prepare(
         `UPDATE stream_operations
          SET finished_at = datetime('now'),
-             duration_ms = ?,
-             bytes_transferred = ?
+             duration_ms = CAST((julianday(datetime('now')) - julianday(started_at)) * 86400000 AS INTEGER),
+             bytes_transferred = ?,
+             error = ?
          WHERE id = ?`,
       )
-      .run(durationMs, bytesTransferred, operationId);
+      .run(bytesTransferred, error, operationId);
 
-    // Remove from active streams
-    this.activeStreams.delete(operationId);
+    this.active.delete(operationId);
+    this.pruneToCount();
   }
 
-  /**
-   * Get currently active streams.
-   */
   getActive(): ActiveStream[] {
-    const now = new Date();
-    return Array.from(this.activeStreams.values()).map((entry) => ({
-      id: entry.operationId,
-      username: entry.username,
-      trackId: entry.trackId,
-      trackTitle: entry.trackTitle,
-      artistName: entry.artistName,
+    return Array.from(this.active.entries()).map(([id, entry]) => ({
+      id,
+      kind: entry.opts.kind,
+      username: entry.opts.username,
+      trackId: entry.opts.trackId,
+      trackTitle: entry.opts.trackTitle,
+      artistName: entry.opts.artistName,
+      clientName: entry.opts.clientName ?? null,
+      clientVersion: entry.opts.clientVersion ?? null,
+      peerId: entry.opts.peerId ?? null,
+      sourceKind: entry.opts.sourceKind ?? null,
+      sourcePeerId: entry.opts.sourcePeerId ?? null,
+      format: entry.opts.format ?? null,
+      bitrate: entry.opts.bitrate ?? null,
+      transcoded: !!entry.opts.transcoded,
+      maxBitrate: entry.opts.maxBitrate ?? null,
       startedAt: entry.startedAt.toISOString(),
-      durationMs: null, // Still playing
+      bytesTransferred: entry.bytesTransferred,
     }));
   }
 
-  /**
-   * Get recent stream history (last 100).
-   */
   getRecent(limit: number = 100): StreamOperation[] {
     const rows = this.db
       .prepare(
-        `SELECT id, username, track_id, track_title, artist_name, started_at, finished_at,
-                duration_ms, bytes_transferred
+        `SELECT id, kind, username, track_id, track_title, artist_name,
+                client_name, client_version, peer_id,
+                source_kind, source_peer_id, format, bitrate, transcoded, max_bitrate,
+                started_at, finished_at, duration_ms, bytes_transferred, error
          FROM stream_operations
-        ORDER BY started_at DESC, id DESC
+         ORDER BY started_at DESC, id DESC
          LIMIT ?`,
       )
-      .all(limit) as Array<{
-        id: string;
-        username: string;
-        track_id: string;
-        track_title: string;
-        artist_name: string;
-        started_at: string;
-        finished_at: string | null;
-        duration_ms: number | null;
-        bytes_transferred: number | null;
-      }>;
+      .all(limit) as Array<Record<string, unknown>>;
 
-    return rows.map((row) => ({
-      id: row.id,
-      username: row.username,
-      trackId: row.track_id,
-      trackTitle: row.track_title,
-      artistName: row.artist_name,
-      startedAt: row.started_at,
-      finishedAt: row.finished_at,
-      durationMs: row.duration_ms,
-      bytesTransferred: row.bytes_transferred,
+    return rows.map((r) => ({
+      id: r.id as string,
+      kind: r.kind as StreamKind,
+      username: r.username as string,
+      trackId: r.track_id as string,
+      trackTitle: r.track_title as string,
+      artistName: r.artist_name as string,
+      clientName: (r.client_name as string | null) ?? null,
+      clientVersion: (r.client_version as string | null) ?? null,
+      peerId: (r.peer_id as string | null) ?? null,
+      sourceKind: (r.source_kind as SourceKind | null) ?? null,
+      sourcePeerId: (r.source_peer_id as string | null) ?? null,
+      format: (r.format as string | null) ?? null,
+      bitrate: (r.bitrate as number | null) ?? null,
+      transcoded: !!(r.transcoded as number),
+      maxBitrate: (r.max_bitrate as number | null) ?? null,
+      startedAt: r.started_at as string,
+      finishedAt: (r.finished_at as string | null) ?? null,
+      durationMs: (r.duration_ms as number | null) ?? null,
+      bytesTransferred: (r.bytes_transferred as number | null) ?? null,
+      error: (r.error as string | null) ?? null,
     }));
   }
 
-  /**
-   * Clear all stream history.
-   */
   clearAll(): void {
     this.db.prepare("DELETE FROM stream_operations").run();
-    this.activeStreams.clear();
+    this.active.clear();
   }
 
-  /**
-   * Get a count of active streams.
-   */
   getActiveCount(): number {
-    return this.activeStreams.size;
+    return this.active.size;
+  }
+
+  pruneToCount(): void {
+    if (this.maxRows <= 0) return;
+    this.db
+      .prepare(
+        `DELETE FROM stream_operations
+         WHERE id NOT IN (
+           SELECT id FROM stream_operations
+           ORDER BY started_at DESC, id DESC
+           LIMIT ?
+         )`,
+      )
+      .run(this.maxRows);
   }
 }

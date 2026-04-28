@@ -298,13 +298,28 @@ export interface SyncOperation {
 
 export interface StreamOperation {
   id: string;
+  kind: "subsonic" | "proxy";
   username: string;
   trackId: string;
   trackTitle: string;
   artistName: string;
+  clientName: string | null;
+  clientVersion: string | null;
+  peerId: string | null;
+  sourceKind: "local" | "peer" | null;
+  sourcePeerId: string | null;
+  format: string | null;
+  bitrate: number | null;
+  transcoded: boolean;
+  maxBitrate: number | null;
   startedAt: string;
   finishedAt: string | null;
   durationMs: number | null;
+  bytesTransferred: number | null;
+  error: string | null;
+}
+
+export interface ActiveStream extends Omit<StreamOperation, "finishedAt" | "durationMs" | "error"> {
   bytesTransferred: number;
 }
 
@@ -317,32 +332,51 @@ export interface ActivitySummary {
   lastStream: StreamOperation | null;
 }
 
-export function getRecentSyncOperations(limit = 100) {
-  return apiFetch<SyncOperation[]>(`/admin/activity/sync?limit=${limit}`);
+export interface ActiveActivity {
+  streams: ActiveStream[];
+  syncs: SyncOperation[];
 }
 
-export function getRunningSyncOperations() {
-  return apiFetch<SyncOperation[]>(`/admin/activity/sync/running`);
+export interface ActivityHistory {
+  streams: StreamOperation[];
+  syncs: SyncOperation[];
 }
 
-export function clearSyncHistory() {
-  return apiFetch<{ cleared: boolean }>(`/admin/activity/sync`, { method: "DELETE" });
+export type ActivityHistoryKind = "stream" | "sync";
+
+export function getActiveActivity() {
+  return apiFetch<ActiveActivity>(`/admin/activity/active`);
 }
 
-export function getRecentStreamOperations(limit = 100) {
-  return apiFetch<StreamOperation[]>(`/admin/activity/streams?limit=${limit}`);
+export function getActivityHistory(kinds: ActivityHistoryKind[] = ["stream", "sync"], limit = 200) {
+  const params = new URLSearchParams({
+    kinds: kinds.join(","),
+    limit: String(limit),
+  });
+  return apiFetch<ActivityHistory>(`/admin/activity/history?${params.toString()}`);
 }
 
-export function getActiveStreams() {
-  return apiFetch<StreamOperation[]>(`/admin/activity/streams/active`);
-}
-
-export function clearStreamHistory() {
-  return apiFetch<{ cleared: boolean }>(`/admin/activity/streams`, { method: "DELETE" });
+export function clearActivityHistory() {
+  return apiFetch<{ cleared: boolean }>(`/admin/activity`, { method: "DELETE" });
 }
 
 export function getActivitySummary() {
   return apiFetch<ActivitySummary>(`/admin/activity/summary`);
+}
+
+export interface ActivitySettings {
+  maxEvents: number;
+}
+
+export function getActivitySettings() {
+  return apiFetch<ActivitySettings>(`/admin/settings/activity`);
+}
+
+export function updateActivitySettings(settings: { maxEvents: number }) {
+  return apiFetch<ActivitySettings>(`/admin/settings/activity`, {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 

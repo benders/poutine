@@ -189,6 +189,23 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   app.decorate("syncOpService", syncOpService);
   app.decorate("streamTracking", streamTracking);
 
+  // Load activity history retention from settings (issue #121)
+  const activityRow = db
+    .prepare("SELECT value FROM settings WHERE key = 'activity_history_max_events'")
+    .get() as { value: string } | undefined;
+  const activityMax = activityRow ? parseInt(activityRow.value, 10) : 10000;
+  if (Number.isFinite(activityMax) && activityMax >= 0) {
+    streamTracking.setMaxRows(activityMax);
+    syncOpService.setMaxRows(activityMax);
+  }
+
+  // Clean up any sync rows left in 'running' state by a previous process crash
+  // or by the pre-fix auto-sync that recorded no-op poll ticks.
+  const orphanCount = syncOpService.failStaleRunning(600);
+  if (orphanCount > 0) {
+    app.log.info(`Marked ${orphanCount} orphaned sync_operations row(s) as failed at startup`);
+  }
+
   const autoSync = new AutoSyncService(db, config, {
     info: (msg) => app.log.info(msg),
     error: (msg) => app.log.error(msg),

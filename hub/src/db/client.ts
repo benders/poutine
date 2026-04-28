@@ -128,6 +128,44 @@ function migrateTrackSources(db: Database.Database): void {
   `);
 }
 
+/**
+ * Issue #121: rewrite stream_operations with new fields. Drop old table on
+ * upgrade — activity history is ephemeral and not preserved.
+ */
+function migrateStreamOperations(db: Database.Database): void {
+  const cols = db
+    .prepare("PRAGMA table_info(stream_operations)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (cols.length > 0 && !names.has("kind")) {
+    db.exec("DROP TABLE IF EXISTS stream_operations");
+    db.exec(`
+      CREATE TABLE stream_operations (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT 'subsonic',
+        username TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        track_title TEXT NOT NULL,
+        artist_name TEXT NOT NULL,
+        client_name TEXT,
+        client_version TEXT,
+        peer_id TEXT,
+        source_kind TEXT,
+        source_peer_id TEXT,
+        format TEXT,
+        bitrate INTEGER,
+        transcoded INTEGER NOT NULL DEFAULT 0,
+        max_bitrate INTEGER,
+        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+        finished_at TEXT,
+        duration_ms INTEGER,
+        bytes_transferred INTEGER,
+        error TEXT
+      );
+    `);
+  }
+}
+
 export function createDatabase(dbPath: string): Database.Database {
   // Ensure the directory exists
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -156,6 +194,9 @@ export function createDatabase(dbPath: string): Database.Database {
 
   // Phase 5 data model cleanup: drop peer-import columns from track_sources
   migrateTrackSources(db);
+
+  // Issue #121: rewrite stream_operations schema
+  migrateStreamOperations(db);
 
   return db;
 }

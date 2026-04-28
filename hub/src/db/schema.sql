@@ -251,12 +251,23 @@ CREATE TABLE IF NOT EXISTS sync_operations (
 
 CREATE TABLE IF NOT EXISTS stream_operations (
   id TEXT PRIMARY KEY,              -- UUID
-  username TEXT NOT NULL,           -- Subsonic username
+  kind TEXT NOT NULL DEFAULT 'subsonic',  -- 'subsonic' | 'proxy'
+  username TEXT NOT NULL,           -- Subsonic username (or remote user for proxy)
   track_id TEXT NOT NULL,           -- unified_tracks.id
   track_title TEXT NOT NULL,
   artist_name TEXT NOT NULL,
+  client_name TEXT,                 -- Subsonic c= param
+  client_version TEXT,              -- Subsonic v= param
+  peer_id TEXT,                     -- non-null when kind='proxy'
+  source_kind TEXT,                 -- 'local' | 'peer'
+  source_peer_id TEXT,              -- when source_kind='peer'
+  format TEXT,                      -- source format
+  bitrate INTEGER,                  -- source bitrate
+  transcoded INTEGER NOT NULL DEFAULT 0,
+  max_bitrate INTEGER,              -- requested max bitrate when transcoded
   started_at TEXT NOT NULL DEFAULT (datetime('now')),
   finished_at TEXT,
   duration_ms INTEGER,              -- playback duration in milliseconds
-  bytes_transferred INTEGER         -- bytes streamed
+  bytes_transferred INTEGER,        -- bytes streamed
+  error TEXT
 );
