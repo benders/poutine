@@ -69,9 +69,11 @@ All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header i
 
 ## Endpoints
 
-**v3 has no content endpoints under `/federation/*`.**
+| Method | Path                       | Purpose                                                                       |
+|--------|----------------------------|-------------------------------------------------------------------------------|
+| `GET`  | `/federation/stream/:id`   | Stream audio from the receiver's local Navidrome to a peer (`:id` is the receiver's Navidrome track ID). Forwards Subsonic transcode params (`format`, `maxBitRate`, `timeOffset`, `estimateContentLength`) and `Range`. The receiver records each successful stream in its own activity log as `kind='proxy'` (issue #121). |
 
-Content (audio streams, cover art) and library metadata now travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
+Library metadata and cover art travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
 
 ---
 
@@ -80,8 +82,8 @@ Content (audio streams, cover art) and library metadata now travel through `/pro
 ### Version 3 (current)
 
 - **Removed** `GET /federation/library/export` — library metadata sync is superseded by the `/proxy/*` tier.
-- **Removed** `GET /federation/stream/:trackId` — audio proxying now handled by `/proxy/*`.
 - **Removed** `GET /federation/art/:encodedId` — cover art proxying now handled by `/proxy/*`.
+- `GET /federation/stream/:id` is retained: cross-peer audio streaming continues to flow through this route. Cover art and metadata moved to `/proxy/*`, but stream payloads stayed put.
 - Ed25519 signing scheme, `Poutine-Api-Version` response header, and peer registry (`peers.yaml`) are all retained and reused by `/proxy/*`.
 
 **Rationale:** The old federation content routes created a tight coupling between the exporting hub's Navidrome and the importing peer. The `/proxy/*` architecture (issue #49) decouples content delivery from library metadata, allows token-scoped access, and removes fan-out re-export risk. See issue #49 for full design rationale.

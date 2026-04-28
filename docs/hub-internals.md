@@ -119,6 +119,15 @@ Both defined in `hub/src/version.ts`. Protocol version also appears in `/library
 
 `USER_AGENT` is sent on every outgoing HTTP call from the hub: federation (`sign-request.ts`), Navidrome Subsonic (`adapters/subsonic.ts`), and peer health checks (`routes/admin.ts`).
 
+## Activity tracking
+
+Streams and syncs are recorded in `stream_operations` and `sync_operations`. Surfaced under `/admin/activity/*` and rendered by the SPA's top-level Activity page (issue #121).
+
+- **`StreamTrackingService`** (`hub/src/services/stream-tracking.ts`) records every Subsonic stream from `/rest/stream` and every peer-served stream from `/federation/stream/:id`. Subsonic-originated rows are `kind='subsonic'`; peer-served rows are `kind='proxy'` with `peer_id` + `username` set from the signed-request `x-poutine-user` header. Both capture `format`, `bitrate`, `transcoded`, `max_bitrate`, `source_kind` (`local` | `peer`), and `bytes_transferred`. The federation route honours the caller's `format` / `maxBitRate` query params so the source hub's row reflects the transcoded output, not the original file.
+- **`SyncOperationService`** (`hub/src/services/sync-operations.ts`) records every local + peer sync. `AutoSyncService` only inserts a row when there is actual work to do (Navidrome `lastScan > last_synced_at`); no-op poll ticks no longer create rows. `failStaleRunning(600)` runs at boot to mark any orphaned `running` rows as failed.
+- **Retention** is count-based via `settings.activity_history_max_events` (default 10000), exposed as `GET/PUT /admin/settings/activity`. `pruneToCount()` runs after every `finish()`. Stream pruning excludes rows with `finished_at IS NULL` so an in-flight stream's row is never deleted out from under its eventual `finish()` UPDATE.
+- **API**: `GET /admin/activity/active` (active streams + running syncs), `GET /admin/activity/history?kinds=stream,sync&limit=N` (combined timeline), `DELETE /admin/activity` (clear both), `GET /admin/activity/summary` (dashboard counters).
+
 ## Share IDs
 
 Users copy a "Share ID" for an album or artist from its detail page and paste it into Search on any peer hub that also syncs the same underlying library.
