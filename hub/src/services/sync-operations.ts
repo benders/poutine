@@ -20,7 +20,71 @@ export interface SyncOperation {
 }
 
 export class SyncOperationService {
+  private maxRows = 10000;
+
   constructor(private readonly db: Database.Database) {}
+
+  /**
+   * Mark any 'running' rows older than the given age as failed. Called at
+   * boot to clean up orphans left behind by previous crashes or by the
+   * pre-fix auto-sync that started rows it never finished.
+   */
+  failStaleRunning(maxAgeSeconds: number = 600): number {
+    const result = this.db
+      .prepare(
+        `UPDATE sync_operations
+         SET status = 'failed',
+             finished_at = datetime('now'),
+             duration_ms = (julianday(datetime('now')) - julianday(started_at)) * 86400000,
+             errors = ?
+         WHERE status = 'running'
+           AND (julianday(datetime('now')) - julianday(started_at)) * 86400 > ?`,
+      )
+      .run(JSON.stringify(["Marked failed at startup (orphaned)"]), maxAgeSeconds);
+    return result.changes;
+  }
+
+  setMaxRows(n: number): void {
+    this.maxRows = Math.max(0, Math.floor(n));
+    this.pruneToCount();
+  }
+
+  getMaxRows(): number {
+    return this.maxRows;
+  }
+
+  pruneToCount(): void {
+    if (this.maxRows <= 0) return;
+    this.db
+      .prepare(
+        `DELETE FROM sync_operations
+         WHERE status != 'running'
+           AND id NOT IN (
+             SELECT id FROM sync_operations
+             ORDER BY started_at DESC
+             LIMIT ?
+           )`,
+      )
+      .run(this.maxRows);
+  }
+
+  /**
+   * Update progress counts on a running sync (for live progress display).
+   */
+  updateProgress(
+    operationId: string,
+    artistCount: number,
+    albumCount: number,
+    trackCount: number,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE sync_operations
+         SET artist_count = ?, album_count = ?, track_count = ?
+         WHERE id = ?`,
+      )
+      .run(artistCount, albumCount, trackCount, operationId);
+  }
 
   /**
    * Start tracking a new sync operation.
@@ -64,6 +128,7 @@ export class SyncOperationService {
          WHERE id = ?`,
       )
       .run(artistCount, albumCount, trackCount, JSON.stringify(errors), operationId);
+    this.pruneToCount();
   }
 
   /**
@@ -80,6 +145,7 @@ export class SyncOperationService {
          WHERE id = ?`,
       )
       .run(JSON.stringify(errors), operationId);
+    this.pruneToCount();
   }
 
   /**

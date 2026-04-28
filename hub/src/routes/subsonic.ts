@@ -973,17 +973,9 @@ try {
     request.log.warn(`Stream tracking: track ${trackId} not found in unified_tracks`);
   }
 
-  // Start stream tracking
+  // Defer stream tracking start until after source/transcode resolution
+  // so we can record format/bitrate/source/transcode flags up front.
   let streamOpId: string | undefined;
-  if (trackRow) {
-    streamOpId = app.streamTracking.start(
-      request.subsonicUser.username,
-      trackRow.id,
-      trackRow.title,
-      trackRow.artist_name,
-    );
-    request.log.info(`Stream tracking started: ${streamOpId} for ${trackRow.title} by ${trackRow.artist_name}`);
-  }
 
   // Source selection happens at merge time (merge.ts sets preferred = 1).
   // At stream time we just look up THE source for this unified track.
@@ -1024,6 +1016,25 @@ try {
       ? request.headers.range
       : undefined;
 
+  if (trackRow) {
+    const transcoded = streamParams.has("format") || (Number.isFinite(cap) && srcBr > cap);
+    streamOpId = app.streamTracking.start({
+      kind: "subsonic",
+      username: request.subsonicUser.username,
+      trackId: trackRow.id,
+      trackTitle: trackRow.title,
+      artistName: trackRow.artist_name,
+      clientName: q.c ?? null,
+      clientVersion: q.v ?? null,
+      sourceKind: best.instance_id === "local" ? "local" : "peer",
+      sourcePeerId: best.instance_id === "local" ? null : best.instance_id,
+      format: best.format,
+      bitrate: best.bitrate,
+      transcoded,
+      maxBitrate: Number.isFinite(cap) ? cap : null,
+    });
+  }
+
   let response: Response;
   let bytesTransferred = 0;
 
@@ -1046,12 +1057,14 @@ try {
       if (rangeHeader) opts.range = rangeHeader;
       response = await client.stream(best.remote_id, opts);
     } catch {
+      if (streamOpId) app.streamTracking.finish(streamOpId, 0, "Stream error");
       sendBinaryError(reply, 502, "Stream error");
       return;
     }
   } else {
     const peer = app.peerRegistry.peers.get(best.instance_id);
     if (!peer) {
+      if (streamOpId) app.streamTracking.finish(streamOpId, 0, "Peer not available");
       sendBinaryError(reply, 502, "Peer not available");
       return;
     }
@@ -1067,12 +1080,14 @@ try {
         },
       );
     } catch {
+      if (streamOpId) app.streamTracking.finish(streamOpId, 0, "Peer stream error");
       sendBinaryError(reply, 502, "Peer stream error");
       return;
     }
   }
 
   if (!response.body) {
+    if (streamOpId) app.streamTracking.finish(streamOpId, 0, "Empty response from upstream");
     sendBinaryError(reply, 502, "Empty response from upstream");
     return;
   }
@@ -1095,18 +1110,19 @@ try {
   // Track bytes transferred
   nodeStream.on("data", (chunk) => {
     bytesTransferred += chunk.length;
+    if (streamOpId) app.streamTracking.updateBytes(streamOpId, bytesTransferred);
   });
-  
+
   // Finish tracking when stream ends or errors
   nodeStream.on("end", () => {
     if (streamOpId) {
-      app.streamTracking.finish(streamOpId, null, bytesTransferred);
+      app.streamTracking.finish(streamOpId, bytesTransferred, null);
     }
   });
-  
-  nodeStream.on("error", () => {
+
+  nodeStream.on("error", (err) => {
     if (streamOpId) {
-      app.streamTracking.finish(streamOpId, null, bytesTransferred);
+      app.streamTracking.finish(streamOpId, bytesTransferred, err instanceof Error ? err.message : String(err));
     }
   });
   

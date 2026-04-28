@@ -12,6 +12,7 @@ import {
   Shuffle,
   HardDrive,
   Server,
+  Activity,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { APP_VERSION } from "@/version";
@@ -20,6 +21,7 @@ import { NavGroup, NavGroupItem } from "./NavGroup";
 const flatNav = [
   { to: "/artists", icon: Users, label: "Artists" },
   { to: "/search", icon: Search, label: "Search" },
+  { to: "/activity", icon: Activity, label: "Activity" },
 ];
 
 export function Sidebar() {

@@ -37,8 +37,6 @@ export class AutoSyncService {
     if (this.running) return;
     this.running = true;
 
-    const operationId = this.syncOpService?.start("auto", "local") || null;
-
     try {
       const client = new SubsonicClient({
         url: this.config.navidromeUrl,
@@ -70,6 +68,9 @@ export class AutoSyncService {
       this.log.info(
         `AutoSync: Navidrome lastScan=${scanStatus.lastScan} is newer than lastSyncedAt=${lastSyncedAt?.toISOString() ?? "never"} — syncing local library`,
       );
+      // Record the operation only when we have actual work to do — avoids
+      // a "running" sync row appearing every 30s for no-op poll ticks.
+      const operationId = this.syncOpService?.start("auto", "local") || null;
       try {
         const result = await syncLocal(this.db, this.config, this.lastFmClient ?? null);
         mergeLibraries(this.db);

@@ -103,16 +103,77 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
+    // ── Stream tracking (issue #121) ──────────────────────────────────────────
+    // Record this peer-served stream as kind='proxy'. The track is identified
+    // by the Navidrome remote_id we just looked up; resolve to unified track
+    // metadata for display.
+    let streamOpId: string | undefined;
+    let bytesTransferred = 0;
+    if (
+      (upstreamResponse.statusCode ?? 0) >= 200 &&
+      (upstreamResponse.statusCode ?? 0) < 300
+    ) {
+      const trackRow = app.db
+        .prepare(
+          `SELECT ut.id AS track_id, ut.title, ua.name AS artist_name,
+                  ts.format, ts.bitrate
+           FROM instance_tracks it
+           JOIN track_sources ts ON ts.instance_track_id = it.id
+           JOIN unified_tracks ut ON ut.id = ts.unified_track_id
+           JOIN unified_artists ua ON ua.id = ut.artist_id
+           WHERE it.instance_id = 'local' AND it.remote_id = ?
+           LIMIT 1`,
+        )
+        .get(trackId) as
+        | {
+            track_id: string;
+            title: string;
+            artist_name: string;
+            format: string | null;
+            bitrate: number | null;
+          }
+        | undefined;
+      if (trackRow) {
+        streamOpId = app.streamTracking.start({
+          kind: "proxy",
+          username: request.peer.userAssertion,
+          trackId: trackRow.track_id,
+          trackTitle: trackRow.title,
+          artistName: trackRow.artist_name,
+          peerId: request.peer.id,
+          sourceKind: "local",
+          format: trackRow.format,
+          bitrate: trackRow.bitrate,
+          transcoded: false,
+        });
+      }
+    }
+
     reply.hijack();
     const raw = reply.raw;
     raw.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
 
+    if (streamOpId) {
+      upstreamResponse.on("data", (chunk: Buffer) => {
+        bytesTransferred += chunk.length;
+        app.streamTracking.updateBytes(streamOpId!, bytesTransferred);
+      });
+    }
+
     try {
       await pipeline(upstreamResponse, raw);
+      if (streamOpId) app.streamTracking.finish(streamOpId, bytesTransferred, null);
     } catch (err: unknown) {
       const nodeErr = err as NodeJS.ErrnoException;
       if (nodeErr.code !== "ERR_STREAM_PREMATURE_CLOSE") {
         app.log.error(err, "federation stream pipeline error");
+      }
+      if (streamOpId) {
+        app.streamTracking.finish(
+          streamOpId,
+          bytesTransferred,
+          nodeErr.code === "ERR_STREAM_PREMATURE_CLOSE" ? null : (nodeErr.message ?? "pipeline error"),
+        );
       }
     }
   });

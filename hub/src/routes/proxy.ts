@@ -177,7 +177,6 @@ export const proxyRoutes: FastifyPluginAsync<ProxyRoutesOptions> = async (
     try {
       await pipeline(upstreamResponse, raw);
     } catch (err: unknown) {
-      // Client disconnect is expected and non-fatal
       const nodeErr = err as NodeJS.ErrnoException;
       if (nodeErr.code !== "ERR_STREAM_PREMATURE_CLOSE") {
         app.log.error(err, "proxy pipeline error");
