@@ -363,6 +363,28 @@ describe("mergeLibraries", () => {
     expect(new Set(tracks.map(t => t.release_id)).size).toBe(2);
   });
 
+  it("should not collide on track_sources.id when one instance holds two files sharing recording MBID + release", () => {
+    // Reproduces "Flamenco Sketches (alternate take)" failure: a single
+    // instance has two files (e.g. main take and alternate take on the same
+    // compilation) that share both recording MBID and release. They merge
+    // into one unified_track and produce two source rows that must have
+    // distinct ids — which requires instance_track_id in the source-id hash.
+    const recordingMbid = "250b3f1d-7620-42a9-87b3-5d1a166e0f2f";
+    insertArtist(inst1, "md", "Miles Davis");
+    const album = insertAlbum(inst1, "kob-legacy", "Kind of Blue Legacy", `${inst1}:md`, { trackCount: 10, mbid: "release-kob" });
+    insertTrack(inst1, "t-main", album, "Flamenco Sketches", { mbid: recordingMbid, trackNumber: 5, durationMs: 568000 });
+    insertTrack(inst1, "t-alt", album, "Flamenco Sketches (alternate take)", { mbid: recordingMbid, trackNumber: 7, durationMs: 572000 });
+
+    expect(() => mergeLibraries(db)).not.toThrow();
+
+    const tracks = db.prepare("SELECT id FROM unified_tracks WHERE musicbrainz_id = ?").all(recordingMbid) as Array<{ id: string }>;
+    expect(tracks).toHaveLength(1);
+    const sources = db.prepare("SELECT id, instance_track_id FROM track_sources WHERE unified_track_id = ?").all(tracks[0].id) as Array<Record<string, unknown>>;
+    expect(sources).toHaveLength(2);
+    expect(new Set(sources.map(s => s.id)).size).toBe(2);
+    expect(new Set(sources.map(s => s.instance_track_id)).size).toBe(2);
+  });
+
   it("should clear and rebuild on re-merge", () => {
     insertArtist(inst1, "a1", "Radiohead");
     const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { trackCount: 1 });
@@ -552,8 +574,8 @@ describe("mergeLibraries", () => {
     const trackId = tracks[0].id;
 
     // Verify each source has deterministic ID
-    const source1Expected = generateTrackSourceId(trackId, inst1);
-    const source2Expected = generateTrackSourceId(trackId, inst2);
+    const source1Expected = generateTrackSourceId(trackId, inst1, `${inst1}:t1`);
+    const source2Expected = generateTrackSourceId(trackId, inst2, `${inst2}:t1`);
 
     const sourceIds = sources.map((s) => s.id).sort();
     expect(sourceIds).toContain(source1Expected);

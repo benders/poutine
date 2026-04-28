@@ -157,21 +157,29 @@ describe("generateTrackId", () => {
 });
 
 describe("generateTrackSourceId", () => {
-  it("should produce consistent IDs for same track and instance", () => {
-    const id1 = generateTrackSourceId("track-id-123", "instance-1");
-    const id2 = generateTrackSourceId("track-id-123", "instance-1");
+  it("should produce consistent IDs for same unified track + instance + instance_track", () => {
+    const id1 = generateTrackSourceId("track-id-123", "instance-1", "it-1");
+    const id2 = generateTrackSourceId("track-id-123", "instance-1", "it-1");
     expect(id1).toBe(id2);
   });
 
   it("should produce different IDs for different instances", () => {
-    const id1 = generateTrackSourceId("track-id-123", "instance-1");
-    const id2 = generateTrackSourceId("track-id-123", "instance-2");
+    const id1 = generateTrackSourceId("track-id-123", "instance-1", "it-1");
+    const id2 = generateTrackSourceId("track-id-123", "instance-2", "it-1");
     expect(id1).not.toBe(id2);
   });
 
-  it("should produce different IDs for different tracks", () => {
-    const id1 = generateTrackSourceId("track-id-1", "instance-1");
-    const id2 = generateTrackSourceId("track-id-2", "instance-1");
+  it("should produce different IDs for different unified tracks", () => {
+    const id1 = generateTrackSourceId("track-id-1", "instance-1", "it-1");
+    const id2 = generateTrackSourceId("track-id-2", "instance-1", "it-1");
+    expect(id1).not.toBe(id2);
+  });
+
+  it("should produce different IDs when one instance has multiple files for the same unified track", () => {
+    // E.g. a recording MBID shared by an alt-take and the canonical take that
+    // both belong to the same release. Each file is a distinct source row.
+    const id1 = generateTrackSourceId("track-id-123", "instance-1", "instance-1:fileA");
+    const id2 = generateTrackSourceId("track-id-123", "instance-1", "instance-1:fileB");
     expect(id1).not.toBe(id2);
   });
 });

@@ -68,6 +68,14 @@ export function generateTrackId(
   );
 }
 
-export function generateTrackSourceId(unifiedTrackId: string, instanceId: string): string {
-  return generateDeterministicId("track_source", unifiedTrackId, instanceId);
+export function generateTrackSourceId(
+  unifiedTrackId: string,
+  instanceId: string,
+  instanceTrackId: string,
+): string {
+  // An instance can legitimately hold multiple files for one unified track
+  // (e.g. an alt-take and a main take that share a recording MBID, or
+  // duplicate rips). The schema's UNIQUE(unified_track_id, instance_track_id)
+  // already permits this, so the source id must include instanceTrackId.
+  return generateDeterministicId("track_source", unifiedTrackId, instanceId, instanceTrackId);
 }
