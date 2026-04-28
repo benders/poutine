@@ -93,6 +93,18 @@ describe("generateReleaseId", () => {
     const id2 = generateReleaseId("OK Computer (Deluxe)", "rg-id-123", null);
     expect(id1).not.toBe(id2);
   });
+
+  it("should distinguish non-MBID releases that share name+RG but differ in track count", () => {
+    const id1 = generateReleaseId("old ideas", "rg-id-123", null, 1);
+    const id2 = generateReleaseId("old ideas", "rg-id-123", null, 8);
+    expect(id1).not.toBe(id2);
+  });
+
+  it("should be stable for non-MBID releases with same name+RG+trackCount", () => {
+    const id1 = generateReleaseId("old ideas", "rg-id-123", null, 8);
+    const id2 = generateReleaseId("old ideas", "rg-id-123", null, 8);
+    expect(id1).toBe(id2);
+  });
 });
 
 describe("generateTrackId", () => {
@@ -123,6 +135,23 @@ describe("generateTrackId", () => {
   it("should handle null track numbers", () => {
     const id1 = generateTrackId("track", "artist-id", "release-id", null, null, null, null);
     const id2 = generateTrackId("track", "artist-id", "release-id", null, null, null, null);
+    expect(id1).toBe(id2);
+  });
+
+  it("should distinguish the same recording MBID across different releases", () => {
+    // MusicBrainz recordings can legitimately appear on multiple releases
+    // (single + album + compilation). Each should resolve to its own
+    // unified_track scoped by releaseId.
+    const mbid = "7a7d7fb7-075b-4fdc-8c5e-9b5e03ee00b3";
+    const idSingle = generateTrackId("setting sun", "artist", "release-single", mbid, 1, 1, 322000);
+    const idAlbum = generateTrackId("setting sun", "artist", "release-album", mbid, 5, 1, 329000);
+    expect(idSingle).not.toBe(idAlbum);
+  });
+
+  it("should be stable for the same MBID on the same release", () => {
+    const mbid = "rec-mbid";
+    const id1 = generateTrackId("song", "artist", "release-1", mbid, 1, 1, 200000);
+    const id2 = generateTrackId("different title", "artist", "release-1", mbid, 7, 2, 999999);
     expect(id1).toBe(id2);
   });
 });

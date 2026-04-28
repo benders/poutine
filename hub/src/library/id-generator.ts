@@ -28,11 +28,17 @@ export function generateReleaseId(
   nameNormalized: string,
   releaseGroupId: string,
   musicbrainzId: string | null,
+  trackCount: number | null = null,
 ): string {
   if (musicbrainzId) {
     return generateDeterministicId("release", musicbrainzId);
   }
-  return generateDeterministicId("release", releaseGroupId, nameNormalized);
+  return generateDeterministicId(
+    "release",
+    releaseGroupId,
+    nameNormalized,
+    trackCount?.toString() ?? "null",
+  );
 }
 
 export function generateTrackId(
@@ -45,7 +51,11 @@ export function generateTrackId(
   durationMs: number | null = null,
 ): string {
   if (musicbrainzId) {
-    return generateDeterministicId("track", musicbrainzId);
+    // A MusicBrainz recording MBID is unique per recording, but the same
+    // recording can legitimately appear on multiple releases (single, album,
+    // compilation). Scope the id by releaseId so two appearances become two
+    // unified_tracks rather than colliding on the PK.
+    return generateDeterministicId("track", releaseId, musicbrainzId);
   }
   return generateDeterministicId(
     "track",
