@@ -134,6 +134,15 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
           }
         | undefined;
       if (trackRow) {
+        // Honor the caller's transcode params so the activity row reflects
+        // what was actually streamed, not the original source file.
+        const reqFormat = q.format ? String(q.format) : null;
+        const reqMaxBitrate = q.maxBitRate ? Number(q.maxBitRate) : NaN;
+        const srcBr = trackRow.bitrate ?? 0;
+        const capApplies = Number.isFinite(reqMaxBitrate) && srcBr > reqMaxBitrate;
+        const transcoded = reqFormat !== null || capApplies;
+        const effectiveFormat = reqFormat ?? trackRow.format;
+        const effectiveBitrate = capApplies ? reqMaxBitrate : trackRow.bitrate;
         streamOpId = app.streamTracking.start({
           kind: "proxy",
           username: request.peer.userAssertion,
@@ -142,9 +151,10 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
           artistName: trackRow.artist_name,
           peerId: request.peer.id,
           sourceKind: "local",
-          format: trackRow.format,
-          bitrate: trackRow.bitrate,
-          transcoded: false,
+          format: effectiveFormat,
+          bitrate: effectiveBitrate,
+          transcoded,
+          maxBitrate: Number.isFinite(reqMaxBitrate) ? reqMaxBitrate : null,
         });
       }
     }
