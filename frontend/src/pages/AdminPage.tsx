@@ -100,25 +100,33 @@ function InstanceSection() {
 
   return (
     <div className="bg-surface border border-border rounded-lg p-4 space-y-4">
-      {/* Identity */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <Server className="w-4 h-4 text-text-muted shrink-0" />
-          <span className="text-xs text-text-secondary uppercase tracking-wide font-medium">Instance ID</span>
-        </div>
-        <div className="flex items-center gap-2 pl-6">
-          <code className="flex-1 text-sm text-text-primary font-mono bg-surface-hover px-2 py-1 rounded">{info.instanceId || "(not set)"}</code>
+      {/* Identity — mirrors PeerRow layout */}
+      <div className="px-4 py-3 bg-surface border border-border rounded-lg">
+        <div className="flex items-center gap-4">
+          <Server className="w-5 h-5 text-text-muted shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-text-primary truncate">{info.instanceId || "(not set)"}</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">
+                <Wifi className="w-3 h-3" />
+                Online
+              </span>
+            </div>
+            <p className="text-xs text-text-muted truncate">
+              v{info.appVersion} · api {info.apiVersion}
+            </p>
+          </div>
           {info.instanceId && <CopyButton text={info.instanceId} />}
         </div>
-
-        <div className="flex items-center gap-2">
-          <Activity className="w-4 h-4 text-text-muted shrink-0" />
-          <span className="text-xs text-text-secondary uppercase tracking-wide font-medium">Federation API Version</span>
+        <div className="mt-2 ml-9 flex gap-4 text-xs text-text-secondary">
+          <span>{info.artistCount.toLocaleString()} artists</span>
+          <span>{info.albumCount.toLocaleString()} albums</span>
+          <span>{info.trackCount.toLocaleString()} tracks</span>
         </div>
-        <div className="flex items-center gap-2 pl-6">
-          <code className="flex-1 text-sm text-text-primary font-mono bg-surface-hover px-2 py-1 rounded">{info.apiVersion}</code>
-        </div>
+      </div>
 
+      {/* Public Key — copyable */}
+      <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-text-muted shrink-0" />
           <span className="text-xs text-text-secondary uppercase tracking-wide font-medium">Public Key</span>

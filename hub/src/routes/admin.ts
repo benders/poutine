@@ -6,7 +6,7 @@ import { SyncOperationService } from "../services/sync-operations.js";
 import { StreamTrackingService } from "../services/stream-tracking.js";
 import { mergeLibraries } from "../library/merge.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
-import { FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
+import { APP_VERSION, FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -275,10 +275,26 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       // Navidrome unreachable — leave as null
     }
 
+    const localStats = app.db
+      .prepare<[], { track_count: number; artist_count: number; album_count: number }>(`
+        SELECT
+          COUNT(DISTINCT ts.unified_track_id) AS track_count,
+          COUNT(DISTINCT ut.artist_id)        AS artist_count,
+          COUNT(DISTINCT ut.release_id)       AS album_count
+        FROM track_sources ts
+        JOIN unified_tracks ut ON ts.unified_track_id = ut.id
+        WHERE ts.instance_id = 'local'
+      `)
+      .get() ?? { track_count: 0, artist_count: 0, album_count: 0 };
+
     return {
       instanceId: app.config.poutineInstanceId,
       publicKey: app.publicKeySpec,
+      appVersion: APP_VERSION,
       apiVersion: FEDERATION_API_VERSION,
+      artistCount: localStats.artist_count,
+      albumCount: localStats.album_count,
+      trackCount: localStats.track_count,
       navidrome: {
         reachable: scanStatus !== null,
         scanning: scanStatus?.scanning ?? false,

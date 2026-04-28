@@ -468,6 +468,11 @@ describe("admin — instance", () => {
     const body = res.json();
     expect(typeof body.instanceId).toBe("string");
     expect(body.publicKey).toMatch(/^ed25519:/);
+    expect(typeof body.appVersion).toBe("string");
+    expect(typeof body.apiVersion).toBe("number");
+    expect(typeof body.artistCount).toBe("number");
+    expect(typeof body.albumCount).toBe("number");
+    expect(typeof body.trackCount).toBe("number");
     expect(body.navidrome.reachable).toBe(true);
     expect(body.navidrome.scanning).toBe(false);
     expect(body.navidrome.folderCount).toBe(2);

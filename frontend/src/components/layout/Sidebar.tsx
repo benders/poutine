@@ -14,6 +14,7 @@ import {
   Server,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { APP_VERSION } from "@/version";
 import { NavGroup, NavGroupItem } from "./NavGroup";
 
 const flatNav = [
@@ -40,9 +41,12 @@ export function Sidebar() {
 
   return (
     <aside className="w-56 shrink-0 bg-surface border-r border-border flex flex-col h-full">
-      <div className="p-4 flex items-center gap-2">
-        <Disc3 className="w-6 h-6 text-accent" />
-        <span className="text-lg font-semibold">Poutine</span>
+      <div className="px-4 pt-4 pb-3 flex items-center gap-2">
+        <Disc3 className="w-6 h-6 text-accent shrink-0" />
+        <div className="flex flex-col leading-tight">
+          <span className="text-lg font-semibold">Poutine</span>
+          <span className="text-[10px] text-text-muted font-mono">v{APP_VERSION}</span>
+        </div>
       </div>
 
       <nav className="flex-1 px-2 py-2 space-y-0.5 overflow-y-auto">
