@@ -204,14 +204,17 @@ export class StreamTrackingService {
 
   pruneToCount(): void {
     if (this.maxRows <= 0) return;
+    // Never prune rows whose stream is still active — their DB row is updated
+    // on finish(), so deleting it would silently lose the result.
     this.db
       .prepare(
         `DELETE FROM stream_operations
-         WHERE id NOT IN (
-           SELECT id FROM stream_operations
-           ORDER BY started_at DESC, id DESC
-           LIMIT ?
-         )`,
+         WHERE finished_at IS NOT NULL
+           AND id NOT IN (
+             SELECT id FROM stream_operations
+             ORDER BY started_at DESC, id DESC
+             LIMIT ?
+           )`,
       )
       .run(this.maxRows);
   }
