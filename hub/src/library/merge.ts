@@ -290,7 +290,8 @@ export function mergeLibraries(db: Database.Database): void {
 
       for (const [mbid, group] of byMbid) {
         const rep = group[0];
-        const id = generateReleaseId(rep.name as string, rgId, mbid);
+        const nameNormalized = normalizeName(rep.name as string);
+        const id = generateReleaseId(nameNormalized, rgId, mbid);
         insertRelease.run(
           id,
           rgId,
@@ -318,7 +319,8 @@ export function mergeLibraries(db: Database.Database): void {
 
       for (const [, group] of byTrackCount) {
         const rep = group[0];
-        const id = generateReleaseId(rep.name as string, rgId, null);
+        const nameNormalized = normalizeName(rep.name as string);
+        const id = generateReleaseId(nameNormalized, rgId, null);
         insertRelease.run(
           id,
           rgId,
