@@ -21,6 +21,7 @@ import { ensureJwtSecret } from "./auth/jwt-secret.js";
 import { loadOrCreatePasswordKey } from "./auth/password-crypto.js";
 import { AutoSyncService } from "./services/auto-sync.js";
 import { SyncOperationService } from "./services/sync-operations.js";
+import { PeerAutoSyncService } from "./services/peer-auto-sync.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
 import { LastFmClient } from "./services/lastfm.js";
 import type { Config } from "./config.js";
@@ -42,6 +43,7 @@ declare module "fastify" {
   federatedFetch: ReturnType<typeof FetcherFactory>;
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
+  peerAutoSync: PeerAutoSyncService;
   lastFmClient: LastFmClient | null;
 }
 }
@@ -193,6 +195,14 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     info: (msg) => app.log.info(msg),
     error: (msg) => app.log.error(msg),
 }, syncOpService, lastFmClient);
+
+  // Peer auto-sync: automatically syncs peers on a configurable interval
+  const peerAutoSync = new PeerAutoSyncService(db, config, peerRegistry, app.federatedFetch, config.poutineOwnerUsername, {
+    info: (msg) => app.log.info(msg),
+    error: (msg) => app.log.error(msg),
+    debug: (msg) => app.log.debug(msg),
+  }, lastFmClient, syncOpService);
+  app.decorate("peerAutoSync", peerAutoSync);
 
   // SIGHUP handler to reload peer registry without restart
   const sighupHandler = () => {

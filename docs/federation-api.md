@@ -69,7 +69,7 @@ All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header i
 
 ## Endpoints
 
-**v3 has no content endpoints under `/federation/*`.**
+**v4 has no content endpoints under `/federation/*`.**
 
 Content (audio streams, cover art) and library metadata now travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
 
@@ -77,7 +77,12 @@ Content (audio streams, cover art) and library metadata now travel through `/pro
 
 ## Changelog
 
-### Version 3 (current)
+### Version 4 (current)
+
+- **Added** `lastNavidromeSync` field to `/api/health` response — timestamp of the peer's last Navidrome library sync. Used by automatic peer sync to determine if a peer needs syncing.
+- **Updated** `/admin/peers` endpoint to update `last_seen` timestamp on each health check, and to expose `lastNavidromeSync` from peer health checks.
+
+### Version 3
 
 - **Removed** `GET /federation/library/export` — library metadata sync is superseded by the `/proxy/*` tier.
 - **Removed** `GET /federation/stream/:trackId` — audio proxying now handled by `/proxy/*`.

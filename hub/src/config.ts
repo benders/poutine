@@ -24,6 +24,7 @@ export interface Config {
   staticDir: string | undefined;
   // Optional: Last.fm API key for artist images and metadata
   lastFmApiKey: string | undefined;
+  peerSyncIntervalSeconds: number;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -82,5 +83,9 @@ export function loadConfig(): Config {
     ),
     staticDir: process.env.PUBLIC_DIR || undefined,
     lastFmApiKey: process.env.LASTFM_API_KEY || undefined,
+    peerSyncIntervalSeconds: parseInt(
+      process.env.PEER_SYNC_INTERVAL_SECONDS || "300",
+      10,
+    ),
   };
 }
