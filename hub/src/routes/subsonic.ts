@@ -1366,48 +1366,9 @@ try {
       )
       .all(userId) as Array<ReleaseGroupRow & { starred_at: string }>;
 
-    // Songs in the Favorites envelope = directly-starred tracks ∪ all tracks
-    // belonging to a starred album. The `track_starred_at` column is the
-    // user's *direct* star on the track (NULL when the track is in the list
-    // only because its album is starred), so the SPA's per-row star icon
-    // reflects the track's own state, not its album's.
-    //
-    // `effective_starred_at` is used purely for ordering — most-recently
-    // engaged-with first (whether the engagement was a track-star or an
-    // album-star).
     const songs = app.db
       .prepare(
-        `WITH track_stars AS (
-          SELECT us.target_id AS track_id, us.starred_at
-          FROM user_stars us
-          WHERE us.user_id = ? AND us.kind = 'track'
-        ),
-        album_track_stars AS (
-          SELECT ut.id AS track_id, us.starred_at
-          FROM user_stars us
-          JOIN unified_release_groups urg ON urg.id = us.target_id
-          JOIN unified_releases ur ON ur.release_group_id = urg.id
-          JOIN unified_tracks ut ON ut.release_id = ur.id
-          WHERE us.user_id = ? AND us.kind = 'album'
-        ),
-        favorite_tracks AS (
-          SELECT track_id,
-                 MAX(track_starred_at) AS track_starred_at,
-                 MAX(effective_starred_at) AS effective_starred_at
-          FROM (
-            SELECT track_id,
-                   starred_at AS track_starred_at,
-                   starred_at AS effective_starred_at
-            FROM track_stars
-            UNION ALL
-            SELECT track_id,
-                   NULL AS track_starred_at,
-                   starred_at AS effective_starred_at
-            FROM album_track_stars
-          )
-          GROUP BY track_id
-        )
-        SELECT
+        `SELECT
           ut.id, ut.title, ut.track_number, ut.disc_number,
           ut.duration_ms, ut.genre, ut.musicbrainz_id,
           ut.artist_id, ua.name AS artist_name,
@@ -1423,21 +1384,16 @@ try {
            JOIN instances i ON i.id = ts.instance_id
            WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name,
-          ft.track_starred_at AS starred_at,
-          ft.effective_starred_at AS effective_starred_at
-        FROM favorite_tracks ft
-        JOIN unified_tracks ut ON ut.id = ft.track_id
+          us.starred_at
+        FROM user_stars us
+        JOIN unified_tracks ut ON ut.id = us.target_id
         JOIN unified_artists ua ON ua.id = ut.artist_id
         JOIN unified_releases ur ON ur.id = ut.release_id
         JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-        ORDER BY ft.effective_starred_at DESC,
-                 urg.id,
-                 ut.disc_number,
-                 ut.track_number`,
+        WHERE us.user_id = ? AND us.kind = 'track'
+        ORDER BY us.starred_at DESC`,
       )
-      .all(userId, userId) as Array<
-        TrackRow & { starred_at: string | null; effective_starred_at: string }
-      >;
+      .all(userId) as Array<TrackRow & { starred_at: string }>;
 
     return {
       artist: artists.map((a) => ({
@@ -1453,9 +1409,7 @@ try {
       })),
       song: songs.map((s) => ({
         ...buildSong(s),
-        // Only annotate `starred` when the track itself is starred — tracks
-        // pulled in via a starred album are unstarred from the user's POV.
-        starred: s.starred_at ? toIsoStarred(s.starred_at) : undefined,
+        starred: toIsoStarred(s.starred_at),
       })),
     };
   }

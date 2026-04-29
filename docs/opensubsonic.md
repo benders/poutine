@@ -88,7 +88,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | `getSongsByGenre` | NOT IMPLEMENTED |                                                                                                |
 | `getNowPlaying`   | Stub            | Always returns an empty list                                                                   |
 | `getStarred`      | Implemented     | Returns the same envelope as `getStarred2` under the legacy `starred` key (issue #104).        |
-| `getStarred2`     | Implemented     | Per-user starred artists/albums/songs from `user_stars`. **Poutine extension:** the `song` array is the union of directly-starred tracks and every track on a starred album, deduped; tracks pulled in via an album have no `starred` field (only direct track-stars do), so the SPA's per-row star icon reflects the track's own state. Orphan rows (target gone after a sync) are filtered at read time (issue #104). |
+| `getStarred2`     | Implemented     | Per-user starred artists/albums/songs from `user_stars`. Orphan rows (target gone after a sync) are filtered at read time (issue #104). |
 
 ### Searching
 
