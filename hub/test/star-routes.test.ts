@@ -146,6 +146,42 @@ describe("star / unstar / getStarred2 (#104)", () => {
     expect(body.starred2).toBeUndefined();
   });
 
+  it("getAlbumList2?type=starred returns only starred albums", async () => {
+    // Seed a second album the user does NOT star
+    app.db
+      .prepare(
+        "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id) VALUES (?, ?, ?, ?)",
+      )
+      .run("rg-2", "Other Album", "other album", "art-1");
+
+    await app.inject({ method: "GET", url: `/rest/star?${QS}&id=alrg-1` });
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/getAlbumList2?${QS}&type=starred`,
+    });
+    const albums = res.json()["subsonic-response"].albumList2.album as Array<{
+      id: string;
+      starred?: string;
+    }>;
+    expect(albums).toHaveLength(1);
+    expect(albums[0].id).toBe("alrg-1");
+    expect(albums[0].starred).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("getAlbum annotates starred on the album and on starred tracks", async () => {
+    await app.inject({
+      method: "GET",
+      url: `/rest/star?${QS}&id=alrg-1&id=ttrk-1`,
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/getAlbum?${QS}&id=alrg-1`,
+    });
+    const album = res.json()["subsonic-response"].album;
+    expect(album.starred).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(album.song[0].starred).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
   it("albumId / artistId params still classify correctly", async () => {
     await app.inject({
       method: "GET",

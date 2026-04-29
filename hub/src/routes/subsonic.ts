@@ -168,6 +168,42 @@ function buildSong(row: TrackRow) {
 
 // ── Album shape builder ───────────────────────────────────────────────────────
 
+// ── Star annotation helper (#104) ─────────────────────────────────────────────
+// Post-fetch lookup that mutates already-built Subsonic objects with their
+// `starred` ISO timestamp for the requesting user. Encoded ids of the form
+// `<prefix><uuid>` are stripped to match `user_stars.target_id`.
+function annotateStarred<T extends { id: string }>(
+  db: import("better-sqlite3").Database,
+  userId: string | undefined,
+  kind: "track" | "album" | "artist",
+  prefix: string,
+  items: T[],
+): void {
+  if (!userId || items.length === 0) return;
+  const rawIds = items.map((it) =>
+    it.id.startsWith(prefix) ? it.id.slice(prefix.length) : it.id,
+  );
+  const placeholders = rawIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT target_id, starred_at FROM user_stars
+       WHERE user_id = ? AND kind = ? AND target_id IN (${placeholders})`,
+    )
+    .all(userId, kind, ...rawIds) as Array<{
+      target_id: string;
+      starred_at: string;
+    }>;
+  if (rows.length === 0) return;
+  const map = new Map(rows.map((r) => [r.target_id, r.starred_at]));
+  for (let i = 0; i < items.length; i++) {
+    const ts = map.get(rawIds[i]);
+    if (ts) {
+      const isoTs = ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`;
+      (items[i] as T & { starred?: string }).starred = isoTs;
+    }
+  }
+}
+
 function buildAlbum(row: ReleaseGroupRow) {
   return {
     id: encodeId("al", row.id),
@@ -385,16 +421,26 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const shareId = pickArtistShareId(app.db, artist.id);
 
-    sendSubsonicOk(reply, q, {
-      artist: {
-        id: encodeId("ar", artist.id),
-        name: artist.name,
-        albumCount: albums.length,
-        coverArt: artist.image_url ?? undefined,
-        shareId: shareId ?? undefined,
-        album: albums.map(buildAlbum),
-      },
-    });
+    const builtAlbums = albums.map(buildAlbum);
+    annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
+    const artistObj: {
+      id: string;
+      name: string;
+      albumCount: number;
+      coverArt?: string;
+      shareId?: string;
+      album: ReturnType<typeof buildAlbum>[];
+      starred?: string;
+    } = {
+      id: encodeId("ar", artist.id),
+      name: artist.name,
+      albumCount: albums.length,
+      coverArt: artist.image_url ?? undefined,
+      shareId: shareId ?? undefined,
+      album: builtAlbums,
+    };
+    annotateStarred(app.db, request.subsonicUser?.id, "artist", "ar", [artistObj]);
+    sendSubsonicOk(reply, q, { artist: artistObj });
   });
 
 // ── getArtistInfo2 ────────────────────────────────────────────────────────
@@ -500,6 +546,14 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     let where = "WHERE 1=1";
     const params: unknown[] = [];
 
+    // type=starred — restrict to albums starred by the requesting user. (#104)
+    if (type === "starred") {
+      where +=
+        " AND EXISTS (SELECT 1 FROM user_stars us " +
+        "WHERE us.user_id = ? AND us.kind = 'album' AND us.target_id = urg.id)";
+      params.push(request.subsonicUser.id);
+    }
+
     // EXISTS avoids row multiplication when an album has multiple sources.
     if (instanceId) {
       where +=
@@ -541,6 +595,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       case "random":
         orderBy = "RANDOM()";
         break;
+      case "starred":
+        orderBy = "urg.name_normalized ASC";
+        break;
       // frequent, recent, highest — fall back to newest (no play tracking yet)
       default:
         orderBy = "urg.created_at DESC";
@@ -565,9 +622,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       )
       .all(...params) as ReleaseGroupRow[];
 
-    sendSubsonicOk(reply, q, {
-      albumList2: { album: albums.map(buildAlbum) },
-    });
+    const builtAlbums = albums.map(buildAlbum);
+    annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
+    sendSubsonicOk(reply, q, { albumList2: { album: builtAlbums } });
   });
 
   // ── getAlbum ────────────────────────────────────────────────────────────────
@@ -651,20 +708,37 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const shareId = pickAlbumShareId(app.db, rg.id);
 
+    const builtSongs = tracks.map(buildSong);
+    annotateStarred(app.db, request.subsonicUser?.id, "track", "t", builtSongs);
+    const albumObj: {
+      id: string;
+      name: string;
+      artist: string;
+      artistId: string;
+      coverArt?: string;
+      songCount: number;
+      duration: number;
+      year?: number;
+      genre?: string;
+      shareId?: string;
+      song: ReturnType<typeof buildSong>[];
+      starred?: string;
+    } = {
+      id: encodeId("al", rg.id),
+      name: rg.name,
+      artist: rg.artist_name,
+      artistId: encodeId("ar", rg.artist_id),
+      coverArt: rg.image_url ?? undefined,
+      songCount: tracks.length,
+      duration: totalDuration,
+      year: rg.year ?? undefined,
+      genre: rg.genre ?? undefined,
+      shareId: shareId ?? undefined,
+      song: builtSongs,
+    };
+    annotateStarred(app.db, request.subsonicUser?.id, "album", "al", [albumObj]);
     sendSubsonicOk(reply, q, {
-      album: {
-        id: encodeId("al", rg.id),
-        name: rg.name,
-        artist: rg.artist_name,
-        artistId: encodeId("ar", rg.artist_id),
-        coverArt: rg.image_url ?? undefined,
-        songCount: tracks.length,
-        duration: totalDuration,
-        year: rg.year ?? undefined,
-        genre: rg.genre ?? undefined,
-        shareId: shareId ?? undefined,
-        song: tracks.map(buildSong),
-      },
+      album: albumObj,
     });
   });
 
@@ -709,7 +783,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    sendSubsonicOk(reply, q, { song: buildSong(row) });
+    const built = buildSong(row);
+    annotateStarred(app.db, request.subsonicUser?.id, "track", "t", [built]);
+    sendSubsonicOk(reply, q, { song: built });
   });
 
   // ── search3 ─────────────────────────────────────────────────────────────────
@@ -835,15 +911,21 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         songOffset,
       ) as TrackRow[];
 
+    const builtArtists = artists.map((a) => ({
+      id: encodeId("ar", a.id),
+      name: a.name,
+      albumCount: a.albumCount,
+    }));
+    const builtAlbums = albums.map(buildAlbum);
+    const builtSongs = songs.map(buildSong);
+    annotateStarred(app.db, request.subsonicUser?.id, "artist", "ar", builtArtists);
+    annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
+    annotateStarred(app.db, request.subsonicUser?.id, "track", "t", builtSongs);
     sendSubsonicOk(reply, q, {
       searchResult3: {
-        artist: artists.map((a) => ({
-          id: encodeId("ar", a.id),
-          name: a.name,
-          albumCount: a.albumCount,
-        })),
-        album: albums.map(buildAlbum),
-        song: songs.map(buildSong),
+        artist: builtArtists,
+        album: builtAlbums,
+        song: builtSongs,
       },
     });
   });

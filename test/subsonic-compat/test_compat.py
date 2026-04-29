@@ -294,6 +294,71 @@ def test_xml_format_supported(conn):
     assert b"<subsonic-response" in body and b'status="ok"' in body
 
 
+def test_star_unstar_round_trip(conn):
+    """Issue #104: star a song, see it in getStarred2, unstar, gone."""
+    r = conn.getAlbumList2(ltype="recent", size=1)
+    albums = r["albumList2"].get("album", [])
+    if isinstance(albums, dict):
+        albums = [albums]
+    if not albums:
+        pytest.skip("no albums to derive a song from")
+    full = conn.getAlbum(id=albums[0]["id"])["album"]
+    songs = full.get("song", [])
+    if isinstance(songs, dict):
+        songs = [songs]
+    if not songs:
+        pytest.skip("no songs to star")
+    sid = songs[0]["id"]
+
+    # Clean slate in case a prior run left it starred.
+    conn.unstar(sids=[sid])
+    conn.star(sids=[sid])
+
+    starred = conn.getStarred2()["starred2"]
+    starred_songs = starred.get("song", [])
+    if isinstance(starred_songs, dict):
+        starred_songs = [starred_songs]
+    assert any(s["id"] == sid for s in starred_songs), (
+        f"starred song {sid} not in getStarred2"
+    )
+    assert any(
+        "starred" in s for s in starred_songs
+    ), "songs in getStarred2 must include 'starred' timestamp"
+
+    conn.unstar(sids=[sid])
+    starred = conn.getStarred2()["starred2"]
+    starred_songs = starred.get("song", [])
+    if isinstance(starred_songs, dict):
+        starred_songs = [starred_songs]
+    assert not any(s["id"] == sid for s in starred_songs), (
+        "song still in getStarred2 after unstar"
+    )
+
+
+def test_get_album_list2_starred(conn):
+    """Issue #104: getAlbumList2?type=starred returns only starred albums."""
+    r = conn.getAlbumList2(ltype="recent", size=1)
+    albums = r["albumList2"].get("album", [])
+    if isinstance(albums, dict):
+        albums = [albums]
+    if not albums:
+        pytest.skip("no albums")
+    aid = albums[0]["id"]
+
+    conn.unstar(albumIds=[aid])
+    conn.star(albumIds=[aid])
+
+    r = conn.getAlbumList2(ltype="starred", size=500)
+    starred = r["albumList2"].get("album", [])
+    if isinstance(starred, dict):
+        starred = [starred]
+    assert any(a["id"] == aid for a in starred), (
+        f"starred album {aid} missing from type=starred list"
+    )
+
+    conn.unstar(albumIds=[aid])
+
+
 def test_invalid_password_returns_subsonic_error(conn):
     import libsonic
     bad = libsonic.Connection(
