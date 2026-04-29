@@ -83,12 +83,12 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | Endpoint          | Status          | Notes                                                                                          |
 |-------------------|-----------------|------------------------------------------------------------------------------------------------|
 | `getAlbumList`    | NOT IMPLEMENTED |                                                                                                |
-| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`. Honors standard `musicFolderId` (resolved via `instances.musicfolder_id`). **EOL alias:** `instanceId=<local\|peerId>` filters by raw instance UUID — kept for in-tree callers mid-migration; do not adopt in new code, scheduled for removal. Unknown `musicFolderId` returns an empty list. |
+| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`, `starred` (per-user, issue #104). Honors standard `musicFolderId` (resolved via `instances.musicfolder_id`). **EOL alias:** `instanceId=<local\|peerId>` filters by raw instance UUID — kept for in-tree callers mid-migration; do not adopt in new code, scheduled for removal. Unknown `musicFolderId` returns an empty list. |
 | `getRandomSongs`  | NOT IMPLEMENTED |                                                                                                |
 | `getSongsByGenre` | NOT IMPLEMENTED |                                                                                                |
 | `getNowPlaying`   | Stub            | Always returns an empty list                                                                   |
-| `getStarred`      | NOT IMPLEMENTED |                                                                                                |
-| `getStarred2`     | NOT IMPLEMENTED |                                                                                                |
+| `getStarred`      | Implemented     | Returns the same envelope as `getStarred2` under the legacy `starred` key (issue #104).        |
+| `getStarred2`     | Implemented     | Per-user starred artists/albums/songs from `user_stars`. Orphan rows (target gone after a sync) are filtered at read time (issue #104). |
 
 ### Searching
 
@@ -123,12 +123,17 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 
 ### Media annotation
 
-| Endpoint    | Status          | Notes                         |
-|-------------|-----------------|-------------------------------|
-| `star`      | NOT IMPLEMENTED |                               |
-| `unstar`    | NOT IMPLEMENTED |                               |
-| `setRating` | NOT IMPLEMENTED |                               |
-| `scrobble`  | Stub            | No-op; always returns success |
+| Endpoint    | Status          | Notes                                                                                                  |
+|-------------|-----------------|--------------------------------------------------------------------------------------------------------|
+| `star`      | Implemented     | Per-user; accepts `id`, `albumId`, `artistId` (each may repeat). Kind classified by id prefix. (#104)  |
+| `unstar`    | Implemented     | Mirror of `star`. Idempotent — unstarring a non-starred entity is a no-op. (#104)                      |
+| `setRating` | NOT IMPLEMENTED |                                                                                                        |
+| `scrobble`  | Stub            | No-op; always returns success                                                                          |
+
+Album / artist / song objects returned by `getAlbum`, `getArtist`,
+`getAlbumList2`, `getSong`, and `search3` carry an ISO 8601 `starred`
+field when the requesting user has starred that target. Stars are local
+to the hub the user logs into and are not federated.
 
 ### Sharing
 
