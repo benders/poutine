@@ -117,7 +117,7 @@ function HistoryStreamRow({
 }
 
 function syncTargetLabel(s: SyncOperation, peerName: (id: string) => string): string {
-  if (s.scope === "local") return "Local Navidrome";
+  if (s.scope === "local") return "Local";
   if (s.scope === "peer" && s.scopeId) return peerName(s.scopeId);
   return "—";
 }

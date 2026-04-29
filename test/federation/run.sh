@@ -205,8 +205,8 @@ assert len(folders) >= 3, f'expected >=3 folders (self + 2 peers), got {len(fold
 ids = [f['id'] for f in folders]
 assert all(isinstance(i, int) for i in ids), f'non-int folder ids: {ids}'
 assert len(set(ids)) == len(ids), f'duplicate folder ids: {ids}'
-local = [f for f in folders if f['name'] == 'Local Navidrome']
-assert local, f'no Local Navidrome folder in {folders}'
+local = [f for f in folders if f['name'] == 'Local']
+assert local, f'no Local folder in {folders}'
 print(local[0]['id'])
 print('  Folders on hub-a: ' + ', '.join(f\"{f['id']}={f['name']}\" for f in folders), file=sys.stderr)
 ")

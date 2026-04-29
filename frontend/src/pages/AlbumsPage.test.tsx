@@ -45,7 +45,7 @@ beforeEach(() => {
   vi.mocked(getAlbumList2).mockReset();
   vi.mocked(getMusicFolders).mockReset();
   vi.mocked(getMusicFolders).mockResolvedValue([
-    { id: 1, name: "Local Navidrome" },
+    { id: 1, name: "Local" },
     { id: 7, name: "Friend's Hub" },
   ]);
 });

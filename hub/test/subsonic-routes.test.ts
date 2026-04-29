@@ -204,7 +204,7 @@ describe("Subsonic routes — endpoints", () => {
     const folders = body["subsonic-response"].musicFolders.musicFolder as Array<{ id: number; name: string }>;
     // Test fixture seeds only the local instance — peers depend on YAML config.
     expect(folders.length).toBeGreaterThanOrEqual(1);
-    expect(folders[0].name).toBe("Local Navidrome");
+    expect(folders[0].name).toBe("Local");
     expect(typeof folders[0].id).toBe("number");
   });
 
