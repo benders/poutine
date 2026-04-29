@@ -10,21 +10,12 @@ vi.mock("@/lib/subsonic", async () => {
   return {
     ...actual,
     getAlbumList2: vi.fn(),
+    getMusicFolders: vi.fn(),
     artUrl: (id: string) => `/art/${id}`,
   };
 });
 
-vi.mock("@/lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return {
-    ...actual,
-    getPeersSummary: vi.fn(),
-  };
-});
-
-import { getAlbumList2 } from "@/lib/subsonic";
-import { getPeersSummary } from "@/lib/api";
+import { getAlbumList2, getMusicFolders } from "@/lib/subsonic";
 
 function renderAt(path: string) {
   const qc = new QueryClient({
@@ -52,19 +43,20 @@ const ALBUM = {
 
 beforeEach(() => {
   vi.mocked(getAlbumList2).mockReset();
-  vi.mocked(getPeersSummary).mockReset();
-  vi.mocked(getPeersSummary).mockResolvedValue([
-    { id: "abc", name: "Friend's Hub", status: "online", albumCount: 5 },
+  vi.mocked(getMusicFolders).mockReset();
+  vi.mocked(getMusicFolders).mockResolvedValue([
+    { id: 1, name: "Local Navidrome" },
+    { id: 7, name: "Friend's Hub" },
   ]);
 });
 
 describe("AlbumsPage view routing", () => {
-  it("/library/all calls getAlbumList2 without instanceId", async () => {
+  it("/library/all calls getAlbumList2 without musicFolderId", async () => {
     vi.mocked(getAlbumList2).mockResolvedValue([ALBUM]);
     renderAt("/library/all");
     await waitFor(() => expect(getAlbumList2).toHaveBeenCalled());
     const args = vi.mocked(getAlbumList2).mock.calls[0]?.[0];
-    expect(args?.instanceId).toBeUndefined();
+    expect(args?.musicFolderId).toBeUndefined();
     expect(args?.type).toBe("alphabeticalByName");
     expect(await screen.findByText("All Albums")).toBeInTheDocument();
     expect(await screen.findByText("Kid A")).toBeInTheDocument();
@@ -76,24 +68,15 @@ describe("AlbumsPage view routing", () => {
     await waitFor(() => expect(getAlbumList2).toHaveBeenCalled());
     const args = vi.mocked(getAlbumList2).mock.calls[0]?.[0];
     expect(args?.type).toBe("random");
-    expect(args?.instanceId).toBeUndefined();
+    expect(args?.musicFolderId).toBeUndefined();
   });
 
-  it("/library/local sets instanceId=local", async () => {
+  it("/library/folder-7 sets musicFolderId to the folder id", async () => {
     vi.mocked(getAlbumList2).mockResolvedValue([ALBUM]);
-    renderAt("/library/local");
+    renderAt("/library/folder-7");
     await waitFor(() => expect(getAlbumList2).toHaveBeenCalled());
-    expect(vi.mocked(getAlbumList2).mock.calls[0]?.[0]?.instanceId).toBe(
-      "local",
-    );
-  });
-
-  it("/library/peer-abc sets instanceId to the peer id", async () => {
-    vi.mocked(getAlbumList2).mockResolvedValue([ALBUM]);
-    renderAt("/library/peer-abc");
-    await waitFor(() => expect(getAlbumList2).toHaveBeenCalled());
-    expect(vi.mocked(getAlbumList2).mock.calls[0]?.[0]?.instanceId).toBe("abc");
-    // Title resolves to the peer's display name when summary is loaded.
+    expect(vi.mocked(getAlbumList2).mock.calls[0]?.[0]?.musicFolderId).toBe(7);
+    // Title resolves to the folder's display name when getMusicFolders loads.
     expect(await screen.findByText("Friend's Hub")).toBeInTheDocument();
   });
 
