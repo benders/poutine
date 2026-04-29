@@ -89,7 +89,7 @@ describe("star / unstar / getStarred2 (#104)", () => {
     expect(env.artist).toEqual([]);
   });
 
-  it("star album via id=al<uuid> classifies as album", async () => {
+  it("star album via id=al<uuid> classifies as album and pulls its tracks into song list", async () => {
     await app.inject({ method: "GET", url: `/rest/star?${QS}&id=${ALBUM_SUB_ID}` });
     const got = await app.inject({
       method: "GET",
@@ -98,7 +98,11 @@ describe("star / unstar / getStarred2 (#104)", () => {
     const env = got.json()["subsonic-response"].starred2;
     expect(env.album).toHaveLength(1);
     expect(env.album[0].id).toBe(ALBUM_SUB_ID);
-    expect(env.song).toEqual([]);
+    // The track on this album is included via album-expansion, but with no
+    // direct `starred` annotation (the user starred the album, not the track).
+    expect(env.song).toHaveLength(1);
+    expect(env.song[0].id).toBe(TRACK_SUB_ID);
+    expect(env.song[0].starred).toBeUndefined();
   });
 
   it("star artist via id=ar<uuid> classifies as artist", async () => {
@@ -220,6 +224,78 @@ describe("star / unstar / getStarred2 (#104)", () => {
     ).json()["subsonic-response"].starred2;
     expect(env.album).toHaveLength(1);
     expect(env.artist).toHaveLength(1);
+  });
+
+  it("getStarred2 song list includes tracks from starred albums (#104)", async () => {
+    // Seed a second track on the same album, plus a track on an unrelated album
+    const TRACK2_ID = "ffffffff-ffff-4fff-ffff-ffffffffffff";
+    const RG_OTHER = "11111111-1111-4111-1111-111111111111";
+    const REL_OTHER = "22222222-2222-4222-2222-222222222222";
+    const TRACK_OTHER = "33333333-3333-4333-3333-333333333333";
+
+    app.db
+      .prepare(
+        "INSERT INTO unified_tracks (id, release_id, artist_id, title, title_normalized, track_number) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(TRACK2_ID, REL_ID, ARTIST_ID, "Side B", "side b", 2);
+    app.db
+      .prepare(
+        "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id) VALUES (?, ?, ?, ?)",
+      )
+      .run(RG_OTHER, "Other RG", "other rg", ARTIST_ID);
+    app.db
+      .prepare(
+        "INSERT INTO unified_releases (id, release_group_id, name) VALUES (?, ?, ?)",
+      )
+      .run(REL_OTHER, RG_OTHER, "Other RG");
+    app.db
+      .prepare(
+        "INSERT INTO unified_tracks (id, release_id, artist_id, title, title_normalized) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run(TRACK_OTHER, REL_OTHER, ARTIST_ID, "Unrelated", "unrelated");
+
+    // Star the album (pulls in TRACK_ID + TRACK2_ID) and TRACK_OTHER directly
+    await app.inject({
+      method: "GET",
+      url: `/rest/star?${QS}&id=${ALBUM_SUB_ID}&id=t${TRACK_OTHER}`,
+    });
+
+    const env = (
+      await app.inject({ method: "GET", url: `/rest/getStarred2?${QS}` })
+    ).json()["subsonic-response"].starred2;
+
+    const ids = (env.song as Array<{ id: string }>).map((s) => s.id).sort();
+    expect(ids).toEqual(
+      [`t${TRACK_ID}`, `t${TRACK2_ID}`, `t${TRACK_OTHER}`].sort(),
+    );
+
+    // The directly-starred track has a starred timestamp; album-pulled
+    // tracks do not (their per-row star icon must read as un-starred).
+    const byId = new Map(
+      (env.song as Array<{ id: string; starred?: string }>).map((s) => [
+        s.id,
+        s.starred,
+      ]),
+    );
+    expect(byId.get(`t${TRACK_OTHER}`)).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(byId.get(`t${TRACK_ID}`)).toBeUndefined();
+    expect(byId.get(`t${TRACK2_ID}`)).toBeUndefined();
+  });
+
+  it("a track that is BOTH directly starred AND on a starred album dedupes to one row with its star intact", async () => {
+    await app.inject({
+      method: "GET",
+      url: `/rest/star?${QS}&id=${ALBUM_SUB_ID}&id=${TRACK_SUB_ID}`,
+    });
+    const env = (
+      await app.inject({ method: "GET", url: `/rest/getStarred2?${QS}` })
+    ).json()["subsonic-response"].starred2;
+
+    const matches = (env.song as Array<{ id: string; starred?: string }>).filter(
+      (s) => s.id === TRACK_SUB_ID,
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0].starred).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("albumId / artistId accept bare-UUID forms (no prefix)", async () => {
