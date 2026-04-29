@@ -277,10 +277,22 @@ async function subsonicFetch<T>(
 
 // ── API functions ─────────────────────────────────────────────────────────────
 
+export interface SubsonicMusicFolder {
+  id: number;
+  name: string;
+}
+
+export async function getMusicFolders(): Promise<SubsonicMusicFolder[]> {
+  const sr = await subsonicFetch<{
+    musicFolders: { musicFolder?: SubsonicMusicFolder[] };
+  }>("getMusicFolders");
+  return sr.musicFolders.musicFolder ?? [];
+}
+
 export async function getAlbumList2(params?: {
   type?: string;
   size?: number;
-  instanceId?: string;
+  musicFolderId?: number;
 }): Promise<SubsonicAlbum[]> {
   const type = params?.type ?? "alphabeticalByName";
   const pageSize = Math.min(params?.size ?? 500, 500);
@@ -296,7 +308,7 @@ export async function getAlbumList2(params?: {
       size: String(pageSize),
       offset: String(offset),
     };
-    if (params?.instanceId) extra.instanceId = params.instanceId;
+    if (params?.musicFolderId !== undefined) extra.musicFolderId = String(params.musicFolderId);
     const sr = await subsonicFetch<{ albumList2: { album?: RawAlbum[] } }>(
       "getAlbumList2",
       extra,
