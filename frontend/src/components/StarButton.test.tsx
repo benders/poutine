@@ -49,4 +49,41 @@ describe("StarButton (#104)", () => {
     await waitFor(() => expect(unstar).toHaveBeenCalledWith({ id: "ttrk-1" }));
     expect(star).not.toHaveBeenCalled();
   });
+
+  it("flips icon optimistically before the request resolves", async () => {
+    let resolveStar: (() => void) | undefined;
+    vi.mocked(star).mockImplementationOnce(
+      () => new Promise<void>((res) => (resolveStar = () => res())),
+    );
+
+    render(withQc(<StarButton id="ttrk-1" starred={undefined} />));
+    const btn = screen.getByRole("button", { name: /add to favorites/i });
+    expect(btn).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(btn);
+
+    // Optimistic flip happens synchronously via onMutate, before star() resolves.
+    await waitFor(() =>
+      expect(btn).toHaveAttribute("aria-pressed", "true"),
+    );
+    expect(btn).toHaveAccessibleName(/remove from favorites/i);
+
+    resolveStar?.();
+    await waitFor(() => expect(star).toHaveBeenCalledWith({ id: "ttrk-1" }));
+  });
+
+  it("rolls back the optimistic flip when the request fails", async () => {
+    vi.mocked(star).mockRejectedValueOnce(new Error("boom"));
+
+    render(withQc(<StarButton id="ttrk-1" starred={undefined} />));
+    const btn = screen.getByRole("button", { name: /add to favorites/i });
+
+    fireEvent.click(btn);
+
+    // After the rejection settles, optimistic state clears and we revert.
+    await waitFor(() =>
+      expect(btn).toHaveAttribute("aria-pressed", "false"),
+    );
+    expect(btn).toHaveAccessibleName(/add to favorites/i);
+  });
 });
