@@ -10,7 +10,9 @@ import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 /**
  * Playlists page (issue #104). For now hosts a single virtual playlist:
- * Favorites — the requesting user's starred tracks. Real (user-defined)
+ * Favorites — directly-starred tracks plus every track from a starred
+ * album (server-side union; see getStarred2 in docs/opensubsonic.md).
+ * Per-row star icons reflect each track's own state. Real (user-defined)
  * playlists are a future issue.
  */
 export function PlaylistsPage() {
@@ -71,7 +73,7 @@ function FavoritesView() {
 
       {songs.length === 0 ? (
         <p className="text-text-muted text-center py-20">
-          No favorites yet. Star a track from any album to add it here.
+          No favorites yet. Star a track or an album to add it here.
         </p>
       ) : (
         <div className="bg-surface rounded-lg overflow-hidden">
