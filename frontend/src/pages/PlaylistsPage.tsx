@@ -43,6 +43,9 @@ function FavoritesView() {
   }
 
   const songs = data?.songs ?? [];
+  // Tracks present only because their album is starred get an immutable star
+  // next to the album name. The Set holds Subsonic-encoded album ids (`al…`).
+  const starredAlbumIds = new Set((data?.albums ?? []).map((a) => a.id));
 
   return (
     <div className="space-y-6">
@@ -94,6 +97,9 @@ function FavoritesView() {
                   key={song.id}
                   song={song}
                   index={index}
+                  viaAlbumStar={
+                    !!song.albumId && starredAlbumIds.has(song.albumId)
+                  }
                   onPlay={() => playTracks(songs, index)}
                   onAddToQueue={() => addToQueue(song)}
                 />
@@ -109,11 +115,13 @@ function FavoritesView() {
 function FavoriteRow({
   song,
   index,
+  viaAlbumStar,
   onPlay,
   onAddToQueue,
 }: {
   song: SubsonicSong;
   index: number;
+  viaAlbumStar: boolean;
   onPlay: () => void;
   onAddToQueue: () => void;
 }) {
@@ -133,16 +141,25 @@ function FavoriteRow({
         <p className="text-sm text-text-primary">{song.title}</p>
       </td>
       <td className="py-2.5 px-4 text-sm text-text-muted truncate">
-        {song.albumId ? (
-          <Link
-            to={`/albums/${song.albumId}`}
-            className="hover:text-text-primary transition-colors"
-          >
-            {song.album}
-          </Link>
-        ) : (
-          song.album
-        )}
+        <span className="inline-flex items-center gap-1.5">
+          {song.albumId ? (
+            <Link
+              to={`/albums/${song.albumId}`}
+              className="hover:text-text-primary transition-colors"
+            >
+              {song.album}
+            </Link>
+          ) : (
+            song.album
+          )}
+          {viaAlbumStar && (
+            <Star
+              className="w-3 h-3 text-yellow-400 fill-current shrink-0"
+              aria-label="Album is starred"
+              role="img"
+            />
+          )}
+        </span>
       </td>
       <td className="py-2.5 px-4 text-sm text-text-muted truncate">
         {song.artistId ? (
