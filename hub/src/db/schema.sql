@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS instances (
-  id TEXT PRIMARY KEY,                -- UUID
+  id TEXT PRIMARY KEY,                -- UUID, or 'local' for self
   name TEXT NOT NULL,                 -- Human-readable label
   url TEXT NOT NULL UNIQUE,           -- Base URL of the Navidrome instance
   adapter_type TEXT NOT NULL DEFAULT 'subsonic',
@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS instances (
   last_sync_message TEXT,
   track_count INTEGER NOT NULL DEFAULT 0,
   server_version TEXT,
+  -- Stable small integer for the Subsonic getMusicFolders / musicFolderId
+  -- contract. Subsonic clients require integer folder IDs but instances are
+  -- keyed on UUID. Assigned monotonically on insert; never reused.
+  musicfolder_id INTEGER UNIQUE,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

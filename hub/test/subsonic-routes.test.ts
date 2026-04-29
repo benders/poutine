@@ -194,15 +194,18 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"].license.valid).toBe(true);
   });
 
-  it("getMusicFolders → returns a music folder", async () => {
+  it("getMusicFolders → one folder per known instance", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/rest/getMusicFolders?u=tester&p=secret&f=json",
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body["subsonic-response"].musicFolders.musicFolder).toHaveLength(1);
-    expect(body["subsonic-response"].musicFolders.musicFolder[0].name).toBe("Music");
+    const folders = body["subsonic-response"].musicFolders.musicFolder as Array<{ id: number; name: string }>;
+    // Test fixture seeds only the local instance — peers depend on YAML config.
+    expect(folders.length).toBeGreaterThanOrEqual(1);
+    expect(folders[0].name).toBe("Local Navidrome");
+    expect(typeof folders[0].id).toBe("number");
   });
 
   it("getArtists → ok envelope with artists key", async () => {
