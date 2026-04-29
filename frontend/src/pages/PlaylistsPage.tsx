@@ -1,7 +1,7 @@
 import { Navigate, useParams, Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { Play, Plus, Star, ChevronRight } from "lucide-react";
-import { getStarred2 } from "@/lib/subsonic";
+import { getAlbum, getStarred2 } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
@@ -10,10 +10,11 @@ import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 /**
  * Playlists page (issue #104). For now hosts a single virtual playlist:
- * Favorites — directly-starred tracks plus every track from a starred
- * album (server-side union; see getStarred2 in docs/opensubsonic.md).
- * Per-row star icons reflect each track's own state. Real (user-defined)
- * playlists are a future issue.
+ * Favorites — directly-starred tracks merged client-side with every track
+ * from a starred album. The server's getStarred2 stays standard (only
+ * directly-starred entities); composition lives here so the Subsonic
+ * surface remains spec-compliant. Real (user-defined) playlists are a
+ * future issue.
  */
 export function PlaylistsPage() {
   const { view } = useParams<{ view: string }>();
@@ -31,6 +32,19 @@ function FavoritesView() {
     retry: false,
   });
 
+  // Fan out a getAlbum() per starred album to pull its tracks. Each call is
+  // an independent React Query so individual albums cache and invalidate on
+  // their own (and the StarButton's `["album", id]` invalidation already
+  // refetches the right one when a track inside it is starred/unstarred).
+  const starredAlbums = data?.albums ?? [];
+  const albumQueries = useQueries({
+    queries: starredAlbums.map((a) => ({
+      queryKey: ["album", a.id],
+      queryFn: () => getAlbum(a.id),
+      retry: false,
+    })),
+  });
+
   if (error) {
     return (
       <div className="py-6">
@@ -42,10 +56,24 @@ function FavoritesView() {
     return <div className="text-text-muted text-center py-20">Loading...</div>;
   }
 
-  const songs = data?.songs ?? [];
-  // Tracks present only because their album is starred get an immutable star
-  // next to the album name. The Set holds Subsonic-encoded album ids (`al…`).
-  const starredAlbumIds = new Set((data?.albums ?? []).map((a) => a.id));
+  const directSongs = data?.songs ?? [];
+  const directIds = new Set(directSongs.map((s) => s.id));
+  const starredAlbumIds = new Set(starredAlbums.map((a) => a.id));
+
+  // Append album-tracks that aren't already in the directly-starred list.
+  // Order: directly-starred first (server-ordered by recency), then album
+  // tracks in album order. Dedup on song.id.
+  const albumTracks: SubsonicSong[] = [];
+  const seen = new Set(directIds);
+  for (const q of albumQueries) {
+    for (const song of q.data?.songs ?? []) {
+      if (seen.has(song.id)) continue;
+      seen.add(song.id);
+      albumTracks.push(song);
+    }
+  }
+  const songs = [...directSongs, ...albumTracks];
+  const albumsLoading = albumQueries.some((q) => q.isLoading);
 
   return (
     <div className="space-y-6">
@@ -61,6 +89,7 @@ function FavoritesView() {
           <h1 className="text-3xl font-bold text-text-primary">Favorites</h1>
           <p className="text-text-secondary text-sm mt-1">
             {songs.length} {songs.length === 1 ? "track" : "tracks"}
+            {albumsLoading && " · loading album tracks…"}
           </p>
         </div>
         {songs.length > 0 && (
@@ -98,7 +127,9 @@ function FavoritesView() {
                   song={song}
                   index={index}
                   viaAlbumStar={
-                    !!song.albumId && starredAlbumIds.has(song.albumId)
+                    !directIds.has(song.id) &&
+                    !!song.albumId &&
+                    starredAlbumIds.has(song.albumId)
                   }
                   onPlay={() => playTracks(songs, index)}
                   onAddToQueue={() => addToQueue(song)}
