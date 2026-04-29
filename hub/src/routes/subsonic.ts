@@ -1154,6 +1154,170 @@ try {
   binaryRoute("/stream", handleStream);
   binaryRoute("/download", handleStream); // alias — clients use interchangeably
 
+  // ── star / unstar / getStarred / getStarred2 (#104) ─────────────────────────
+  //
+  // Per-user favorites, stored in the `user_stars` table on this hub. Targets
+  // are unified_*.id UUIDs; orphans (target gone after a sync) are dropped at
+  // read time via JOIN. Stars are local to the hub the user logs into and are
+  // not federated.
+
+  type StarKind = "track" | "album" | "artist";
+
+  function asArray(v: unknown): string[] {
+    if (v == null) return [];
+    return Array.isArray(v) ? (v as string[]) : [String(v)];
+  }
+
+  function classifyStarId(encoded: string): { kind: StarKind; raw: string } | null {
+    // Order matters: "ar" and "al" both start with "a"; "t" is a one-char prefix.
+    if (encoded.startsWith("al")) return { kind: "album", raw: encoded.slice(2) };
+    if (encoded.startsWith("ar")) return { kind: "artist", raw: encoded.slice(2) };
+    if (encoded.startsWith("t")) return { kind: "track", raw: encoded.slice(1) };
+    return null;
+  }
+
+  function collectStarTargets(
+    q: Record<string, string | string[] | undefined>,
+  ): Array<{ kind: StarKind; raw: string }> {
+    const out: Array<{ kind: StarKind; raw: string }> = [];
+    for (const id of asArray(q.id)) {
+      const c = classifyStarId(id);
+      if (c) out.push(c);
+    }
+    for (const id of asArray(q.albumId)) {
+      out.push({ kind: "album", raw: id.startsWith("al") ? id.slice(2) : id });
+    }
+    for (const id of asArray(q.artistId)) {
+      out.push({ kind: "artist", raw: id.startsWith("ar") ? id.slice(2) : id });
+    }
+    return out;
+  }
+
+  // SQLite's datetime('now') yields "YYYY-MM-DD HH:MM:SS" UTC; Subsonic clients
+  // expect ISO 8601 with 'T' separator and 'Z' suffix.
+  function toIsoStarred(ts: string): string {
+    return ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`;
+  }
+
+  route("/star", async (request, reply) => {
+    const q = request.query as Record<string, string | string[] | undefined>;
+    const userId = request.subsonicUser.id;
+    const targets = collectStarTargets(q);
+    const stmt = app.db.prepare(
+      "INSERT OR IGNORE INTO user_stars (user_id, kind, target_id) VALUES (?, ?, ?)",
+    );
+    const tx = app.db.transaction((rows: Array<{ kind: StarKind; raw: string }>) => {
+      for (const r of rows) stmt.run(userId, r.kind, r.raw);
+    });
+    tx(targets);
+    sendSubsonicOk(reply, q as Record<string, string>, {});
+  });
+
+  route("/unstar", async (request, reply) => {
+    const q = request.query as Record<string, string | string[] | undefined>;
+    const userId = request.subsonicUser.id;
+    const targets = collectStarTargets(q);
+    const stmt = app.db.prepare(
+      "DELETE FROM user_stars WHERE user_id = ? AND kind = ? AND target_id = ?",
+    );
+    const tx = app.db.transaction((rows: Array<{ kind: StarKind; raw: string }>) => {
+      for (const r of rows) stmt.run(userId, r.kind, r.raw);
+    });
+    tx(targets);
+    sendSubsonicOk(reply, q as Record<string, string>, {});
+  });
+
+  function buildStarredEnvelope(userId: string) {
+    const artists = app.db
+      .prepare(
+        `SELECT ua.id, ua.name, ua.image_url,
+          COUNT(urg.id) AS albumCount,
+          us.starred_at
+        FROM user_stars us
+        JOIN unified_artists ua ON ua.id = us.target_id
+        LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
+        WHERE us.user_id = ? AND us.kind = 'artist'
+        GROUP BY ua.id, ua.name, ua.image_url, us.starred_at
+        ORDER BY us.starred_at DESC`,
+      )
+      .all(userId) as Array<ArtistRow & { starred_at: string }>;
+
+    const albums = app.db
+      .prepare(
+        `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
+          urg.year, urg.genre, urg.image_url,
+          (SELECT COUNT(*) FROM unified_tracks ut
+           JOIN unified_releases ur ON ur.id = ut.release_id
+           WHERE ur.release_group_id = urg.id) AS songCount,
+          us.starred_at
+        FROM user_stars us
+        JOIN unified_release_groups urg ON urg.id = us.target_id
+        JOIN unified_artists ua ON ua.id = urg.artist_id
+        WHERE us.user_id = ? AND us.kind = 'album'
+        ORDER BY us.starred_at DESC`,
+      )
+      .all(userId) as Array<ReleaseGroupRow & { starred_at: string }>;
+
+    const songs = app.db
+      .prepare(
+        `SELECT
+          ut.id, ut.title, ut.track_number, ut.disc_number,
+          ut.duration_ms, ut.genre, ut.musicbrainz_id,
+          ut.artist_id, ua.name AS artist_name,
+          urg.id AS rg_id, urg.name AS rg_name,
+          urg.year AS rg_year, urg.image_url AS rg_image_url,
+          (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
+          (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
+          (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+          (SELECT i.name FROM track_sources ts
+           JOIN instances i ON i.id = ts.instance_id
+           WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name,
+          us.starred_at
+        FROM user_stars us
+        JOIN unified_tracks ut ON ut.id = us.target_id
+        JOIN unified_artists ua ON ua.id = ut.artist_id
+        JOIN unified_releases ur ON ur.id = ut.release_id
+        JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+        WHERE us.user_id = ? AND us.kind = 'track'
+        ORDER BY us.starred_at DESC`,
+      )
+      .all(userId) as Array<TrackRow & { starred_at: string }>;
+
+    return {
+      artist: artists.map((a) => ({
+        id: encodeId("ar", a.id),
+        name: a.name,
+        albumCount: a.albumCount,
+        coverArt: a.image_url ?? undefined,
+        starred: toIsoStarred(a.starred_at),
+      })),
+      album: albums.map((a) => ({
+        ...buildAlbum(a),
+        starred: toIsoStarred(a.starred_at),
+      })),
+      song: songs.map((s) => ({
+        ...buildSong(s),
+        starred: toIsoStarred(s.starred_at),
+      })),
+    };
+  }
+
+  route("/getStarred2", async (request, reply) => {
+    const q = request.query as Record<string, string>;
+    const env = buildStarredEnvelope(request.subsonicUser.id);
+    sendSubsonicOk(reply, q, { starred2: env });
+  });
+
+  route("/getStarred", async (request, reply) => {
+    const q = request.query as Record<string, string>;
+    const env = buildStarredEnvelope(request.subsonicUser.id);
+    sendSubsonicOk(reply, q, { starred: env });
+  });
+
   // ── Playlist stubs ──────────────────────────────────────────────────────────
   // TODO: implement fully once playlists table is populated (Phase 3+)
 
