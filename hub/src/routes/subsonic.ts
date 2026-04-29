@@ -1250,12 +1250,36 @@ try {
     return Array.isArray(v) ? (v as string[]) : [String(v)];
   }
 
+  // Raw IDs are produced by `generateDeterministicId` (UUID v4 shape, all
+  // lowercase hex). Anchoring the classifier on this shape rejects malformed
+  // input (e.g. `id=tomato`) instead of silently inserting `omato` as a
+  // track target. Bare-UUID forms (no prefix) on `albumId`/`artistId` are
+  // also accepted, matching how some Subsonic clients send them.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
   function classifyStarId(encoded: string): { kind: StarKind; raw: string } | null {
-    // Order matters: "ar" and "al" both start with "a"; "t" is a one-char prefix.
-    if (encoded.startsWith("al")) return { kind: "album", raw: encoded.slice(2) };
-    if (encoded.startsWith("ar")) return { kind: "artist", raw: encoded.slice(2) };
-    if (encoded.startsWith("t")) return { kind: "track", raw: encoded.slice(1) };
-    return null;
+    // Order matters: "ar"/"al" both start with "a"; "t" is a one-char prefix.
+    let kind: StarKind | null = null;
+    let raw = "";
+    if (encoded.startsWith("al")) {
+      kind = "album";
+      raw = encoded.slice(2);
+    } else if (encoded.startsWith("ar")) {
+      kind = "artist";
+      raw = encoded.slice(2);
+    } else if (encoded.startsWith("t")) {
+      kind = "track";
+      raw = encoded.slice(1);
+    }
+    if (!kind || !UUID_RE.test(raw)) return null;
+    return { kind, raw };
+  }
+
+  function unwrapKindId(encoded: string, prefix: string): string | null {
+    // Accept either the prefixed form (`al<uuid>`/`ar<uuid>`) or a bare UUID
+    // — the second is what some legacy clients send for `albumId`/`artistId`.
+    const raw = encoded.startsWith(prefix) ? encoded.slice(prefix.length) : encoded;
+    return UUID_RE.test(raw) ? raw : null;
   }
 
   function collectStarTargets(
@@ -1267,10 +1291,12 @@ try {
       if (c) out.push(c);
     }
     for (const id of asArray(q.albumId)) {
-      out.push({ kind: "album", raw: id.startsWith("al") ? id.slice(2) : id });
+      const raw = unwrapKindId(id, "al");
+      if (raw) out.push({ kind: "album", raw });
     }
     for (const id of asArray(q.artistId)) {
-      out.push({ kind: "artist", raw: id.startsWith("ar") ? id.slice(2) : id });
+      const raw = unwrapKindId(id, "ar");
+      if (raw) out.push({ kind: "artist", raw });
     }
     return out;
   }
