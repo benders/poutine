@@ -224,6 +224,25 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
 );
 
 -- ============================================================
+-- Per-User Stars (issue #104)
+-- ============================================================
+-- Per-user starred tracks/albums/artists. Targets are unified_*.id UUIDs.
+-- No FK to unified_* — target rows can be transiently absent during sync;
+-- orphans are pruned at read time via JOIN. Stars are local to the hub the
+-- user logs into; not federated.
+
+CREATE TABLE IF NOT EXISTS user_stars (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL CHECK (kind IN ('track','album','artist')),
+  target_id  TEXT NOT NULL,
+  starred_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, kind, target_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_stars_lookup
+  ON user_stars(user_id, kind, starred_at DESC);
+
+-- ============================================================
 -- Art Cache Metadata
 -- ============================================================
 
