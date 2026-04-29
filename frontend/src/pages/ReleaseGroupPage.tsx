@@ -88,45 +88,40 @@ export function ReleaseGroupPage() {
             {album.genre ? ` · ${album.genre}` : ""}
           </p>
 
-          {album.songs.length > 0 && (
-            <button
-              onClick={() => playTracks(album.songs, 0)}
-              className="mt-4 inline-flex items-center gap-2 px-5 py-2 bg-accent hover:bg-accent-hover text-white rounded-full text-sm font-medium transition-colors cursor-pointer"
-            >
-              <Play className="w-4 h-4 fill-current" />
-              Play All
-            </button>
-          )}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            {album.songs.length > 0 && (
+              <button
+                onClick={() => playTracks(album.songs, 0)}
+                className="inline-flex items-center gap-2 px-5 py-2 bg-accent hover:bg-accent-hover text-white rounded-full text-sm font-medium transition-colors cursor-pointer"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                Play All
+              </button>
+            )}
 
-          <span className="mt-3 inline-flex mr-2 align-middle">
             <StarButton
               id={album.id}
               starred={album.starred}
               invalidateKeys={[["album", id]]}
-              size={20}
               showWhenUnstarred="always"
+              variant="pill"
             />
-          </span>
 
-          {album.shareId && (
-            <span className="mt-3 inline-flex mr-2">
-              <ShareIdButton shareId={album.shareId} />
-            </span>
-          )}
+            {album.shareId && <ShareIdButton shareId={album.shareId} />}
 
-          {/* Album metadata toggle */}
-          <button
-            onClick={() => setShowAlbumMetadata(!showAlbumMetadata)}
-            className="mt-3 inline-flex items-center gap-2 px-4 py-1.5 bg-surface-hover hover:bg-surface text-text-primary rounded-full text-sm font-medium transition-colors cursor-pointer"
-          >
-            {showAlbumMetadata ? (
-              <ChevronUp className="w-4 h-4" />
-            ) : (
-              <ChevronDown className="w-4 h-4" />
-            )}
-            <Info className="w-4 h-4" />
-            {showAlbumMetadata ? "Hide" : "Show"} Album Metadata
-          </button>
+            <button
+              onClick={() => setShowAlbumMetadata(!showAlbumMetadata)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-surface-hover hover:bg-surface text-text-primary rounded-full text-sm font-medium transition-colors cursor-pointer"
+            >
+              {showAlbumMetadata ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+              <Info className="w-4 h-4" />
+              {showAlbumMetadata ? "Hide" : "Show"} Album Metadata
+            </button>
+          </div>
         </div>
       </div>
 

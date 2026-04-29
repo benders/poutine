@@ -19,6 +19,7 @@ export function StarButton({
   className,
   size = 16,
   showWhenUnstarred = "hover",
+  variant = "icon",
 }: {
   id: string;
   starred: string | undefined;
@@ -31,6 +32,11 @@ export function StarButton({
    * use "hover" so the table stays calm.
    */
   showWhenUnstarred?: "always" | "hover";
+  /**
+   * "icon" is a bare icon button (track rows). "pill" matches the rounded-full
+   * surface-hover treatment used by other header buttons (Share, metadata).
+   */
+  variant?: "icon" | "pill";
 }) {
   const qc = useQueryClient();
   const isStarred = !!starred;
@@ -53,6 +59,8 @@ export function StarButton({
       ? "opacity-100"
       : "opacity-0 group-hover:opacity-100 focus:opacity-100";
 
+  const pill = variant === "pill";
+
   return (
     <button
       type="button"
@@ -66,19 +74,25 @@ export function StarButton({
       aria-label={isStarred ? "Remove from Favorites" : "Add to Favorites"}
       aria-pressed={isStarred}
       className={cn(
-        "p-1 transition-all cursor-pointer",
+        "transition-all cursor-pointer",
+        pill
+          ? "inline-flex items-center gap-2 px-4 py-2 bg-surface-hover hover:bg-surface rounded-full text-sm font-medium"
+          : "p-1",
         visibility,
         isStarred
           ? "text-yellow-400 hover:text-yellow-300"
-          : "text-text-muted hover:text-text-primary",
+          : pill
+            ? "text-text-primary"
+            : "text-text-muted hover:text-text-primary",
         className,
       )}
     >
       <Star
-        width={size}
-        height={size}
+        width={pill ? 16 : size}
+        height={pill ? 16 : size}
         className={isStarred ? "fill-current" : ""}
       />
+      {pill && (isStarred ? "Starred" : "Star")}
     </button>
   );
 }
