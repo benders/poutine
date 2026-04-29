@@ -83,7 +83,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | Endpoint          | Status          | Notes                                                                                          |
 |-------------------|-----------------|------------------------------------------------------------------------------------------------|
 | `getAlbumList`    | NOT IMPLEMENTED |                                                                                                |
-| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`. Honors standard `musicFolderId` (resolved via `instances.musicfolder_id`). Legacy alias: `instanceId=<local\|peerId>` filters by raw instance UUID. Unknown `musicFolderId` returns an empty list. |
+| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`. Honors standard `musicFolderId` (resolved via `instances.musicfolder_id`). **EOL alias:** `instanceId=<local\|peerId>` filters by raw instance UUID — kept for in-tree callers mid-migration; do not adopt in new code, scheduled for removal. Unknown `musicFolderId` returns an empty list. |
 | `getRandomSongs`  | NOT IMPLEMENTED |                                                                                                |
 | `getSongsByGenre` | NOT IMPLEMENTED |                                                                                                |
 | `getNowPlaying`   | Stub            | Always returns an empty list                                                                   |

@@ -480,8 +480,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const fromYear = q.fromYear ? parseInt(q.fromYear, 10) : undefined;
     const toYear = q.toYear ? parseInt(q.toYear, 10) : undefined;
     const genre = q.genre;
-    // Standard Subsonic param (issue #123). q.instanceId is kept as a legacy
-    // alias for in-tree callers that haven't migrated yet.
+    // Standard Subsonic param (issue #123). q.instanceId is an EOL alias
+    // kept for in-tree callers mid-migration — slated for removal; do not
+    // adopt in new code. See docs/opensubsonic.md.
     let instanceId: string | undefined = q.instanceId;
     if (!instanceId && q.musicFolderId) {
       const row = app.db
