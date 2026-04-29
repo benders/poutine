@@ -60,7 +60,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 
 | Endpoint            | Status          | Notes                                                              |
 |---------------------|-----------------|--------------------------------------------------------------------|
-| `getMusicFolders`   | Implemented     | Returns a single static folder (`id: 1, name: "Music"`)            |
+| `getMusicFolders`   | Implemented     | One folder per known instance (local + active peers); `id` is the stable `instances.musicfolder_id` (issue #123) |
 | `getIndexes`        | Implemented     | Returns artist index from unified library; ignores `musicFolderId` |
 | `getMusicDirectory` | NOT IMPLEMENTED |                                                                    |
 | `getGenres`         | Implemented     | Aggregated from `unified_release_groups` + `unified_tracks`        |
@@ -83,7 +83,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | Endpoint          | Status          | Notes                                                                                          |
 |-------------------|-----------------|------------------------------------------------------------------------------------------------|
 | `getAlbumList`    | NOT IMPLEMENTED |                                                                                                |
-| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`. Poutine extension: `instanceId=<local\|peerId>` filters to albums sourced from a single instance. |
+| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`. Honors standard `musicFolderId` (resolved via `instances.musicfolder_id`). Legacy alias: `instanceId=<local\|peerId>` filters by raw instance UUID. Unknown `musicFolderId` returns an empty list. |
 | `getRandomSongs`  | NOT IMPLEMENTED |                                                                                                |
 | `getSongsByGenre` | NOT IMPLEMENTED |                                                                                                |
 | `getNowPlaying`   | Stub            | Always returns an empty list                                                                   |

@@ -25,6 +25,52 @@ def test_get_music_folders(conn):
         folders = [folders]
     assert len(folders) >= 1
     assert all("id" in f and "name" in f for f in folders)
+    # Issue #123: ids must be integers (Subsonic spec) and unique.
+    ids = [f["id"] for f in folders]
+    assert all(isinstance(i, int) for i in ids), f"non-int folder ids: {ids}"
+    assert len(set(ids)) == len(ids), f"duplicate folder ids: {ids}"
+
+
+def test_get_music_folders_includes_self_and_peers(conn):
+    """In a federated deployment (POUTINE_TARGETS set with >1 target) every
+    hub should expose one folder per known instance — itself + its peers."""
+    import os
+    targets = os.environ.get("POUTINE_TARGETS", "")
+    n_targets = len([t for t in targets.split(",") if t.strip()]) if targets else 1
+    if n_targets < 2:
+        pytest.skip("requires federated POUTINE_TARGETS (>1 target)")
+    r = conn.getMusicFolders()
+    folders = r["musicFolders"].get("musicFolder", [])
+    if isinstance(folders, dict):
+        folders = [folders]
+    assert len(folders) >= n_targets, (
+        f"expected ≥{n_targets} folders (self + peers), got {len(folders)}: {folders}"
+    )
+
+
+def test_get_album_list2_music_folder_filter(conn):
+    """getAlbumList2?musicFolderId=N returns a subset of the unfiltered list."""
+    folders = conn.getMusicFolders()["musicFolders"].get("musicFolder", [])
+    if isinstance(folders, dict):
+        folders = [folders]
+    if not folders:
+        pytest.skip("no music folders to filter on")
+    folder_id = folders[0]["id"]
+
+    all_albums = conn.getAlbumList2(ltype="alphabeticalByName", size=500)["albumList2"].get("album", [])
+    if isinstance(all_albums, dict):
+        all_albums = [all_albums]
+    all_ids = {a["id"] for a in all_albums}
+
+    filt = conn.getAlbumList2(ltype="alphabeticalByName", size=500, musicFolderId=folder_id)["albumList2"].get("album", [])
+    if isinstance(filt, dict):
+        filt = [filt]
+    filt_ids = {a["id"] for a in filt}
+
+    assert filt_ids.issubset(all_ids), (
+        f"musicFolderId={folder_id} returned albums absent from unfiltered list: "
+        f"{filt_ids - all_ids}"
+    )
 
 
 def test_get_artists(conn):
