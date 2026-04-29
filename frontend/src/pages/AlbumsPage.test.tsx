@@ -80,6 +80,15 @@ describe("AlbumsPage view routing", () => {
     expect(await screen.findByText("Friend's Hub")).toBeInTheDocument();
   });
 
+  it("/library/favorites requests starred type", async () => {
+    vi.mocked(getAlbumList2).mockResolvedValue([ALBUM]);
+    renderAt("/library/favorites");
+    await waitFor(() => expect(getAlbumList2).toHaveBeenCalled());
+    const args = vi.mocked(getAlbumList2).mock.calls[0]?.[0];
+    expect(args?.type).toBe("starred");
+    expect(await screen.findByText("Favorites")).toBeInTheDocument();
+  });
+
   it("unknown view slug redirects to /library/all", async () => {
     vi.mocked(getAlbumList2).mockResolvedValue([ALBUM]);
     renderAt("/library/bogus");

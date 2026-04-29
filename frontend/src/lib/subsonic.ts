@@ -66,6 +66,8 @@ export interface SubsonicArtist {
   albumCount: number;
   coverArt?: string;
   shareId?: string;
+  /** ISO 8601 timestamp; absent if the requesting user has not starred this. */
+  starred?: string;
 }
 
 export interface SubsonicAlbum {
@@ -78,6 +80,7 @@ export interface SubsonicAlbum {
   year?: number;
   genre?: string;
   shareId?: string;
+  starred?: string;
 }
 
 export interface SubsonicSong {
@@ -108,6 +111,7 @@ export interface SubsonicSong {
   musicBrainzId?: string;
   comment?: string;
   bpm?: number;
+  starred?: string;
 }
 
 export interface SubsonicArtistDetail extends SubsonicArtist {
@@ -141,6 +145,7 @@ interface RawArtist {
   albumCount?: number;
   coverArt?: string;
   shareId?: string;
+  starred?: string;
 }
 
 interface RawAlbum {
@@ -154,6 +159,7 @@ interface RawAlbum {
   genre?: string;
   song?: RawSong[];
   shareId?: string;
+  starred?: string;
 }
 
 interface RawSong {
@@ -183,6 +189,7 @@ interface RawSong {
   musicBrainzId?: string;
   comment?: string;
   bpm?: number;
+  starred?: string;
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
@@ -198,6 +205,7 @@ function parseAlbum(raw: RawAlbum): SubsonicAlbum {
     year: raw.year,
     genre: raw.genre,
     shareId: raw.shareId,
+    starred: raw.starred,
   };
 }
 
@@ -229,6 +237,7 @@ function parseSong(raw: RawSong): SubsonicSong {
     musicBrainzId: raw.musicBrainzId,
     comment: raw.comment,
     bpm: raw.bpm,
+    starred: raw.starred,
   };
 }
 
@@ -328,7 +337,13 @@ export async function getArtists(): Promise<SubsonicArtist[]> {
   const artists: SubsonicArtist[] = [];
   for (const idx of sr.artists.index) {
     for (const a of idx.artist ?? []) {
-      artists.push({ id: a.id, name: a.name, albumCount: a.albumCount ?? 0, coverArt: a.coverArt });
+      artists.push({
+        id: a.id,
+        name: a.name,
+        albumCount: a.albumCount ?? 0,
+        coverArt: a.coverArt,
+        starred: a.starred,
+      });
     }
   }
   return artists;
@@ -345,6 +360,7 @@ export async function getArtist(id: string): Promise<SubsonicArtistDetail> {
     albumCount: raw.albumCount ?? raw.album?.length ?? 0,
     coverArt: raw.coverArt,
     shareId: raw.shareId,
+    starred: raw.starred,
     album: (raw.album ?? []).map(parseAlbum),
   };
 }
@@ -377,6 +393,45 @@ export async function search3(query: string): Promise<SubsonicSearchResults> {
       id: a.id,
       name: a.name,
       albumCount: a.albumCount ?? 0,
+      starred: a.starred,
+    })),
+    albums: (r.album ?? []).map(parseAlbum),
+    songs: (r.song ?? []).map(parseSong),
+  };
+}
+
+// ── Stars (issue #104) ────────────────────────────────────────────────────────
+
+export interface SubsonicStarred {
+  artists: SubsonicArtist[];
+  albums: SubsonicAlbum[];
+  songs: SubsonicSong[];
+}
+
+export async function star(target: { id: string }): Promise<void> {
+  await subsonicFetch<unknown>("star", { id: target.id });
+}
+
+export async function unstar(target: { id: string }): Promise<void> {
+  await subsonicFetch<unknown>("unstar", { id: target.id });
+}
+
+export async function getStarred2(): Promise<SubsonicStarred> {
+  const sr = await subsonicFetch<{
+    starred2: {
+      artist?: RawArtist[];
+      album?: RawAlbum[];
+      song?: RawSong[];
+    };
+  }>("getStarred2");
+  const r = sr.starred2;
+  return {
+    artists: (r.artist ?? []).map((a) => ({
+      id: a.id,
+      name: a.name,
+      albumCount: a.albumCount ?? 0,
+      coverArt: a.coverArt,
+      starred: a.starred,
     })),
     albums: (r.album ?? []).map(parseAlbum),
     songs: (r.song ?? []).map(parseSong),
