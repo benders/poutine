@@ -217,8 +217,17 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
   route("/getMusicFolders", async (request, reply) => {
     const q = request.query as Record<string, string>;
+    // Issue #123: each known instance (local + active peers) is exposed as a
+    // MusicFolder so 3rd-party Subsonic clients can scope browsing per peer.
+    const rows = app.db
+      .prepare(
+        `SELECT musicfolder_id AS id, name FROM instances
+         WHERE musicfolder_id IS NOT NULL
+         ORDER BY musicfolder_id`,
+      )
+      .all() as Array<{ id: number; name: string }>;
     sendSubsonicOk(reply, q, {
-      musicFolders: { musicFolder: [{ id: 1, name: "Music" }] },
+      musicFolders: { musicFolder: rows },
     });
   });
 
@@ -471,13 +480,25 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const fromYear = q.fromYear ? parseInt(q.fromYear, 10) : undefined;
     const toYear = q.toYear ? parseInt(q.toYear, 10) : undefined;
     const genre = q.genre;
-    const instanceId = q.instanceId;
+    // Standard Subsonic param (issue #123). q.instanceId is kept as a legacy
+    // alias for in-tree callers that haven't migrated yet.
+    let instanceId: string | undefined = q.instanceId;
+    if (!instanceId && q.musicFolderId) {
+      const row = app.db
+        .prepare("SELECT id FROM instances WHERE musicfolder_id = ?")
+        .get(parseInt(q.musicFolderId, 10)) as { id: string } | undefined;
+      // Unknown folder id → empty result, matching how Subsonic clients expect
+      // an unrecognized scope to surface (no rows rather than an error).
+      if (!row) {
+        return sendSubsonicOk(reply, q, { albumList2: { album: [] } });
+      }
+      instanceId = row.id;
+    }
 
     let orderBy = "urg.created_at DESC";
     let where = "WHERE 1=1";
     const params: unknown[] = [];
 
-    // Poutine extension: filter to a single source instance (local or peer id).
     // EXISTS avoids row multiplication when an album has multiple sources.
     if (instanceId) {
       where +=

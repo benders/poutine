@@ -55,6 +55,16 @@ function ensureColumns(db: Database.Database): void {
   if (!instanceColNames.has("last_sync_message")) {
     db.exec("ALTER TABLE instances ADD COLUMN last_sync_message TEXT");
   }
+  if (!instanceColNames.has("musicfolder_id")) {
+    // Issue #123: surface peers as Subsonic MusicFolders. Backfill stable ints
+    // ordered by created_at so existing rows get deterministic IDs on upgrade.
+    db.exec("ALTER TABLE instances ADD COLUMN musicfolder_id INTEGER UNIQUE");
+    db.exec(`
+      UPDATE instances SET musicfolder_id = sub.rn FROM (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS rn FROM instances
+      ) AS sub WHERE instances.id = sub.id
+    `);
+  }
 
   const trackSourceCols = db
     .prepare("PRAGMA table_info(track_sources)")

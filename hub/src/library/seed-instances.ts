@@ -37,17 +37,24 @@ export function seedSyntheticInstances(
     ).run(ownerId);
   }
 
+  const nextFolderId = (): number => {
+    const row = db
+      .prepare("SELECT COALESCE(MAX(musicfolder_id), 0) + 1 AS next FROM instances")
+      .get() as { next: number };
+    return row.next;
+  };
+
   // Seed the local Navidrome instance
   db.prepare(
-    `INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status)
-     VALUES ('local', 'Local Navidrome', ?, 'subsonic', '', ?, 'online')`,
-  ).run(config.navidromeUrl, ownerId);
+    `INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id)
+     VALUES ('local', 'Local Navidrome', ?, 'subsonic', '', ?, 'online', ?)`,
+  ).run(config.navidromeUrl, ownerId, nextFolderId());
 
   // Seed one row per peer
   for (const peer of peerRegistry.peers.values()) {
     db.prepare(
-      `INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status)
-       VALUES (?, ?, ?, 'subsonic', '', ?, 'online')`,
-    ).run(peer.id, peer.id, peer.url, ownerId);
+      `INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id)
+       VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?)`,
+    ).run(peer.id, peer.id, peer.url, ownerId, nextFolderId());
   }
 }
