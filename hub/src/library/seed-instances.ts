@@ -61,6 +61,11 @@ export function seedSyntheticInstances(
     db.prepare(
       `INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id)
        VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?)`,
-    ).run(peer.id, peer.id, peer.url, ownerId, nextFolderId());
+    ).run(peer.id, peer.name, peer.url, ownerId, nextFolderId());
+    // Refresh name on subsequent reloads so YAML edits or improved defaults
+    // (e.g. URL-host fallback) propagate to MusicFolder labels.
+    db.prepare(
+      `UPDATE instances SET name = ? WHERE id = ?`,
+    ).run(peer.name, peer.id);
   }
 }

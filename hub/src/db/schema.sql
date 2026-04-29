@@ -38,10 +38,15 @@ CREATE TABLE IF NOT EXISTS instances (
   -- Stable small integer for the Subsonic getMusicFolders / musicFolderId
   -- contract. Subsonic clients require integer folder IDs but instances are
   -- keyed on UUID. Assigned monotonically on insert; never reused.
-  musicfolder_id INTEGER UNIQUE,
+  -- Uniqueness enforced via partial index below to match the on-upgrade
+  -- migration shape (SQLite forbids ADD COLUMN ... UNIQUE).
+  musicfolder_id INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_instances_musicfolder_id
+  ON instances(musicfolder_id) WHERE musicfolder_id IS NOT NULL;
 
 -- ============================================================
 -- Raw Instance Data (per-instance mirror)
