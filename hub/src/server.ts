@@ -20,6 +20,7 @@ import { setPassword } from "./auth/passwords.js";
 import { ensureJwtSecret } from "./auth/jwt-secret.js";
 import { loadOrCreatePasswordKey } from "./auth/password-crypto.js";
 import { AutoSyncService } from "./services/auto-sync.js";
+import { PeerSyncService } from "./services/peer-sync.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
 import { LastFmClient } from "./services/lastfm.js";
@@ -43,6 +44,7 @@ declare module "fastify" {
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
   lastFmClient: LastFmClient | null;
+  peerSyncService: PeerSyncService;
 }
 }
 
@@ -211,6 +213,22 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     error: (msg) => app.log.error(msg),
 }, syncOpService, lastFmClient);
 
+  const peerSyncService = new PeerSyncService(
+    db,
+    config,
+    peerRegistry,
+    app.federatedFetch,
+    config.poutineOwnerUsername,
+    {
+      info: (msg) => app.log.info(msg),
+      debug: (msg) => app.log.debug(msg),
+      error: (msg) => app.log.error(msg),
+      warn: (msg) => app.log.warn(msg),
+    },
+    lastFmClient,
+  );
+  app.decorate("peerSyncService", peerSyncService);
+
   // SIGHUP handler to reload peer registry without restart
   const sighupHandler = () => {
     peerRegistry.reload();
@@ -239,11 +257,19 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   });
 
   // Health check
-  app.get("/api/health", async () => ({
-    status: "ok",
-    appVersion: APP_VERSION,
-    apiVersion: FEDERATION_API_VERSION,
-  }));
+  app.get("/api/health", async () => {
+    // Get last Navidrome sync time for this instance
+    const row = app.db
+      .prepare("SELECT last_synced_at FROM instances WHERE id = 'local'")
+      .get() as { last_synced_at: string | null } | undefined;
+
+    return {
+      status: "ok",
+      appVersion: APP_VERSION,
+      apiVersion: FEDERATION_API_VERSION,
+      lastNavidromeSync: row?.last_synced_at ?? null,
+    };
+  });
 
   // Static file serving + SPA fallback (production only; skipped in dev)
   if (config.staticDir) {
@@ -271,11 +297,13 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // Start auto-sync after routes are registered
   app.addHook("onReady", () => {
     autoSync.start();
+    peerSyncService.start();
   });
 
   // Cleanup on close
   app.addHook("onClose", () => {
     autoSync.stop();
+    peerSyncService.stop();
     process.off("SIGHUP", sighupHandler);
     db.close();
   });

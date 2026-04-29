@@ -16,7 +16,7 @@
  */
 
 export const APP_VERSION = "0.4.3";
-export const FEDERATION_API_VERSION = 3;
+export const FEDERATION_API_VERSION = 4;
 
 /** User-Agent header value sent on all outgoing federation requests. */
 export const USER_AGENT = `Poutine/${APP_VERSION}`;

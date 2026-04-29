@@ -72,14 +72,46 @@ All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header i
 | Method | Path                       | Purpose                                                                       |
 |--------|----------------------------|-------------------------------------------------------------------------------|
 | `GET`  | `/federation/stream/:id`   | Stream audio from the receiver's local Navidrome to a peer (`:id` is the receiver's Navidrome track ID). Forwards Subsonic transcode params (`format`, `maxBitRate`, `timeOffset`, `estimateContentLength`) and `Range`. The receiver records each successful stream in its own activity log as `kind='proxy'` (issue #121). |
+| `GET`  | `/api/health`              | Health check endpoint (no auth required). Returns instance status, versions, and last Navidrome sync timestamp. Used by peers for health monitoring and automatic sync decisions. |
 
 Library metadata and cover art travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
 
 ---
 
+## GET /api/health
+
+Health check endpoint that returns instance status and metadata. No authentication required.
+
+### Response
+
+```json
+{
+  "status": "ok",
+  "appVersion": "0.4.3",
+  "apiVersion": 4,
+  "lastNavidromeSync": "2026-01-15T10:30:00Z"
+}
+```
+
+| Field               | Type     | Description                                                                 |
+|---------------------|----------|-----------------------------------------------------------------------------|
+| `status`            | string   | Health status (`"ok"` on success)                                          |
+| `appVersion`        | string   | Poutine application version (from `User-Agent`)                            |
+| `apiVersion`        | integer  | Federation protocol version (from `Poutine-Api-Version`)                   |
+| `lastNavidromeSync` | string   | ISO 8601 timestamp of last successful Navidrome sync, or `null` if never synced |
+
+---
+
 ## Changelog
 
-### Version 3 (current)
+### Version 4 (current)
+
+- **Added** `GET /api/health` endpoint — returns instance health status, versions, and `lastNavidromeSync` timestamp.
+- **Added** `lastNavidromeSync` field to `/api/health` response — used by peers for automatic sync decisions (issue #14).
+
+**Rationale:** Automatic peer synchronization requires peers to know when their library was last synced with Navidrome. The health endpoint provides this information without requiring authentication, enabling efficient sync scheduling.
+
+### Version 3
 
 - **Removed** `GET /federation/library/export` — library metadata sync is superseded by the `/proxy/*` tier.
 - **Removed** `GET /federation/art/:encodedId` — cover art proxying now handled by `/proxy/*`.

@@ -8,6 +8,9 @@ export interface Config {
   syncIntervalMs: number;
   instanceTimeoutMs: number;
   instanceConcurrency: number;
+  // Peer auto-sync settings (issue #14)
+  peerSyncIntervalMs: number;
+  peerSyncSplayMs: number;
   // Phase 1: bundled Navidrome + peer federation config.
   navidromeUrl: string;
   navidromeUsername: string;
@@ -51,6 +54,15 @@ export function loadConfig(): Config {
     ),
     instanceConcurrency: parseInt(
       process.env.INSTANCE_CONCURRENCY || "3",
+      10
+    ),
+    // Peer auto-sync: default 5 minutes with ±30s splay
+    peerSyncIntervalMs: parseInt(
+      process.env.PEER_SYNC_INTERVAL_MS || String(5 * 60 * 1000),
+      10
+    ),
+    peerSyncSplayMs: parseInt(
+      process.env.PEER_SYNC_SPLAY_MS || String(30 * 1000),
       10
     ),
     navidromeUrl: process.env.NAVIDROME_URL || "http://navidrome:4533",
