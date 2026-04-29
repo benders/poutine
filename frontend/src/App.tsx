@@ -10,6 +10,7 @@ import { ReleaseGroupPage } from "@/pages/ReleaseGroupPage";
 import { SearchPage } from "@/pages/SearchPage";
 import { AdminPage } from "@/pages/AdminPage";
 import { ActivityPage } from "@/pages/ActivityPage";
+import { PlaylistsPage } from "@/pages/PlaylistsPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -49,6 +50,8 @@ export function App() {
         <Route index element={<Navigate to="/library/all" replace />} />
         <Route path="library" element={<Navigate to="/library/all" replace />} />
         <Route path="library/:view" element={<AlbumsPage />} />
+        <Route path="playlists" element={<Navigate to="/playlists/favorites" replace />} />
+        <Route path="playlists/:view" element={<PlaylistsPage />} />
         <Route path="artists" element={<ArtistsPage />} />
         <Route path="artists/:id" element={<ArtistDetailPage />} />
         <Route path="albums/:id" element={<ReleaseGroupPage />} />
