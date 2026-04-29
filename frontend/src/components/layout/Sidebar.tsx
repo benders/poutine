@@ -13,6 +13,8 @@ import {
   Shuffle,
   Server,
   Activity,
+  Star,
+  ListMusic,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { APP_VERSION } from "@/version";
@@ -60,6 +62,7 @@ export function Sidebar() {
         >
           <NavGroupItem to="/library/all" label="All" />
           <NavGroupItem to="/library/random" label="Random" icon={Shuffle} />
+          <NavGroupItem to="/library/favorites" label="Favorites" icon={Star} />
           {folders?.map((folder) => (
             <NavGroupItem
               key={folder.id}
@@ -68,6 +71,19 @@ export function Sidebar() {
               icon={Server}
             />
           ))}
+        </NavGroup>
+
+        <NavGroup
+          label="Playlists"
+          icon={ListMusic}
+          to="/playlists/favorites"
+          storageKey="sidebar:playlists:open"
+        >
+          <NavGroupItem
+            to="/playlists/favorites"
+            label="Favorites"
+            icon={Star}
+          />
         </NavGroup>
 
         {flatNav.map((item) => (

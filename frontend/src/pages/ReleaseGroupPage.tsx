@@ -7,6 +7,7 @@ import { formatDuration } from "@/lib/format";
 import { Play, Plus, ChevronRight, Disc, ChevronDown, ChevronUp, FileAudio, Info } from "lucide-react";
 import { useState } from "react";
 import { ShareIdButton } from "@/components/ShareIdButton";
+import { StarButton } from "@/components/StarButton";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 function hashColor(name: string): string {
@@ -96,6 +97,16 @@ export function ReleaseGroupPage() {
               Play All
             </button>
           )}
+
+          <span className="mt-3 inline-flex mr-2 align-middle">
+            <StarButton
+              id={album.id}
+              starred={album.starred}
+              invalidateKeys={[["album", id]]}
+              size={20}
+              showWhenUnstarred="always"
+            />
+          </span>
 
           {album.shareId && (
             <span className="mt-3 inline-flex mr-2">
@@ -224,6 +235,11 @@ function SongRow({
         </td>
         <td className="py-2.5 px-4 text-right">
           <div className="flex items-center justify-end gap-2">
+            <StarButton
+              id={song.id}
+              starred={song.starred}
+              invalidateKeys={[["album", song.albumId]]}
+            />
             <button
               onClick={onAddToQueue}
               className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary transition-all cursor-pointer"

@@ -36,7 +36,7 @@ interface ViewSpec {
 
 /**
  * Map a URL view slug to the API params and display title.
- * Slugs: `all`, `random`, `folder-<numericId>`.
+ * Slugs: `all`, `random`, `favorites`, `folder-<numericId>`.
  * Returns null for unknown slugs so the page can redirect.
  */
 function resolveView(
@@ -45,6 +45,7 @@ function resolveView(
 ): ViewSpec | null {
   if (slug === "all") return { type: "alphabeticalByName", title: "All Albums" };
   if (slug === "random") return { type: "random", title: "Random Albums" };
+  if (slug === "favorites") return { type: "starred", title: "Favorites" };
   if (slug.startsWith("folder-")) {
     const id = parseInt(slug.slice("folder-".length), 10);
     if (!Number.isFinite(id)) return null;
