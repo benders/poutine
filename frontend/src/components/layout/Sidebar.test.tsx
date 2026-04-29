@@ -43,7 +43,7 @@ beforeEach(() => {
 describe("Sidebar Albums group", () => {
   it("renders one entry per MusicFolder plus All/Random", async () => {
     vi.mocked(getMusicFolders).mockResolvedValue([
-      { id: 1, name: "Local Navidrome" },
+      { id: 1, name: "Local" },
       { id: 2, name: "Alice's Hub" },
       { id: 3, name: "Bob's Hub" },
     ]);
@@ -57,7 +57,7 @@ describe("Sidebar Albums group", () => {
       expect(screen.getByText("Alice's Hub")).toBeInTheDocument();
     });
     expect(screen.getByText("Bob's Hub")).toBeInTheDocument();
-    expect(screen.getByText("Local Navidrome")).toBeInTheDocument();
+    expect(screen.getByText("Local")).toBeInTheDocument();
 
     const aliceLink = screen.getByText("Alice's Hub").closest("a");
     expect(aliceLink).toHaveAttribute("href", "/library/folder-2");

@@ -44,11 +44,17 @@ export function seedSyntheticInstances(
     return row.next;
   };
 
-  // Seed the local Navidrome instance
+  // Seed the local instance. User-facing name is "Local" — Navidrome is an
+  // internal implementation detail and must not leak into the SPA / Subsonic
+  // clients.
   db.prepare(
     `INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id)
-     VALUES ('local', 'Local Navidrome', ?, 'subsonic', '', ?, 'online', ?)`,
+     VALUES ('local', 'Local', ?, 'subsonic', '', ?, 'online', ?)`,
   ).run(config.navidromeUrl, ownerId, nextFolderId());
+  // Rename pre-existing "Local Navidrome" rows from earlier seeds.
+  db.prepare(
+    `UPDATE instances SET name = 'Local' WHERE id = 'local' AND name = 'Local Navidrome'`,
+  ).run();
 
   // Seed one row per peer
   for (const peer of peerRegistry.peers.values()) {
