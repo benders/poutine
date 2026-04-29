@@ -193,6 +193,41 @@ print('  Albums on hub-a: ' + ', '.join(sorted(albums)))
   exit 1
 fi
 
+# ── Issue #123: peers exposed as MusicFolders ─────────────────────────────────
+echo ""
+echo "==> Verifying getMusicFolders exposes local + 2 peers on hub-a..."
+FOLDERS_JSON=$(curl -sf \
+  "http://localhost:3011/rest/getMusicFolders?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json")
+LOCAL_FOLDER_ID=$(echo "$FOLDERS_JSON" | python3 -c "
+import sys, json
+folders = json.load(sys.stdin)['subsonic-response']['musicFolders']['musicFolder']
+assert len(folders) >= 3, f'expected >=3 folders (self + 2 peers), got {len(folders)}: {folders}'
+ids = [f['id'] for f in folders]
+assert all(isinstance(i, int) for i in ids), f'non-int folder ids: {ids}'
+assert len(set(ids)) == len(ids), f'duplicate folder ids: {ids}'
+local = [f for f in folders if f['name'] == 'Local Navidrome']
+assert local, f'no Local Navidrome folder in {folders}'
+print(local[0]['id'])
+print('  Folders on hub-a: ' + ', '.join(f\"{f['id']}={f['name']}\" for f in folders), file=sys.stderr)
+")
+echo "  Local folder id: $LOCAL_FOLDER_ID"
+
+echo "==> Verifying musicFolderId scopes getAlbumList2 to the local folder..."
+LOCAL_ALBUMS=$(curl -sf \
+  "http://localhost:3011/rest/getAlbumList2?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&type=alphabeticalByName&size=500&musicFolderId=${LOCAL_FOLDER_ID}")
+if ! echo "$LOCAL_ALBUMS" | python3 -c "
+import sys, json
+albums = [a['name'] for a in json.load(sys.stdin)['subsonic-response'].get('albumList2', {}).get('album', [])]
+assert 'First Album' in albums, f'Local folder missing local album: {albums}'
+assert 'Other Album' not in albums, f'Local folder leaked peer-b album: {albums}'
+assert 'Third Album' not in albums, f'Local folder leaked peer-c album: {albums}'
+print('  Local-folder albums on hub-a: ' + ', '.join(sorted(albums)))
+"; then
+  echo "ERROR: musicFolderId filter did not isolate the local folder" >&2
+  echo "Response: $LOCAL_ALBUMS" >&2
+  exit 1
+fi
+
 # ── Federated stream from hub-b ───────────────────────────────────────────────
 
 OTHER_ALBUM_ID=$(echo "$ALBUM_LIST" | python3 -c "

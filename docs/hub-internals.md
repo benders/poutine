@@ -105,6 +105,7 @@ Contract: [federation-api.md](federation-api.md). Read before modifying `/federa
 - **Catalogs may diverge between hubs** — each hub builds its own catalog by reading Navidrome instances directly. No fan-out re-export risk.
 - **`GET /admin/peers`** does live health checks: parallel `fetch` to each peer's `/api/health` with a 5 s `AbortController` timeout. `status` from live reachability; `lastSeen` from DB.
 - **`AutoSyncService`** (`hub/src/services/auto-sync.ts`) polls Navidrome every 30 s. When Navidrome's `lastScan` > `instances.last_synced_at` for `'local'`, runs `syncLocal` + `mergeLibraries`. Skips when already running (boolean lock) or when Navidrome is scanning. Wired via `onReady`/`onClose` in `server.ts`.
+- **`instances.musicfolder_id`** (issue #123) is a stable monotonically-assigned int that surfaces each instance as a Subsonic MusicFolder. Subsonic clients require integer folder ids but `instances.id` is a UUID (or `'local'`); this column is the int↔UUID bridge. Assigned in `seedSyntheticInstances` via `MAX(musicfolder_id)+1`; backfilled on upgrade in `db/client.ts` ordered by `created_at`. Resolve via `SELECT id FROM instances WHERE musicfolder_id = ?` — never reuse a value, never recompute on the fly.
 
 ### Versioning
 
