@@ -1,4 +1,5 @@
 import { Star } from "lucide-react";
+import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { star, unstar } from "@/lib/subsonic";
 import { cn } from "@/lib/cn";
@@ -8,9 +9,10 @@ import { cn } from "@/lib/cn";
  * artist headers. The Subsonic id is whatever the server returned (`t…`,
  * `al…`, `ar…`); the backend classifies by prefix.
  *
- * `invalidateKeys` lets the caller pick which React Query caches to refresh
- * after a successful toggle so optimistic UI updates flip immediately. When
- * the affected list is the page itself, pass its key here.
+ * Optimistic: the icon flips on click and holds the new state until the
+ * mutation succeeds and the invalidated queries refetch (or rolls back on
+ * error). `invalidateKeys` lets the caller refresh entity-specific caches;
+ * `getStarred2` and the Favorites album list are always invalidated.
  */
 export function StarButton({
   id,
@@ -41,21 +43,33 @@ export function StarButton({
   const qc = useQueryClient();
   const isStarred = !!starred;
 
+  // Optimistic override: holds the post-click state until the refetch settles
+  // (or onError clears it). null means "follow the prop".
+  const [optimistic, setOptimistic] = useState<boolean | null>(null);
+  const displayStarred = optimistic !== null ? optimistic : isStarred;
+
   const mut = useMutation({
     mutationFn: () => (isStarred ? unstar({ id }) : star({ id })),
-    onSuccess: () => {
-      // Re-fetch the surfaces that show this entity. getStarred2-backed views
-      // are always invalidated so a Favorites tab reflects the change.
-      qc.invalidateQueries({ queryKey: ["starred2"] });
-      qc.invalidateQueries({ queryKey: ["albumList2", "favorites"] });
-      for (const k of invalidateKeys ?? []) {
-        qc.invalidateQueries({ queryKey: k as unknown[] });
-      }
+    onMutate: () => {
+      setOptimistic(!isStarred);
+    },
+    onError: () => {
+      setOptimistic(null);
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["starred2"] }),
+        qc.invalidateQueries({ queryKey: ["albumList2", "favorites"] }),
+        ...(invalidateKeys ?? []).map((k) =>
+          qc.invalidateQueries({ queryKey: k as unknown[] }),
+        ),
+      ]);
+      setOptimistic(null);
     },
   });
 
   const visibility =
-    showWhenUnstarred === "always" || isStarred
+    showWhenUnstarred === "always" || displayStarred
       ? "opacity-100"
       : "opacity-0 group-hover:opacity-100 focus:opacity-100";
 
@@ -70,16 +84,16 @@ export function StarButton({
         if (mut.isPending) return;
         mut.mutate();
       }}
-      title={isStarred ? "Remove from Favorites" : "Add to Favorites"}
-      aria-label={isStarred ? "Remove from Favorites" : "Add to Favorites"}
-      aria-pressed={isStarred}
+      title={displayStarred ? "Remove from Favorites" : "Add to Favorites"}
+      aria-label={displayStarred ? "Remove from Favorites" : "Add to Favorites"}
+      aria-pressed={displayStarred}
       className={cn(
         "transition-all cursor-pointer",
         pill
           ? "inline-flex items-center gap-2 px-4 py-2 bg-surface-hover hover:bg-surface rounded-full text-sm font-medium"
           : "p-1",
         visibility,
-        isStarred
+        displayStarred
           ? "text-yellow-400 hover:text-yellow-300"
           : pill
             ? "text-text-primary"
@@ -90,9 +104,9 @@ export function StarButton({
       <Star
         width={pill ? 16 : size}
         height={pill ? 16 : size}
-        className={isStarred ? "fill-current" : ""}
+        className={displayStarred ? "fill-current" : ""}
       />
-      {pill && (isStarred ? "Starred" : "Star")}
+      {pill && (displayStarred ? "Starred" : "Star")}
     </button>
   );
 }
