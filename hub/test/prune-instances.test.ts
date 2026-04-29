@@ -9,7 +9,6 @@ function makeRegistry(peerIds: string[]): PeerRegistry {
   for (const id of peerIds) {
     peers.set(id, {
       id,
-      name: id,
       url: `https://${id}.example`,
       proxyUrl: `https://${id}.example`,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
