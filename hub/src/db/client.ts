@@ -58,13 +58,18 @@ function ensureColumns(db: Database.Database): void {
   if (!instanceColNames.has("musicfolder_id")) {
     // Issue #123: surface peers as Subsonic MusicFolders. Backfill stable ints
     // ordered by created_at so existing rows get deterministic IDs on upgrade.
-    db.exec("ALTER TABLE instances ADD COLUMN musicfolder_id INTEGER UNIQUE");
+    // SQLite forbids ADD COLUMN ... UNIQUE; add the column, backfill, then
+    // enforce uniqueness via an index.
+    db.exec("ALTER TABLE instances ADD COLUMN musicfolder_id INTEGER");
     db.exec(`
       UPDATE instances SET musicfolder_id = sub.rn FROM (
         SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS rn FROM instances
       ) AS sub WHERE instances.id = sub.id
     `);
   }
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_instances_musicfolder_id ON instances(musicfolder_id) WHERE musicfolder_id IS NOT NULL",
+  );
 
   const trackSourceCols = db
     .prepare("PRAGMA table_info(track_sources)")
