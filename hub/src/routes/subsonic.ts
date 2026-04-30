@@ -15,6 +15,7 @@ import { normalizeName } from "../library/normalize.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { applyTranscodeRule, buildStreamParams } from "./stream-params.js";
 import type { StreamTrackingService } from "../services/stream-tracking.js";
+import { sqliteToIso } from "../util/time.js";
 
 // Extend Fastify app type for stream tracking
 declare module "fastify" {
@@ -198,8 +199,7 @@ function annotateStarred<T extends { id: string }>(
   for (let i = 0; i < items.length; i++) {
     const ts = map.get(rawIds[i]);
     if (ts) {
-      const isoTs = ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`;
-      (items[i] as T & { starred?: string }).starred = isoTs;
+      (items[i] as T & { starred?: string }).starred = sqliteToIso(ts);
     }
   }
 }
@@ -1301,12 +1301,6 @@ try {
     return out;
   }
 
-  // SQLite's datetime('now') yields "YYYY-MM-DD HH:MM:SS" UTC; Subsonic clients
-  // expect ISO 8601 with 'T' separator and 'Z' suffix.
-  function toIsoStarred(ts: string): string {
-    return ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`;
-  }
-
   route("/star", async (request, reply) => {
     const q = request.query as Record<string, string | string[] | undefined>;
     const userId = request.subsonicUser.id;
@@ -1401,15 +1395,15 @@ try {
         name: a.name,
         albumCount: a.albumCount,
         coverArt: a.image_url ?? undefined,
-        starred: toIsoStarred(a.starred_at),
+        starred: sqliteToIso(a.starred_at),
       })),
       album: albums.map((a) => ({
         ...buildAlbum(a),
-        starred: toIsoStarred(a.starred_at),
+        starred: sqliteToIso(a.starred_at),
       })),
       song: songs.map((s) => ({
         ...buildSong(s),
-        starred: toIsoStarred(s.starred_at),
+        starred: sqliteToIso(s.starred_at),
       })),
     };
   }
