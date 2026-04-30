@@ -233,6 +233,76 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     app.post(`${path}.view`, { preHandler }, handler);
   }
 
+  // ── Hoisted prepared statements for star/unstar/getStarred2 (#130) ──────────
+  // Prepared once at plugin init rather than per-request to avoid allocation
+  // churn on hot endpoints.
+  const starInsertStmt = app.db.prepare(
+    "INSERT OR IGNORE INTO user_stars (user_id, kind, target_id) VALUES (?, ?, ?)",
+  );
+  const starDeleteStmt = app.db.prepare(
+    "DELETE FROM user_stars WHERE user_id = ? AND kind = ? AND target_id = ?",
+  );
+  const starredArtistsStmt = app.db.prepare(
+    `SELECT ua.id, ua.name, ua.image_url,
+      COUNT(urg.id) AS albumCount,
+      us.starred_at
+    FROM user_stars us
+    JOIN unified_artists ua ON ua.id = us.target_id
+    LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
+    WHERE us.user_id = ? AND us.kind = 'artist'
+    GROUP BY ua.id, ua.name, ua.image_url, us.starred_at
+    ORDER BY us.starred_at DESC`,
+  );
+  const starredAlbumsStmt = app.db.prepare(
+    `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
+      urg.year, urg.genre, urg.image_url,
+      (SELECT COUNT(*) FROM unified_tracks ut
+       JOIN unified_releases ur ON ur.id = ut.release_id
+       WHERE ur.release_group_id = urg.id) AS songCount,
+      us.starred_at
+    FROM user_stars us
+    JOIN unified_release_groups urg ON urg.id = us.target_id
+    JOIN unified_artists ua ON ua.id = urg.artist_id
+    WHERE us.user_id = ? AND us.kind = 'album'
+    ORDER BY us.starred_at DESC`,
+  );
+  const starredSongsStmt = app.db.prepare(
+    `SELECT
+      ut.id, ut.title, ut.track_number, ut.disc_number,
+      ut.duration_ms, ut.genre, ut.musicbrainz_id,
+      ut.artist_id, ua.name AS artist_name,
+      urg.id AS rg_id, urg.name AS rg_name,
+      urg.year AS rg_year, urg.image_url AS rg_image_url,
+      (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
+      (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
+      (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+      (SELECT i.name FROM track_sources ts
+       JOIN instances i ON i.id = ts.instance_id
+       WHERE ts.unified_track_id = ut.id
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name,
+      us.starred_at
+    FROM user_stars us
+    JOIN unified_tracks ut ON ut.id = us.target_id
+    JOIN unified_artists ua ON ua.id = ut.artist_id
+    JOIN unified_releases ur ON ur.id = ut.release_id
+    JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+    WHERE us.user_id = ? AND us.kind = 'track'
+    ORDER BY us.starred_at DESC`,
+  );
+  const starInsertTx = app.db.transaction(
+    (userId: string, rows: Array<{ kind: StarKind; raw: string }>) => {
+      for (const r of rows) starInsertStmt.run(userId, r.kind, r.raw);
+    },
+  );
+  const starDeleteTx = app.db.transaction(
+    (userId: string, rows: Array<{ kind: StarKind; raw: string }>) => {
+      for (const r of rows) starDeleteStmt.run(userId, r.kind, r.raw);
+    },
+  );
+
   // ── ping ────────────────────────────────────────────────────────────────────
 
   route("/ping", async (request, reply) => {
@@ -1309,91 +1379,28 @@ try {
 
   route("/star", async (request, reply) => {
     const q = request.query as Record<string, string | string[] | undefined>;
-    const userId = request.subsonicUser.id;
     const targets = collectStarTargets(q);
-    const stmt = app.db.prepare(
-      "INSERT OR IGNORE INTO user_stars (user_id, kind, target_id) VALUES (?, ?, ?)",
-    );
-    const tx = app.db.transaction((rows: Array<{ kind: StarKind; raw: string }>) => {
-      for (const r of rows) stmt.run(userId, r.kind, r.raw);
-    });
-    tx(targets);
+    starInsertTx(request.subsonicUser.id, targets);
     sendSubsonicOk(reply, q as Record<string, string>, {});
   });
 
   route("/unstar", async (request, reply) => {
     const q = request.query as Record<string, string | string[] | undefined>;
-    const userId = request.subsonicUser.id;
     const targets = collectStarTargets(q);
-    const stmt = app.db.prepare(
-      "DELETE FROM user_stars WHERE user_id = ? AND kind = ? AND target_id = ?",
-    );
-    const tx = app.db.transaction((rows: Array<{ kind: StarKind; raw: string }>) => {
-      for (const r of rows) stmt.run(userId, r.kind, r.raw);
-    });
-    tx(targets);
+    starDeleteTx(request.subsonicUser.id, targets);
     sendSubsonicOk(reply, q as Record<string, string>, {});
   });
 
   function buildStarredEnvelope(userId: string) {
-    const artists = app.db
-      .prepare(
-        `SELECT ua.id, ua.name, ua.image_url,
-          COUNT(urg.id) AS albumCount,
-          us.starred_at
-        FROM user_stars us
-        JOIN unified_artists ua ON ua.id = us.target_id
-        LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
-        WHERE us.user_id = ? AND us.kind = 'artist'
-        GROUP BY ua.id, ua.name, ua.image_url, us.starred_at
-        ORDER BY us.starred_at DESC`,
-      )
-      .all(userId) as Array<ArtistRow & { starred_at: string }>;
-
-    const albums = app.db
-      .prepare(
-        `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-          urg.year, urg.genre, urg.image_url,
-          (SELECT COUNT(*) FROM unified_tracks ut
-           JOIN unified_releases ur ON ur.id = ut.release_id
-           WHERE ur.release_group_id = urg.id) AS songCount,
-          us.starred_at
-        FROM user_stars us
-        JOIN unified_release_groups urg ON urg.id = us.target_id
-        JOIN unified_artists ua ON ua.id = urg.artist_id
-        WHERE us.user_id = ? AND us.kind = 'album'
-        ORDER BY us.starred_at DESC`,
-      )
-      .all(userId) as Array<ReleaseGroupRow & { starred_at: string }>;
-
-    const songs = app.db
-      .prepare(
-        `SELECT
-          ut.id, ut.title, ut.track_number, ut.disc_number,
-          ut.duration_ms, ut.genre, ut.musicbrainz_id,
-          ut.artist_id, ua.name AS artist_name,
-          urg.id AS rg_id, urg.name AS rg_name,
-          urg.year AS rg_year, urg.image_url AS rg_image_url,
-          (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
-          (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
-          (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
-          (SELECT i.name FROM track_sources ts
-           JOIN instances i ON i.id = ts.instance_id
-           WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name,
-          us.starred_at
-        FROM user_stars us
-        JOIN unified_tracks ut ON ut.id = us.target_id
-        JOIN unified_artists ua ON ua.id = ut.artist_id
-        JOIN unified_releases ur ON ur.id = ut.release_id
-        JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-        WHERE us.user_id = ? AND us.kind = 'track'
-        ORDER BY us.starred_at DESC`,
-      )
-      .all(userId) as Array<TrackRow & { starred_at: string }>;
+    const artists = starredArtistsStmt.all(userId) as Array<
+      ArtistRow & { starred_at: string }
+    >;
+    const albums = starredAlbumsStmt.all(userId) as Array<
+      ReleaseGroupRow & { starred_at: string }
+    >;
+    const songs = starredSongsStmt.all(userId) as Array<
+      TrackRow & { starred_at: string }
+    >;
 
     return {
       artist: artists.map((a) => ({
