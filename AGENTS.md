@@ -26,8 +26,9 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
    - Architectural changes: read `docs/system-architecture.md`.
 3. Write tests alongside code. Run `pnpm test` + `pnpm typecheck` before declaring done.
 4. Update documentation and check for any outdated or inconsistent information.
-6. Commit only when the user approves.
-7. Close the issue immediately after committing.
+6. Commit work in phases, when all tests are passing
+7. Push branch to origin
+8. When work is completed, open a Pull Request in the Draft state
 
 ## Documentation rules
 
