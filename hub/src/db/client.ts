@@ -19,6 +19,10 @@ function dropLegacyTables(db: Database.Database): void {
  * Apply additive column migrations for existing databases.
  * SQLite supports ADD COLUMN idempotently via PRAGMA table_info check.
  */
+function logMigration(msg: string): void {
+  console.log(`[DB Migration] ${msg}`);
+}
+
 /**
  * Migrate users.password_hash (Argon2id) → users.password_enc (AES-256-GCM).
  *
@@ -35,11 +39,13 @@ function migrateUserPasswords(db: Database.Database): void {
   const names = new Set(cols.map((c) => c.name));
 
   if (!names.has("password_enc")) {
+    logMigration("Adding password_enc column to users table");
     db.exec(
       "ALTER TABLE users ADD COLUMN password_enc TEXT NOT NULL DEFAULT ''",
     );
   }
   if (names.has("password_hash")) {
+    logMigration("Dropping password_hash column from users table");
     db.exec("ALTER TABLE users DROP COLUMN password_hash");
   }
 }
@@ -50,9 +56,11 @@ function ensureColumns(db: Database.Database): void {
     .all() as Array<{ name: string }>;
   const instanceColNames = new Set(instanceCols.map((c) => c.name));
   if (!instanceColNames.has("last_sync_ok")) {
+    logMigration("Adding last_sync_ok column to instances table");
     db.exec("ALTER TABLE instances ADD COLUMN last_sync_ok INTEGER");
   }
   if (!instanceColNames.has("last_sync_message")) {
+    logMigration("Adding last_sync_message column to instances table");
     db.exec("ALTER TABLE instances ADD COLUMN last_sync_message TEXT");
   }
   if (!instanceColNames.has("musicfolder_id")) {
@@ -60,7 +68,9 @@ function ensureColumns(db: Database.Database): void {
     // ordered by created_at so existing rows get deterministic IDs on upgrade.
     // SQLite forbids ADD COLUMN ... UNIQUE; add the column, backfill, then
     // enforce uniqueness via an index.
+    logMigration("Adding musicfolder_id column to instances table");
     db.exec("ALTER TABLE instances ADD COLUMN musicfolder_id INTEGER");
+    logMigration("Backfilling musicfolder_id values");
     db.exec(`
       UPDATE instances SET musicfolder_id = sub.rn FROM (
         SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS rn FROM instances
@@ -76,12 +86,14 @@ function ensureColumns(db: Database.Database): void {
     .all() as Array<{ name: string }>;
   const trackSourceColNames = new Set(trackSourceCols.map((c) => c.name));
   if (!trackSourceColNames.has("preferred")) {
+    logMigration("Adding preferred column to track_sources table");
     db.exec(
       "ALTER TABLE track_sources ADD COLUMN preferred INTEGER NOT NULL DEFAULT 0",
     );
     // Backfill: pick a preferred source per unified track on existing DBs so
     // streaming keeps working before the next merge runs. Same rule merge.ts
     // applies after every sync.
+    logMigration("Backfilling preferred values in track_sources table");
     db.exec(`
       UPDATE track_sources SET preferred = 1 WHERE id IN (
         SELECT id FROM (
@@ -126,6 +138,7 @@ function migrateTrackSources(db: Database.Database): void {
   if (!names.has("source_kind") && !names.has("peer_id") && !names.has("remote_id")) {
     return; // already on new schema
   }
+  logMigration("Migrating track_sources table to new schema");
   db.exec(`
     DROP TABLE IF EXISTS track_sources;
     CREATE TABLE track_sources (
@@ -153,6 +166,7 @@ function migrateStreamOperations(db: Database.Database): void {
     .all() as Array<{ name: string }>;
   const names = new Set(cols.map((c) => c.name));
   if (cols.length > 0 && !names.has("kind")) {
+    logMigration("Migrating stream_operations table to new schema");
     db.exec("DROP TABLE IF EXISTS stream_operations");
     db.exec(`
       CREATE TABLE stream_operations (
