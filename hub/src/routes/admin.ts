@@ -366,7 +366,14 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         try {
           const res = await fetch(`${peer.url}/api/health`, { signal: controller.signal, headers: { "user-agent": USER_AGENT } });
           if (!res.ok) return null;
-          return (await res.json()) as HealthPayload;
+          const health = (await res.json()) as HealthPayload;
+          // Update last_seen on successful health check
+          app.db
+            .prepare(
+              "UPDATE instances SET last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+            )
+            .run(peer.id);
+          return health;
         } catch {
           return null;
         } finally {
