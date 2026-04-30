@@ -1,0 +1,58 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import { usePlayer } from "./player";
+import type { SubsonicSong } from "@/lib/subsonic";
+
+const song = (id: string): SubsonicSong =>
+  ({ id, title: `t${id}`, durationMs: 1000 } as unknown as SubsonicSong);
+
+beforeEach(() => {
+  usePlayer.setState({ queue: [], currentIndex: -1, isPlaying: false, currentTime: 0 });
+});
+
+describe("player store play/pause toggle", () => {
+  it("playTrack on a new track starts playing", () => {
+    usePlayer.getState().playTrack(song("1"));
+    const s = usePlayer.getState();
+    expect(s.queue.map((q) => q.id)).toEqual(["1"]);
+    expect(s.currentIndex).toBe(0);
+    expect(s.isPlaying).toBe(true);
+  });
+
+  it("playTrack on the currently playing track pauses it", () => {
+    usePlayer.getState().playTrack(song("1"));
+    usePlayer.getState().playTrack(song("1"));
+    expect(usePlayer.getState().isPlaying).toBe(false);
+  });
+
+  it("playTrack on the current (paused) track resumes playback", () => {
+    usePlayer.getState().playTrack(song("1"));
+    usePlayer.setState({ isPlaying: false });
+    usePlayer.getState().playTrack(song("1"));
+    expect(usePlayer.getState().isPlaying).toBe(true);
+  });
+
+  it("playTrack on a different track replaces the queue", () => {
+    usePlayer.getState().playTrack(song("1"));
+    usePlayer.getState().playTrack(song("2"));
+    const s = usePlayer.getState();
+    expect(s.queue.map((q) => q.id)).toEqual(["2"]);
+    expect(s.isPlaying).toBe(true);
+  });
+
+  it("playTracks toggles pause when start track matches currently playing", () => {
+    const tracks = [song("1"), song("2"), song("3")];
+    usePlayer.getState().playTracks(tracks, 1);
+    expect(usePlayer.getState().currentIndex).toBe(1);
+    expect(usePlayer.getState().isPlaying).toBe(true);
+    usePlayer.getState().playTracks(tracks, 1);
+    expect(usePlayer.getState().isPlaying).toBe(false);
+  });
+
+  it("playTracks starting on a different index replaces queue", () => {
+    const tracks = [song("1"), song("2")];
+    usePlayer.getState().playTracks(tracks, 0);
+    usePlayer.getState().playTracks(tracks, 1);
+    expect(usePlayer.getState().currentIndex).toBe(1);
+    expect(usePlayer.getState().isPlaying).toBe(true);
+  });
+});
