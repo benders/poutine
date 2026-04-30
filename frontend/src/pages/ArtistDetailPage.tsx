@@ -4,6 +4,7 @@ import { getArtist, artUrl } from "@/lib/subsonic";
 import type { SubsonicAlbum } from "@/lib/subsonic";
 import { ChevronRight, Disc } from "lucide-react";
 import { ShareIdButton } from "@/components/ShareIdButton";
+import { StarButton } from "@/components/StarButton";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 function hashColor(name: string): string {
@@ -78,11 +79,16 @@ export function ArtistDetailPage() {
             {artist.album.length}{" "}
             {artist.album.length === 1 ? "album" : "albums"}
           </p>
-          {artist.shareId && (
-            <div className="mt-3">
-              <ShareIdButton shareId={artist.shareId} />
-            </div>
-          )}
+          <div className="mt-3 flex items-center gap-2">
+            <StarButton
+              id={artist.id}
+              starred={artist.starred}
+              invalidateKeys={[["artist", id]]}
+              size={20}
+              showWhenUnstarred="always"
+            />
+            {artist.shareId && <ShareIdButton shareId={artist.shareId} />}
+          </div>
         </div>
       </div>
 

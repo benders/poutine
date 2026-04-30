@@ -1,12 +1,12 @@
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate, useParams, Navigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getAlbumList2, artUrl } from "@/lib/subsonic";
-import type { SubsonicAlbum } from "@/lib/subsonic";
+import { getAlbumList2, getMusicFolders, artUrl } from "@/lib/subsonic";
+import type { SubsonicAlbum, SubsonicMusicFolder } from "@/lib/subsonic";
 import { Disc, Shuffle } from "lucide-react";
 import { useScrollRestoration } from "@/lib/useScrollRestoration";
 import { CategoryGrid, type SortOptionDef } from "@/components/CategoryGrid";
-import { getPeersSummary, peerDisplayName } from "@/lib/api";
+import { peerDisplayName } from "@/lib/api";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -28,32 +28,32 @@ const SORT_OPTIONS: SortOptionDef<SortOption>[] = [
 interface ViewSpec {
   /** Subsonic getAlbumList2 type param. */
   type: string;
-  /** Subsonic getAlbumList2 instanceId filter (Poutine extension). */
-  instanceId?: string;
+  /** Subsonic getAlbumList2 musicFolderId filter. */
+  musicFolderId?: number;
   /** Display title shown in the page header. */
   title: string;
 }
 
 /**
  * Map a URL view slug to the API params and display title.
- * Slugs: `all`, `random`, `local`, `peer-<peerId>`.
+ * Slugs: `all`, `random`, `favorites`, `folder-<numericId>`.
  * Returns null for unknown slugs so the page can redirect.
  */
 function resolveView(
   slug: string,
-  peerName: (id: string) => string,
+  folders: SubsonicMusicFolder[] | undefined,
 ): ViewSpec | null {
   if (slug === "all") return { type: "alphabeticalByName", title: "All Albums" };
   if (slug === "random") return { type: "random", title: "Random Albums" };
-  if (slug === "local")
-    return { type: "alphabeticalByName", instanceId: "local", title: "Local Albums" };
-  if (slug.startsWith("peer-")) {
-    const peerId = slug.slice("peer-".length);
-    if (!peerId) return null;
+  if (slug === "favorites") return { type: "starred", title: "Favorites" };
+  if (slug.startsWith("folder-")) {
+    const id = parseInt(slug.slice("folder-".length), 10);
+    if (!Number.isFinite(id)) return null;
+    const folder = folders?.find((f) => f.id === id);
     return {
       type: "alphabeticalByName",
-      instanceId: peerId,
-      title: peerName(peerId),
+      musicFolderId: id,
+      title: folder ? peerDisplayName(folder.name) : "Loading…",
     };
   }
   return null;
@@ -65,19 +65,15 @@ export function AlbumsPage() {
   const { view: rawView } = useParams<{ view?: string }>();
   const view = rawView ?? "all";
 
-  const { data: peers } = useQuery({
-    queryKey: ["peers-summary"],
-    queryFn: getPeersSummary,
+  const { data: folders } = useQuery({
+    queryKey: ["musicFolders"],
+    queryFn: getMusicFolders,
     retry: false,
-    // The summary changes infrequently and the same query feeds the sidebar;
-    // share a long stale window so navigation doesn't refetch.
+    // Same query feeds the sidebar; share a long stale window.
     staleTime: 60_000,
   });
 
-  const peerName = (id: string) =>
-    peerDisplayName(peers?.find((p) => p.id === id)?.name ?? id);
-
-  const spec = resolveView(view, peerName);
+  const spec = resolveView(view, folders);
 
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortOption>("name");
@@ -98,7 +94,7 @@ export function AlbumsPage() {
       getAlbumList2({
         type: spec!.type,
         size: 500,
-        instanceId: spec!.instanceId,
+        musicFolderId: spec!.musicFolderId,
       }),
     enabled,
     retry: false,

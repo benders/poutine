@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS instances (
-  id TEXT PRIMARY KEY,                -- UUID
+  id TEXT PRIMARY KEY,                -- UUID, or 'local' for self
   name TEXT NOT NULL,                 -- Human-readable label
   url TEXT NOT NULL UNIQUE,           -- Base URL of the Navidrome instance
   adapter_type TEXT NOT NULL DEFAULT 'subsonic',
@@ -35,9 +35,18 @@ CREATE TABLE IF NOT EXISTS instances (
   last_sync_message TEXT,
   track_count INTEGER NOT NULL DEFAULT 0,
   server_version TEXT,
+  -- Stable small integer for the Subsonic getMusicFolders / musicFolderId
+  -- contract. Subsonic clients require integer folder IDs but instances are
+  -- keyed on UUID. Assigned monotonically on insert; never reused.
+  -- Uniqueness enforced via partial index below to match the on-upgrade
+  -- migration shape (SQLite forbids ADD COLUMN ... UNIQUE).
+  musicfolder_id INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_instances_musicfolder_id
+  ON instances(musicfolder_id) WHERE musicfolder_id IS NOT NULL;
 
 -- ============================================================
 -- Raw Instance Data (per-instance mirror)
@@ -213,6 +222,25 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (playlist_id, position)
 );
+
+-- ============================================================
+-- Per-User Stars (issue #104)
+-- ============================================================
+-- Per-user starred tracks/albums/artists. Targets are unified_*.id UUIDs.
+-- No FK to unified_* — target rows can be transiently absent during sync;
+-- orphans are pruned at read time via JOIN. Stars are local to the hub the
+-- user logs into; not federated.
+
+CREATE TABLE IF NOT EXISTS user_stars (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL CHECK (kind IN ('track','album','artist')),
+  target_id  TEXT NOT NULL,
+  starred_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, kind, target_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_stars_lookup
+  ON user_stars(user_id, kind, starred_at DESC);
 
 -- ============================================================
 -- Art Cache Metadata

@@ -11,16 +11,16 @@ vi.mock("@/stores/auth", () => ({
   }),
 }));
 
-vi.mock("@/lib/api", async () => {
+vi.mock("@/lib/subsonic", async () => {
   const actual =
-    await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+    await vi.importActual<typeof import("@/lib/subsonic")>("@/lib/subsonic");
   return {
     ...actual,
-    getPeersSummary: vi.fn(),
+    getMusicFolders: vi.fn(),
   };
 });
 
-import { getPeersSummary } from "@/lib/api";
+import { getMusicFolders } from "@/lib/subsonic";
 
 function renderSidebar() {
   const qc = new QueryClient({
@@ -37,33 +37,34 @@ function renderSidebar() {
 
 beforeEach(() => {
   localStorage.clear();
-  vi.mocked(getPeersSummary).mockReset();
+  vi.mocked(getMusicFolders).mockReset();
 });
 
 describe("Sidebar Albums group", () => {
-  it("renders one entry per peer plus All/Random/Local", async () => {
-    vi.mocked(getPeersSummary).mockResolvedValue([
-      { id: "p1", name: "Alice's Hub", status: "online", albumCount: 3 },
-      { id: "p2", name: "Bob's Hub", status: "offline", albumCount: 7 },
+  it("renders one entry per MusicFolder plus All/Random", async () => {
+    vi.mocked(getMusicFolders).mockResolvedValue([
+      { id: 1, name: "Local" },
+      { id: 2, name: "Alice's Hub" },
+      { id: 3, name: "Bob's Hub" },
     ]);
     renderSidebar();
 
     expect(screen.getByText("Albums")).toBeInTheDocument();
     expect(screen.getByText("All")).toBeInTheDocument();
     expect(screen.getByText("Random")).toBeInTheDocument();
-    expect(screen.getByText("Local")).toBeInTheDocument();
 
     await waitFor(() => {
       expect(screen.getByText("Alice's Hub")).toBeInTheDocument();
     });
     expect(screen.getByText("Bob's Hub")).toBeInTheDocument();
+    expect(screen.getByText("Local")).toBeInTheDocument();
 
     const aliceLink = screen.getByText("Alice's Hub").closest("a");
-    expect(aliceLink).toHaveAttribute("href", "/library/peer-p1");
+    expect(aliceLink).toHaveAttribute("href", "/library/folder-2");
   });
 
   it("collapse/expand persists in localStorage", async () => {
-    vi.mocked(getPeersSummary).mockResolvedValue([]);
+    vi.mocked(getMusicFolders).mockResolvedValue([]);
     renderSidebar();
 
     // Children visible by default.

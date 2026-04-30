@@ -1,7 +1,8 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/stores/auth";
-import { getPeersSummary, peerDisplayName } from "@/lib/api";
+import { peerDisplayName } from "@/lib/api";
+import { getMusicFolders } from "@/lib/subsonic";
 import {
   Library,
   Users,
@@ -10,9 +11,10 @@ import {
   LogOut,
   Disc3,
   Shuffle,
-  HardDrive,
   Server,
   Activity,
+  Star,
+  ListMusic,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { APP_VERSION } from "@/version";
@@ -28,9 +30,9 @@ export function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
-  const { data: peers } = useQuery({
-    queryKey: ["peers-summary"],
-    queryFn: getPeersSummary,
+  const { data: folders } = useQuery({
+    queryKey: ["musicFolders"],
+    queryFn: getMusicFolders,
     retry: false,
     enabled: !!user,
     staleTime: 60_000,
@@ -60,15 +62,28 @@ export function Sidebar() {
         >
           <NavGroupItem to="/library/all" label="All" />
           <NavGroupItem to="/library/random" label="Random" icon={Shuffle} />
-          <NavGroupItem to="/library/local" label="Local" icon={HardDrive} />
-          {peers?.map((peer) => (
+          <NavGroupItem to="/library/favorites" label="Favorites" icon={Star} />
+          {folders?.map((folder) => (
             <NavGroupItem
-              key={peer.id}
-              to={`/library/peer-${peer.id}`}
-              label={peerDisplayName(peer.name)}
+              key={folder.id}
+              to={`/library/folder-${folder.id}`}
+              label={peerDisplayName(folder.name)}
               icon={Server}
             />
           ))}
+        </NavGroup>
+
+        <NavGroup
+          label="Playlists"
+          icon={ListMusic}
+          to="/playlists/favorites"
+          storageKey="sidebar:playlists:open"
+        >
+          <NavGroupItem
+            to="/playlists/favorites"
+            label="Favorites"
+            icon={Star}
+          />
         </NavGroup>
 
         {flatNav.map((item) => (

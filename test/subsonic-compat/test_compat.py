@@ -25,6 +25,52 @@ def test_get_music_folders(conn):
         folders = [folders]
     assert len(folders) >= 1
     assert all("id" in f and "name" in f for f in folders)
+    # Issue #123: ids must be integers (Subsonic spec) and unique.
+    ids = [f["id"] for f in folders]
+    assert all(isinstance(i, int) for i in ids), f"non-int folder ids: {ids}"
+    assert len(set(ids)) == len(ids), f"duplicate folder ids: {ids}"
+
+
+def test_get_music_folders_includes_self_and_peers(conn):
+    """In a federated deployment (POUTINE_TARGETS set with >1 target) every
+    hub should expose one folder per known instance — itself + its peers."""
+    import os
+    targets = os.environ.get("POUTINE_TARGETS", "")
+    n_targets = len([t for t in targets.split(",") if t.strip()]) if targets else 1
+    if n_targets < 2:
+        pytest.skip("requires federated POUTINE_TARGETS (>1 target)")
+    r = conn.getMusicFolders()
+    folders = r["musicFolders"].get("musicFolder", [])
+    if isinstance(folders, dict):
+        folders = [folders]
+    assert len(folders) >= n_targets, (
+        f"expected ≥{n_targets} folders (self + peers), got {len(folders)}: {folders}"
+    )
+
+
+def test_get_album_list2_music_folder_filter(conn):
+    """getAlbumList2?musicFolderId=N returns a subset of the unfiltered list."""
+    folders = conn.getMusicFolders()["musicFolders"].get("musicFolder", [])
+    if isinstance(folders, dict):
+        folders = [folders]
+    if not folders:
+        pytest.skip("no music folders to filter on")
+    folder_id = folders[0]["id"]
+
+    all_albums = conn.getAlbumList2(ltype="alphabeticalByName", size=500)["albumList2"].get("album", [])
+    if isinstance(all_albums, dict):
+        all_albums = [all_albums]
+    all_ids = {a["id"] for a in all_albums}
+
+    filt = conn.getAlbumList2(ltype="alphabeticalByName", size=500, musicFolderId=folder_id)["albumList2"].get("album", [])
+    if isinstance(filt, dict):
+        filt = [filt]
+    filt_ids = {a["id"] for a in filt}
+
+    assert filt_ids.issubset(all_ids), (
+        f"musicFolderId={folder_id} returned albums absent from unfiltered list: "
+        f"{filt_ids - all_ids}"
+    )
 
 
 def test_get_artists(conn):
@@ -246,6 +292,71 @@ def test_xml_format_supported(conn):
     qs = f"u={conn._username}&p={conn._rawPass}&v=1.16.1&c=poutine-compat&f=xml"
     body = urllib.request.urlopen(f"{conn._baseUrl}:{conn._port}/rest/ping?{qs}").read()
     assert b"<subsonic-response" in body and b'status="ok"' in body
+
+
+def test_star_unstar_round_trip(conn):
+    """Issue #104: star a song, see it in getStarred2, unstar, gone."""
+    r = conn.getAlbumList2(ltype="recent", size=1)
+    albums = r["albumList2"].get("album", [])
+    if isinstance(albums, dict):
+        albums = [albums]
+    if not albums:
+        pytest.skip("no albums to derive a song from")
+    full = conn.getAlbum(id=albums[0]["id"])["album"]
+    songs = full.get("song", [])
+    if isinstance(songs, dict):
+        songs = [songs]
+    if not songs:
+        pytest.skip("no songs to star")
+    sid = songs[0]["id"]
+
+    # Clean slate in case a prior run left it starred.
+    conn.unstar(sids=[sid])
+    conn.star(sids=[sid])
+
+    starred = conn.getStarred2()["starred2"]
+    starred_songs = starred.get("song", [])
+    if isinstance(starred_songs, dict):
+        starred_songs = [starred_songs]
+    assert any(s["id"] == sid for s in starred_songs), (
+        f"starred song {sid} not in getStarred2"
+    )
+    assert any(
+        "starred" in s for s in starred_songs
+    ), "songs in getStarred2 must include 'starred' timestamp"
+
+    conn.unstar(sids=[sid])
+    starred = conn.getStarred2()["starred2"]
+    starred_songs = starred.get("song", [])
+    if isinstance(starred_songs, dict):
+        starred_songs = [starred_songs]
+    assert not any(s["id"] == sid for s in starred_songs), (
+        "song still in getStarred2 after unstar"
+    )
+
+
+def test_get_album_list2_starred(conn):
+    """Issue #104: getAlbumList2?type=starred returns only starred albums."""
+    r = conn.getAlbumList2(ltype="recent", size=1)
+    albums = r["albumList2"].get("album", [])
+    if isinstance(albums, dict):
+        albums = [albums]
+    if not albums:
+        pytest.skip("no albums")
+    aid = albums[0]["id"]
+
+    conn.unstar(albumIds=[aid])
+    conn.star(albumIds=[aid])
+
+    r = conn.getAlbumList2(ltype="starred", size=500)
+    starred = r["albumList2"].get("album", [])
+    if isinstance(starred, dict):
+        starred = [starred]
+    assert any(a["id"] == aid for a in starred), (
+        f"starred album {aid} missing from type=starred list"
+    )
+
+    conn.unstar(albumIds=[aid])
 
 
 def test_invalid_password_returns_subsonic_error(conn):

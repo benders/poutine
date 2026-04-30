@@ -168,6 +168,42 @@ function buildSong(row: TrackRow) {
 
 // ── Album shape builder ───────────────────────────────────────────────────────
 
+// ── Star annotation helper (#104) ─────────────────────────────────────────────
+// Post-fetch lookup that mutates already-built Subsonic objects with their
+// `starred` ISO timestamp for the requesting user. Encoded ids of the form
+// `<prefix><uuid>` are stripped to match `user_stars.target_id`.
+function annotateStarred<T extends { id: string }>(
+  db: import("better-sqlite3").Database,
+  userId: string | undefined,
+  kind: "track" | "album" | "artist",
+  prefix: string,
+  items: T[],
+): void {
+  if (!userId || items.length === 0) return;
+  const rawIds = items.map((it) =>
+    it.id.startsWith(prefix) ? it.id.slice(prefix.length) : it.id,
+  );
+  const placeholders = rawIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT target_id, starred_at FROM user_stars
+       WHERE user_id = ? AND kind = ? AND target_id IN (${placeholders})`,
+    )
+    .all(userId, kind, ...rawIds) as Array<{
+      target_id: string;
+      starred_at: string;
+    }>;
+  if (rows.length === 0) return;
+  const map = new Map(rows.map((r) => [r.target_id, r.starred_at]));
+  for (let i = 0; i < items.length; i++) {
+    const ts = map.get(rawIds[i]);
+    if (ts) {
+      const isoTs = ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`;
+      (items[i] as T & { starred?: string }).starred = isoTs;
+    }
+  }
+}
+
 function buildAlbum(row: ReleaseGroupRow) {
   return {
     id: encodeId("al", row.id),
@@ -217,8 +253,17 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
   route("/getMusicFolders", async (request, reply) => {
     const q = request.query as Record<string, string>;
+    // Issue #123: each known instance (local + active peers) is exposed as a
+    // MusicFolder so 3rd-party Subsonic clients can scope browsing per peer.
+    const rows = app.db
+      .prepare(
+        `SELECT musicfolder_id AS id, name FROM instances
+         WHERE musicfolder_id IS NOT NULL
+         ORDER BY musicfolder_id`,
+      )
+      .all() as Array<{ id: number; name: string }>;
     sendSubsonicOk(reply, q, {
-      musicFolders: { musicFolder: [{ id: 1, name: "Music" }] },
+      musicFolders: { musicFolder: rows },
     });
   });
 
@@ -376,16 +421,26 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const shareId = pickArtistShareId(app.db, artist.id);
 
-    sendSubsonicOk(reply, q, {
-      artist: {
-        id: encodeId("ar", artist.id),
-        name: artist.name,
-        albumCount: albums.length,
-        coverArt: artist.image_url ?? undefined,
-        shareId: shareId ?? undefined,
-        album: albums.map(buildAlbum),
-      },
-    });
+    const builtAlbums = albums.map(buildAlbum);
+    annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
+    const artistObj: {
+      id: string;
+      name: string;
+      albumCount: number;
+      coverArt?: string;
+      shareId?: string;
+      album: ReturnType<typeof buildAlbum>[];
+      starred?: string;
+    } = {
+      id: encodeId("ar", artist.id),
+      name: artist.name,
+      albumCount: albums.length,
+      coverArt: artist.image_url ?? undefined,
+      shareId: shareId ?? undefined,
+      album: builtAlbums,
+    };
+    annotateStarred(app.db, request.subsonicUser?.id, "artist", "ar", [artistObj]);
+    sendSubsonicOk(reply, q, { artist: artistObj });
   });
 
 // ── getArtistInfo2 ────────────────────────────────────────────────────────
@@ -471,13 +526,34 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const fromYear = q.fromYear ? parseInt(q.fromYear, 10) : undefined;
     const toYear = q.toYear ? parseInt(q.toYear, 10) : undefined;
     const genre = q.genre;
-    const instanceId = q.instanceId;
+    // Standard Subsonic param (issue #123). q.instanceId is an EOL alias
+    // kept for in-tree callers mid-migration — slated for removal; do not
+    // adopt in new code. See docs/opensubsonic.md.
+    let instanceId: string | undefined = q.instanceId;
+    if (!instanceId && q.musicFolderId) {
+      const row = app.db
+        .prepare("SELECT id FROM instances WHERE musicfolder_id = ?")
+        .get(parseInt(q.musicFolderId, 10)) as { id: string } | undefined;
+      // Unknown folder id → empty result, matching how Subsonic clients expect
+      // an unrecognized scope to surface (no rows rather than an error).
+      if (!row) {
+        return sendSubsonicOk(reply, q, { albumList2: { album: [] } });
+      }
+      instanceId = row.id;
+    }
 
     let orderBy = "urg.created_at DESC";
     let where = "WHERE 1=1";
     const params: unknown[] = [];
 
-    // Poutine extension: filter to a single source instance (local or peer id).
+    // type=starred — restrict to albums starred by the requesting user. (#104)
+    if (type === "starred") {
+      where +=
+        " AND EXISTS (SELECT 1 FROM user_stars us " +
+        "WHERE us.user_id = ? AND us.kind = 'album' AND us.target_id = urg.id)";
+      params.push(request.subsonicUser.id);
+    }
+
     // EXISTS avoids row multiplication when an album has multiple sources.
     if (instanceId) {
       where +=
@@ -519,6 +595,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       case "random":
         orderBy = "RANDOM()";
         break;
+      case "starred":
+        orderBy = "urg.name_normalized ASC";
+        break;
       // frequent, recent, highest — fall back to newest (no play tracking yet)
       default:
         orderBy = "urg.created_at DESC";
@@ -543,9 +622,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       )
       .all(...params) as ReleaseGroupRow[];
 
-    sendSubsonicOk(reply, q, {
-      albumList2: { album: albums.map(buildAlbum) },
-    });
+    const builtAlbums = albums.map(buildAlbum);
+    annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
+    sendSubsonicOk(reply, q, { albumList2: { album: builtAlbums } });
   });
 
   // ── getAlbum ────────────────────────────────────────────────────────────────
@@ -629,20 +708,37 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const shareId = pickAlbumShareId(app.db, rg.id);
 
+    const builtSongs = tracks.map(buildSong);
+    annotateStarred(app.db, request.subsonicUser?.id, "track", "t", builtSongs);
+    const albumObj: {
+      id: string;
+      name: string;
+      artist: string;
+      artistId: string;
+      coverArt?: string;
+      songCount: number;
+      duration: number;
+      year?: number;
+      genre?: string;
+      shareId?: string;
+      song: ReturnType<typeof buildSong>[];
+      starred?: string;
+    } = {
+      id: encodeId("al", rg.id),
+      name: rg.name,
+      artist: rg.artist_name,
+      artistId: encodeId("ar", rg.artist_id),
+      coverArt: rg.image_url ?? undefined,
+      songCount: tracks.length,
+      duration: totalDuration,
+      year: rg.year ?? undefined,
+      genre: rg.genre ?? undefined,
+      shareId: shareId ?? undefined,
+      song: builtSongs,
+    };
+    annotateStarred(app.db, request.subsonicUser?.id, "album", "al", [albumObj]);
     sendSubsonicOk(reply, q, {
-      album: {
-        id: encodeId("al", rg.id),
-        name: rg.name,
-        artist: rg.artist_name,
-        artistId: encodeId("ar", rg.artist_id),
-        coverArt: rg.image_url ?? undefined,
-        songCount: tracks.length,
-        duration: totalDuration,
-        year: rg.year ?? undefined,
-        genre: rg.genre ?? undefined,
-        shareId: shareId ?? undefined,
-        song: tracks.map(buildSong),
-      },
+      album: albumObj,
     });
   });
 
@@ -687,7 +783,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    sendSubsonicOk(reply, q, { song: buildSong(row) });
+    const built = buildSong(row);
+    annotateStarred(app.db, request.subsonicUser?.id, "track", "t", [built]);
+    sendSubsonicOk(reply, q, { song: built });
   });
 
   // ── search3 ─────────────────────────────────────────────────────────────────
@@ -813,15 +911,21 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         songOffset,
       ) as TrackRow[];
 
+    const builtArtists = artists.map((a) => ({
+      id: encodeId("ar", a.id),
+      name: a.name,
+      albumCount: a.albumCount,
+    }));
+    const builtAlbums = albums.map(buildAlbum);
+    const builtSongs = songs.map(buildSong);
+    annotateStarred(app.db, request.subsonicUser?.id, "artist", "ar", builtArtists);
+    annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
+    annotateStarred(app.db, request.subsonicUser?.id, "track", "t", builtSongs);
     sendSubsonicOk(reply, q, {
       searchResult3: {
-        artist: artists.map((a) => ({
-          id: encodeId("ar", a.id),
-          name: a.name,
-          albumCount: a.albumCount,
-        })),
-        album: albums.map(buildAlbum),
-        song: songs.map(buildSong),
+        artist: builtArtists,
+        album: builtAlbums,
+        song: builtSongs,
       },
     });
   });
@@ -1131,6 +1235,196 @@ try {
 
   binaryRoute("/stream", handleStream);
   binaryRoute("/download", handleStream); // alias — clients use interchangeably
+
+  // ── star / unstar / getStarred / getStarred2 (#104) ─────────────────────────
+  //
+  // Per-user favorites, stored in the `user_stars` table on this hub. Targets
+  // are unified_*.id UUIDs; orphans (target gone after a sync) are dropped at
+  // read time via JOIN. Stars are local to the hub the user logs into and are
+  // not federated.
+
+  type StarKind = "track" | "album" | "artist";
+
+  function asArray(v: unknown): string[] {
+    if (v == null) return [];
+    return Array.isArray(v) ? (v as string[]) : [String(v)];
+  }
+
+  // Raw IDs are produced by `generateDeterministicId` (UUID v4 shape, all
+  // lowercase hex). Anchoring the classifier on this shape rejects malformed
+  // input (e.g. `id=tomato`) instead of silently inserting `omato` as a
+  // track target. Bare-UUID forms (no prefix) on `albumId`/`artistId` are
+  // also accepted, matching how some Subsonic clients send them.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  function classifyStarId(encoded: string): { kind: StarKind; raw: string } | null {
+    // Order matters: "ar"/"al" both start with "a"; "t" is a one-char prefix.
+    let kind: StarKind | null = null;
+    let raw = "";
+    if (encoded.startsWith("al")) {
+      kind = "album";
+      raw = encoded.slice(2);
+    } else if (encoded.startsWith("ar")) {
+      kind = "artist";
+      raw = encoded.slice(2);
+    } else if (encoded.startsWith("t")) {
+      kind = "track";
+      raw = encoded.slice(1);
+    }
+    if (!kind || !UUID_RE.test(raw)) return null;
+    return { kind, raw };
+  }
+
+  function unwrapKindId(encoded: string, prefix: string): string | null {
+    // Accept either the prefixed form (`al<uuid>`/`ar<uuid>`) or a bare UUID
+    // — the second is what some legacy clients send for `albumId`/`artistId`.
+    const raw = encoded.startsWith(prefix) ? encoded.slice(prefix.length) : encoded;
+    return UUID_RE.test(raw) ? raw : null;
+  }
+
+  function collectStarTargets(
+    q: Record<string, string | string[] | undefined>,
+  ): Array<{ kind: StarKind; raw: string }> {
+    const out: Array<{ kind: StarKind; raw: string }> = [];
+    for (const id of asArray(q.id)) {
+      const c = classifyStarId(id);
+      if (c) out.push(c);
+    }
+    for (const id of asArray(q.albumId)) {
+      const raw = unwrapKindId(id, "al");
+      if (raw) out.push({ kind: "album", raw });
+    }
+    for (const id of asArray(q.artistId)) {
+      const raw = unwrapKindId(id, "ar");
+      if (raw) out.push({ kind: "artist", raw });
+    }
+    return out;
+  }
+
+  // SQLite's datetime('now') yields "YYYY-MM-DD HH:MM:SS" UTC; Subsonic clients
+  // expect ISO 8601 with 'T' separator and 'Z' suffix.
+  function toIsoStarred(ts: string): string {
+    return ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`;
+  }
+
+  route("/star", async (request, reply) => {
+    const q = request.query as Record<string, string | string[] | undefined>;
+    const userId = request.subsonicUser.id;
+    const targets = collectStarTargets(q);
+    const stmt = app.db.prepare(
+      "INSERT OR IGNORE INTO user_stars (user_id, kind, target_id) VALUES (?, ?, ?)",
+    );
+    const tx = app.db.transaction((rows: Array<{ kind: StarKind; raw: string }>) => {
+      for (const r of rows) stmt.run(userId, r.kind, r.raw);
+    });
+    tx(targets);
+    sendSubsonicOk(reply, q as Record<string, string>, {});
+  });
+
+  route("/unstar", async (request, reply) => {
+    const q = request.query as Record<string, string | string[] | undefined>;
+    const userId = request.subsonicUser.id;
+    const targets = collectStarTargets(q);
+    const stmt = app.db.prepare(
+      "DELETE FROM user_stars WHERE user_id = ? AND kind = ? AND target_id = ?",
+    );
+    const tx = app.db.transaction((rows: Array<{ kind: StarKind; raw: string }>) => {
+      for (const r of rows) stmt.run(userId, r.kind, r.raw);
+    });
+    tx(targets);
+    sendSubsonicOk(reply, q as Record<string, string>, {});
+  });
+
+  function buildStarredEnvelope(userId: string) {
+    const artists = app.db
+      .prepare(
+        `SELECT ua.id, ua.name, ua.image_url,
+          COUNT(urg.id) AS albumCount,
+          us.starred_at
+        FROM user_stars us
+        JOIN unified_artists ua ON ua.id = us.target_id
+        LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
+        WHERE us.user_id = ? AND us.kind = 'artist'
+        GROUP BY ua.id, ua.name, ua.image_url, us.starred_at
+        ORDER BY us.starred_at DESC`,
+      )
+      .all(userId) as Array<ArtistRow & { starred_at: string }>;
+
+    const albums = app.db
+      .prepare(
+        `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
+          urg.year, urg.genre, urg.image_url,
+          (SELECT COUNT(*) FROM unified_tracks ut
+           JOIN unified_releases ur ON ur.id = ut.release_id
+           WHERE ur.release_group_id = urg.id) AS songCount,
+          us.starred_at
+        FROM user_stars us
+        JOIN unified_release_groups urg ON urg.id = us.target_id
+        JOIN unified_artists ua ON ua.id = urg.artist_id
+        WHERE us.user_id = ? AND us.kind = 'album'
+        ORDER BY us.starred_at DESC`,
+      )
+      .all(userId) as Array<ReleaseGroupRow & { starred_at: string }>;
+
+    const songs = app.db
+      .prepare(
+        `SELECT
+          ut.id, ut.title, ut.track_number, ut.disc_number,
+          ut.duration_ms, ut.genre, ut.musicbrainz_id,
+          ut.artist_id, ua.name AS artist_name,
+          urg.id AS rg_id, urg.name AS rg_name,
+          urg.year AS rg_year, urg.image_url AS rg_image_url,
+          (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
+          (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
+          (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+          (SELECT i.name FROM track_sources ts
+           JOIN instances i ON i.id = ts.instance_id
+           WHERE ts.unified_track_id = ut.id
+           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name,
+          us.starred_at
+        FROM user_stars us
+        JOIN unified_tracks ut ON ut.id = us.target_id
+        JOIN unified_artists ua ON ua.id = ut.artist_id
+        JOIN unified_releases ur ON ur.id = ut.release_id
+        JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+        WHERE us.user_id = ? AND us.kind = 'track'
+        ORDER BY us.starred_at DESC`,
+      )
+      .all(userId) as Array<TrackRow & { starred_at: string }>;
+
+    return {
+      artist: artists.map((a) => ({
+        id: encodeId("ar", a.id),
+        name: a.name,
+        albumCount: a.albumCount,
+        coverArt: a.image_url ?? undefined,
+        starred: toIsoStarred(a.starred_at),
+      })),
+      album: albums.map((a) => ({
+        ...buildAlbum(a),
+        starred: toIsoStarred(a.starred_at),
+      })),
+      song: songs.map((s) => ({
+        ...buildSong(s),
+        starred: toIsoStarred(s.starred_at),
+      })),
+    };
+  }
+
+  route("/getStarred2", async (request, reply) => {
+    const q = request.query as Record<string, string>;
+    const env = buildStarredEnvelope(request.subsonicUser.id);
+    sendSubsonicOk(reply, q, { starred2: env });
+  });
+
+  route("/getStarred", async (request, reply) => {
+    const q = request.query as Record<string, string>;
+    const env = buildStarredEnvelope(request.subsonicUser.id);
+    sendSubsonicOk(reply, q, { starred: env });
+  });
 
   // ── Playlist stubs ──────────────────────────────────────────────────────────
   // TODO: implement fully once playlists table is populated (Phase 3+)
