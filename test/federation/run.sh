@@ -443,7 +443,7 @@ assert_search_empty  3012 "ffffffffffffffffffffffffffffffff" "D"
 
 echo ""
 echo "==> Running py-sonic Subsonic client compatibility harness..."
-HARNESS_DIR="$REPO_ROOT/test/subsonic-compat"
+HARNESS_DIR="$REPO_ROOT/test/federation/subsonic-compat"
 POUTINE_USER="$SUB_USER" \
 POUTINE_PASS="$SUB_PASS" \
 POUTINE_TARGETS="hub-a=http://localhost:3011,hub-b=http://localhost:3012,hub-c=http://localhost:3013" \
