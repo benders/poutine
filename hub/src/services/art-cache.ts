@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
-const DEFAULT_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const DEFAULT_MAX_BYTES = 100 * 1024 * 1024; // 100 MB
 
 export interface CacheEntry {
   data: Buffer;

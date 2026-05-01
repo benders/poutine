@@ -18,6 +18,12 @@ services:
       - POUTINE_PEERS_CONFIG=/app/config/peers.yaml
       - POUTINE_OWNER_USERNAME=${POUTINE_OWNER_USERNAME:?Set POUTINE_OWNER_USERNAME in .env}
       - POUTINE_OWNER_PASSWORD=${POUTINE_OWNER_PASSWORD:?Set POUTINE_OWNER_PASSWORD in .env}
+      # Optional overrides — empty in prod, used by test/local-cluster/.
+      - LASTFM_API_KEY=${LASTFM_API_KEY:-}
+      - FANARTTV_API_KEY=${FANARTTV_API_KEY:-}
+      - FANARTTV_CLIENT_KEY=${FANARTTV_CLIENT_KEY:-}
+      - FANARTTV_API_URL=${FANARTTV_API_URL:-}
+      - ART_CACHE_MAX_BYTES=${ART_CACHE_MAX_BYTES:-}
       # PUBLIC_DIR is baked into the image (hub/Dockerfile sets it to /app/hub/public).
       # Override here only if you want to mount a custom frontend build.
     volumes:
