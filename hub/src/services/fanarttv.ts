@@ -26,10 +26,18 @@ export interface FanartTvImage {
 }
 
 export interface FanartTvAlbum {
+  /** Release-group MBID — present on the artist endpoint, absent on /music/albums/. */
+  mbid_id?: string;
   albumcover?: FanartTvImage[];
   cdart?: FanartTvImage[];
 }
 
+/**
+ * Artist endpoint response. The `albums` field is an **array** of album
+ * subtrees (each tagged with its release-group MBID), not a keyed object.
+ * The /music/albums/{rg-mbid} endpoint returns a similar shape but scoped to
+ * a single release group; callers should still iterate `albums` defensively.
+ */
 export interface FanartTvArtistResponse {
   name?: string;
   mbid_id?: string;
@@ -38,7 +46,7 @@ export interface FanartTvArtistResponse {
   hdmusiclogo?: FanartTvImage[];
   musiclogo?: FanartTvImage[];
   musicbanner?: FanartTvImage[];
-  albums?: Record<string, FanartTvAlbum>;
+  albums?: FanartTvAlbum[];
 }
 
 export class FanartTvClient {
@@ -108,14 +116,19 @@ export class FanartTvClient {
     );
   }
 
-  /** Best album cover for a given release-group MBID, looked up inside the response. */
+  /**
+   * Best album cover for a given release-group MBID. fanart.tv returns
+   * `albums` as an array of subtrees, each tagged with its `mbid_id`.
+   * The /music/albums/ endpoint returns the same shape with one entry.
+   */
   static bestAlbumCover(
     resp: FanartTvArtistResponse | null,
     releaseGroupMbid: string,
   ): string | null {
-    const album = resp?.albums?.[releaseGroupMbid];
-    if (!album) return null;
-    return pickFirstUrl(album.albumcover) ?? null;
+    if (!resp?.albums || resp.albums.length === 0) return null;
+    const match =
+      resp.albums.find((a) => a.mbid_id === releaseGroupMbid) ?? resp.albums[0];
+    return pickFirstUrl(match.albumcover) ?? null;
   }
 }
 

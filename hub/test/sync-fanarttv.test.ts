@@ -261,11 +261,12 @@ describe("fanart.tv integration during sync", () => {
 
     fanartMock.mockResolvedValueOnce(
       jsonResponse({
-        albums: {
-          "rg-okc": {
+        albums: [
+          {
+            mbid_id: "rg-okc",
             albumcover: [{ id: "9", url: "https://fanart.tv/okc.jpg" }],
           },
-        },
+        ],
       }),
     );
 

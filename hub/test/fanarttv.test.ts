@@ -98,15 +98,24 @@ describe("FanartTvClient", () => {
     ).toBe("high.jpg");
   });
 
-  it("bestAlbumCover looks up the album by release-group MBID", () => {
+  it("bestAlbumCover finds the matching release-group MBID in the albums array", () => {
     const resp = {
-      albums: {
-        "rg-1": { albumcover: [{ id: "100", url: "cover.jpg" }] },
-      },
+      albums: [
+        { mbid_id: "rg-1", albumcover: [{ id: "100", url: "cover.jpg" }] },
+        { mbid_id: "rg-2", albumcover: [{ id: "101", url: "other.jpg" }] },
+      ],
     };
     expect(FanartTvClient.bestAlbumCover(resp, "rg-1")).toBe("cover.jpg");
-    expect(FanartTvClient.bestAlbumCover(resp, "rg-other")).toBeNull();
+    expect(FanartTvClient.bestAlbumCover(resp, "rg-2")).toBe("other.jpg");
+    expect(FanartTvClient.bestAlbumCover({ albums: [] }, "rg-1")).toBeNull();
     expect(FanartTvClient.bestAlbumCover(null, "rg-1")).toBeNull();
+  });
+
+  it("bestAlbumCover falls back to the first entry when /music/albums/ returns one untagged group", () => {
+    const resp = {
+      albums: [{ albumcover: [{ id: "1", url: "only.jpg" }] }],
+    };
+    expect(FanartTvClient.bestAlbumCover(resp, "rg-anything")).toBe("only.jpg");
   });
 
   it("getAlbum hits the /music/albums/{mbid} path", async () => {
