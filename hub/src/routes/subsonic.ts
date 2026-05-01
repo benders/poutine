@@ -976,7 +976,17 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     let response: Response;
 
-    if (instanceId !== "local") {
+    // External URL (e.g. fanart.tv album cover stored when Navidrome had none).
+    // The decoded coverArtId is the full https:// URL — fetch it directly
+    // instead of routing through Navidrome or a peer proxy.
+    if (coverArtId.startsWith("https://") || coverArtId.startsWith("http://")) {
+      try {
+        response = await fetch(coverArtId);
+      } catch {
+        sendBinaryError(reply, 502, "Failed to fetch external art");
+        return;
+      }
+    } else if (instanceId !== "local") {
       // Peer art routing via /proxy/rest/getCoverArt — Ed25519-signed request to the peer's proxy.
       // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
       const peer = app.peerRegistry.peers.get(instanceId);

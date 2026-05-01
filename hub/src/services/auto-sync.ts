@@ -5,6 +5,7 @@ import { syncLocal } from "../library/sync-local.js";
 import { mergeLibraries } from "../library/merge.js";
 import { SyncOperationService } from "./sync-operations.js";
 import { LastFmClient } from "./lastfm.js";
+import { FanartTvClient } from "./fanarttv.js";
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -18,6 +19,7 @@ export class AutoSyncService {
     private readonly log: { info: (msg: string) => void; error: (msg: string) => void },
     private readonly syncOpService?: SyncOperationService,
     private readonly lastFmClient?: LastFmClient | null,
+    private readonly fanartTvClient?: FanartTvClient | null,
   ) {}
 
   start(): void {
@@ -72,7 +74,12 @@ export class AutoSyncService {
       // a "running" sync row appearing every 30s for no-op poll ticks.
       const operationId = this.syncOpService?.start("auto", "local") || null;
       try {
-        const result = await syncLocal(this.db, this.config, this.lastFmClient ?? null);
+        const result = await syncLocal(
+          this.db,
+          this.config,
+          this.lastFmClient ?? null,
+          this.fanartTvClient ?? null,
+        );
         mergeLibraries(this.db);
         this.log.info(
           `AutoSync complete: ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks`,

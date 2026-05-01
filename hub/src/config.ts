@@ -24,6 +24,12 @@ export interface Config {
   staticDir: string | undefined;
   // Optional: Last.fm API key for artist images and metadata
   lastFmApiKey: string | undefined;
+  // fanart.tv: project API key (defaults to bundled Poutine key) + optional
+  // personal client_key for faster image updates. Base URL is overridable for
+  // tests.
+  fanartTvProjectKey: string;
+  fanartTvPersonalKey: string | undefined;
+  fanartTvBaseUrl: string;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -82,5 +88,10 @@ export function loadConfig(): Config {
     ),
     staticDir: process.env.PUBLIC_DIR || undefined,
     lastFmApiKey: process.env.LASTFM_API_KEY || undefined,
+    fanartTvProjectKey:
+      process.env.FANARTTV_API_KEY || "dd4c8d4d423b6bae65169cd5a6339d3f",
+    fanartTvPersonalKey: process.env.FANARTTV_CLIENT_KEY || undefined,
+    fanartTvBaseUrl:
+      process.env.FANARTTV_API_URL || "https://webservice.fanart.tv/v3.2",
   };
 }

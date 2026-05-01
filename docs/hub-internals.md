@@ -33,6 +33,10 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `POUTINE_PASSWORD_KEY_PATH`  | no       | `./data/poutine_password_key`| AES-256 password encryption key (32 bytes, base64, mode 0600). Auto-generated if absent. **Back this up — losing it makes every stored password unrecoverable.** |
 | `POUTINE_PEERS_CONFIG`       | no       | `./config/peers.yaml`        | Peer registry file                                              |
 | `PUBLIC_DIR`                 | no       | —                            | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
+| `LASTFM_API_KEY`             | no       | —                            | Last.fm API key. Fallback artist-image source for artists **without** an MBID. See [lastfm-integration.md](lastfm-integration.md) |
+| `FANARTTV_API_KEY`           | no       | bundled Poutine project key  | fanart.tv project API key. Primary source for MBID-keyed artist images and an album-cover fallback. Set to `""` to disable. See [fanarttv-integration.md](fanarttv-integration.md) |
+| `FANARTTV_CLIENT_KEY`        | no       | —                            | Optional fanart.tv personal `client_key` — drops the new-image delay from 7 days to 2 |
+| `FANARTTV_API_URL`           | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors)                  |
 
 `hub/src/config.ts` is the authoritative list.
 

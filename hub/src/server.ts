@@ -23,6 +23,7 @@ import { AutoSyncService } from "./services/auto-sync.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
 import { LastFmClient } from "./services/lastfm.js";
+import { FanartTvClient } from "./services/fanarttv.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -43,6 +44,7 @@ declare module "fastify" {
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
   lastFmClient: LastFmClient | null;
+  fanartTvClient: FanartTvClient | null;
 }
 }
 
@@ -133,6 +135,27 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   }
   app.decorate("lastFmClient", lastFmClient);
 
+  // fanart.tv client — primary source for artist images when MBID is known,
+  // and an album-cover fallback when an album has an MBID but no cover.
+  // Always enabled; the bundled Poutine project key is used by default.
+  const fanartTvClient = config.fanartTvProjectKey
+    ? new FanartTvClient({
+        projectKey: config.fanartTvProjectKey,
+        personalKey: config.fanartTvPersonalKey,
+        baseUrl: config.fanartTvBaseUrl,
+      })
+    : null;
+  if (fanartTvClient) {
+    const usingDefault =
+      config.fanartTvProjectKey === "dd4c8d4d423b6bae65169cd5a6339d3f";
+    app.log.info(
+      `fanart.tv integration enabled — ${usingDefault ? "using bundled Poutine project key" : "using overridden project key"}${config.fanartTvPersonalKey ? " + personal client_key" : ""}`,
+    );
+  } else {
+    app.log.info("fanart.tv integration disabled — no project key configured");
+  }
+  app.decorate("fanartTvClient", fanartTvClient);
+
   // Password encryption key (AES-256-GCM, on disk beside the federation key)
   const passwordKey = loadOrCreatePasswordKey(config.poutinePasswordKeyPath);
   app.decorate("passwordKey", passwordKey);
@@ -209,7 +232,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const autoSync = new AutoSyncService(db, config, {
     info: (msg) => app.log.info(msg),
     error: (msg) => app.log.error(msg),
-}, syncOpService, lastFmClient);
+}, syncOpService, lastFmClient, fanartTvClient);
 
   // SIGHUP handler to reload peer registry without restart
   const sighupHandler = () => {
