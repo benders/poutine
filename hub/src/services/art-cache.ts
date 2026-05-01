@@ -148,6 +148,16 @@ export class ArtCache {
     this.evict();
   }
 
+  /** Remove a single entry by key. Used to drop poisoned cache entries. */
+  delete(key: string): void {
+    try {
+      unlinkSync(this.filePathForKey(key));
+    } catch {
+      // File may already be gone
+    }
+    this.db.prepare("DELETE FROM art_cache WHERE id = ?").run(key);
+  }
+
   clear(): void {
     const entries = this.db
       .prepare("SELECT id FROM art_cache")
