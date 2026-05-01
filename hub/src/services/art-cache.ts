@@ -1,12 +1,12 @@
 import type Database from "better-sqlite3";
-import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync, readdirSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
 export interface CacheEntry {
-  filePath: string;
+  data: Buffer;
   contentType: string;
 }
 
@@ -40,18 +40,24 @@ export class ArtCache {
     if (!row) return null;
 
     const filePath = this.filePathForKey(key);
-    if (!existsSync(filePath)) {
-      // DB row exists but file is missing — clean up
+    let data: Buffer;
+    try {
+      // Read synchronously inside the method to avoid a TOCTOU race with
+      // evict() — concurrent puts can run eviction between an existsSync()
+      // check and a later readFileSync() in the caller, causing ENOENT.
+      data = readFileSync(filePath);
+    } catch {
+      // File missing or unreadable — clean up the DB row and miss the cache.
       this.db.prepare("DELETE FROM art_cache WHERE id = ?").run(key);
       return null;
     }
 
-    // Update last_accessed
+    // Update last_accessed (best-effort; harmless if it loses a race)
     this.db
       .prepare("UPDATE art_cache SET last_accessed = datetime('now') WHERE id = ?")
       .run(key);
 
-    return { filePath, contentType: row.content_type };
+    return { data, contentType: row.content_type };
   }
 
   put(key: string, data: Buffer, contentType: string): void {
@@ -70,19 +76,33 @@ export class ArtCache {
       )
       .run(key, contentType, data.length);
 
-    this.evict();
+    this.evict(key);
   }
 
-  evict(): void {
+  /**
+   * Evict least-recently-accessed entries until the cache is back under the
+   * configured size cap. `protectKey`, when supplied, is excluded from the
+   * candidate set — `last_accessed` only has 1-second precision, so the entry
+   * we just wrote can otherwise share a timestamp with older rows and get
+   * evicted out from under the calling request.
+   */
+  evict(protectKey?: string): void {
     const maxBytes = this.getMaxBytes();
     const currentBytes = this.getCurrentBytes();
 
     if (currentBytes <= maxBytes) return;
 
-    // Get entries ordered by least recently accessed
-    const entries = this.db
-      .prepare("SELECT id, size FROM art_cache ORDER BY last_accessed ASC")
-      .all() as Array<{ id: string; size: number }>;
+    // Get entries ordered by least recently accessed, excluding the just-
+    // written key if any.
+    const entries = (protectKey
+      ? this.db
+          .prepare(
+            "SELECT id, size FROM art_cache WHERE id != ? ORDER BY last_accessed ASC",
+          )
+          .all(protectKey)
+      : this.db
+          .prepare("SELECT id, size FROM art_cache ORDER BY last_accessed ASC")
+          .all()) as Array<{ id: string; size: number }>;
 
     let freed = 0;
     const target = currentBytes - maxBytes;

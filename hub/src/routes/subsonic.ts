@@ -1,6 +1,5 @@
 import type { FastifyPluginAsync, RouteHandlerMethod } from "fastify";
 import { Readable } from "node:stream";
-import { readFileSync } from "node:fs";
 import type { Peer } from "../federation/peers.js";
 import { requireSubsonicAuth, requireSubsonicAuthBinary } from "../auth/subsonic-auth.js";
 import {
@@ -1033,14 +1032,13 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     // Check cache first (covers both local and peer art)
     const cached = app.artCache.get(cacheKey);
     if (cached) {
-      const data = readFileSync(cached.filePath);
       reply.raw.writeHead(200, {
         "content-type": cached.contentType,
-        "content-length": String(data.length),
+        "content-length": String(cached.data.length),
         "cache-control": "public, max-age=2592000",
         "x-cache": "HIT",
       });
-      reply.raw.end(data);
+      reply.raw.end(cached.data);
       return;
     }
 
