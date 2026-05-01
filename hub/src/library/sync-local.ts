@@ -11,11 +11,13 @@ import type { Config } from "../config.js";
 import { readNavidromeViaProxy, createLocalProxyFetch } from "./sync-instance.js";
 import type { SyncResult } from "./sync.js";
 import type { LastFmClient } from "../services/lastfm.js";
+import type { FanartTvClient } from "../services/fanarttv.js";
 
 export async function syncLocal(
   db: Database.Database,
   config: Config,
   lastFmClient?: LastFmClient | null,
+  fanartTvClient?: FanartTvClient | null,
 ): Promise<SyncResult> {
   const proxyFetch = createLocalProxyFetch({
     proxyBaseUrl: config.navidromeUrl,
@@ -26,6 +28,7 @@ export async function syncLocal(
   return readNavidromeViaProxy(db, "local", proxyFetch, {
     concurrency: config.instanceConcurrency,
     lastFmClient: lastFmClient ?? null,
+    fanartTvClient: fanartTvClient ?? null,
     log: {
       info: (msg) => console.log(msg),
       error: (msg) => console.error(msg),

@@ -9,6 +9,7 @@ import { SyncOperationService } from "../services/sync-operations.js";
 import { mergeLibraries } from "./merge.js";
 import { seedSyntheticInstances } from "./seed-instances.js";
 import type { LastFmClient } from "../services/lastfm.js";
+import type { FanartTvClient } from "../services/fanarttv.js";
 
 /** Minimal instance descriptor used by sync callers. */
 export interface Instance {
@@ -46,6 +47,7 @@ export async function syncAll(
   syncOpService?: SyncOperationService,
   operationType: SyncOperationType = "manual",
   lastFmClient?: LastFmClient | null,
+  fanartTvClient?: FanartTvClient | null,
 ): Promise<{ local: SyncResult; peers: SyncResult[] }> {
   const operationId = syncOpService?.start(operationType, "local") || null;
   let localResult: SyncResult;
@@ -54,7 +56,7 @@ export async function syncAll(
   seedSyntheticInstances(db, config, peerRegistry);
 
   try {
-    localResult = await syncLocal(db, config, lastFmClient ?? null);
+    localResult = await syncLocal(db, config, lastFmClient ?? null, fanartTvClient ?? null);
   } catch (err) {
     if (operationId) {
       syncOpService!.fail(operationId, [`Local sync failed: ${String(err)}`]);
@@ -70,7 +72,7 @@ export async function syncAll(
     }
 
     try {
-      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername, lastFmClient ?? null);
+      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername, lastFmClient ?? null, fanartTvClient ?? null);
       peers.push(peerResult);
       if (peerOperationId && syncOpService) {
         syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);

@@ -84,8 +84,10 @@ describe("Last.fm integration during sync", () => {
 
   // ── Tests ─────────────────────────────────────────────────────────────────
 
-  it("calls Last.fm when artist has no cover art from Navidrome", async () => {
-    // Setup: Navidrome returns artist without coverArt
+  it("calls Last.fm when artist has no cover art and no MBID", async () => {
+    // Setup: Navidrome returns artist without coverArt or MBID. Per #131,
+    // Last.fm is the fallback only when no MBID is available — artists with
+    // an MBID go through fanart.tv instead.
     const mockArtistsResponse = subsonicResponse({
       artists: {
         index: [
@@ -103,9 +105,8 @@ describe("Last.fm integration during sync", () => {
       artist: {
         id: "ar-1",
         name: "Radiohead",
-        musicBrainzId: "a74b1b7f-71a5-4011-9441-d0b5e4122711",
         albumCount: 10,
-        // NO coverArt - this triggers Last.fm lookup
+        // NO coverArt and NO MBID - this triggers Last.fm lookup
         album: [
           { id: "al-1", name: "OK Computer", artist: "Radiohead", songCount: 12 },
         ],
@@ -189,8 +190,9 @@ describe("Last.fm integration during sync", () => {
     const lastFmCall = lastFmFetchMock.mock.calls[0][0] as string;
     expect(lastFmCall).toContain("ws.audioscrobbler.com");
     expect(lastFmCall).toContain("method=artist.getinfo");
-    // When MusicBrainz ID is available, it's used for more accurate lookup
-    expect(lastFmCall).toContain("mbid=a74b1b7f-71a5-4011-9441-d0b5e4122711");
+    // No MBID → Last.fm is queried by artist name.
+    expect(lastFmCall).toContain("artist=Radiohead");
+    expect(lastFmCall).not.toContain("mbid=");
 
     // Verify artist image was stored in database
     const artistRow = db.prepare(
@@ -310,9 +312,8 @@ describe("Last.fm integration during sync", () => {
       artist: {
         id: "ar-1",
         name: "Unknown Band",
-        musicBrainzId: "unknown-mbid",
         albumCount: 5,
-        // NO coverArt
+        // NO coverArt and no MBID → falls back to Last.fm.
         album: [
           { id: "al-1", name: "Debut Album", artist: "Unknown Band", songCount: 10 },
         ],
@@ -386,8 +387,10 @@ describe("Last.fm integration during sync", () => {
     expect(artistRow.image_url).toBeNull(); // No image because Last.fm failed
   });
 
-  it("uses MusicBrainz ID when available for Last.fm lookup", async () => {
-    // Setup: Navidrome returns artist with MusicBrainz ID but no coverArt
+  it("does NOT call Last.fm when artist has an MBID (fanart.tv handles those)", async () => {
+    // Per #131: Last.fm is the fallback only for artists without an MBID.
+    // When an MBID is present, fanart.tv is the primary source and Last.fm
+    // is skipped entirely.
     const mockArtistsResponse = subsonicResponse({
       artists: {
         index: [
@@ -456,13 +459,12 @@ describe("Last.fm integration during sync", () => {
       instanceConcurrency: 1,
     } as unknown as Config;
 
-    // Run sync with Last.fm enabled
-    await syncLocal(db, testConfig, lastFmClient);
+    // Run sync with Last.fm enabled and no fanart.tv client (so the MBID
+    // pathway is fully skipped instead of routed to fanart.tv).
+    await syncLocal(db, testConfig, lastFmClient, null);
 
-    // Verify Last.fm was called with MusicBrainz ID
-    expect(lastFmFetchMock).toHaveBeenCalledTimes(1);
-    const lastFmCall = lastFmFetchMock.mock.calls[0][0] as string;
-    expect(lastFmCall).toContain("mbid=a74b1b7f-71a5-4011-9441-d0b5e4122711");
-    expect(lastFmCall).not.toContain("artist=Radiohead"); // Should use mbid, not artist name
+    // Verify Last.fm was NOT called — the artist has an MBID so it would go
+    // through fanart.tv, not Last.fm.
+    expect(lastFmFetchMock).not.toHaveBeenCalled();
   });
 });

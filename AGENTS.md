@@ -52,3 +52,5 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 | `hub/src/db/schema.sql`              | Canonical DB schema — source of truth                            |
 | `docs/system-architecture.md`        | Current system architecture                                      |
 | `docs/frontend-testing.md`           | Vitest + RTL setup, patterns, gotchas                            |
+| `docs/fanarttv-integration.md`       | fanart.tv artist image / album cover source (primary, MBID-keyed) |
+| `docs/lastfm-integration.md`         | Last.fm fallback for artists without an MBID                     |
