@@ -420,6 +420,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       app.syncOpService,
       "manual",
       app.lastFmClient,
+      app.fanartTvClient,
     );
   });
 
