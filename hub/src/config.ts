@@ -30,6 +30,10 @@ export interface Config {
   fanartTvProjectKey: string;
   fanartTvPersonalKey: string | undefined;
   fanartTvBaseUrl: string;
+  // Optional: overrides the persisted art_cache_max_bytes setting on every
+  // boot. Useful for test clusters where you want a tiny cap regardless of
+  // what's stored in the DB.
+  artCacheMaxBytes: number | undefined;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -93,5 +97,8 @@ export function loadConfig(): Config {
     fanartTvPersonalKey: process.env.FANARTTV_CLIENT_KEY || undefined,
     fanartTvBaseUrl:
       process.env.FANARTTV_API_URL || "https://webservice.fanart.tv/v3.2",
+    artCacheMaxBytes: process.env.ART_CACHE_MAX_BYTES
+      ? parseInt(process.env.ART_CACHE_MAX_BYTES, 10)
+      : undefined,
   };
 }

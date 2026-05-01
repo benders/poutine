@@ -122,6 +122,10 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const { dirname, join } = await import("node:path");
   const cacheDir = join(dirname(config.databasePath), "cache", "art");
   const artCache = new ArtCache(db, cacheDir);
+  if (config.artCacheMaxBytes !== undefined && Number.isFinite(config.artCacheMaxBytes) && config.artCacheMaxBytes > 0) {
+    artCache.setMaxBytes(config.artCacheMaxBytes);
+    app.log.info(`Art cache cap set from ART_CACHE_MAX_BYTES env: ${config.artCacheMaxBytes} bytes`);
+  }
   app.decorate("artCache", artCache);
 
   // Last.fm client — optional, only if API key is configured
