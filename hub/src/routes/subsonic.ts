@@ -1029,9 +1029,11 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const cacheKey = size ? `${id}:${size}` : id;
 
-    // Check cache first (covers both local and peer art)
+    // Check cache first (covers both local and peer art). Skip a hit if the
+    // cached entry is not a real image — old Navidrome "missing cover" XML
+    // envelopes may have been cached before the upstream-validation fix.
     const cached = app.artCache.get(cacheKey);
-    if (cached) {
+    if (cached && cached.contentType.startsWith("image/") && cached.data.length > 0) {
       reply.raw.writeHead(200, {
         "content-type": cached.contentType,
         "content-length": String(cached.data.length),
@@ -1040,6 +1042,10 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       });
       reply.raw.end(cached.data);
       return;
+    }
+    if (cached) {
+      // Poisoned entry — drop it and re-fetch.
+      app.artCache.delete(cacheKey);
     }
 
     let response: Response;
@@ -1114,6 +1120,15 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     }
     const buffer = Buffer.concat(chunks);
     const contentType = response.headers.get("content-type") || "image/jpeg";
+
+    // Navidrome answers a missing cover with HTTP 200 + a Subsonic XML/JSON
+    // error envelope (Content-Type: text/xml or application/json), not an
+    // image. Don't cache or serve those — let the client treat it as 404 so
+    // a future re-sync can supply a real cover (e.g. via fanart.tv).
+    if (buffer.length === 0 || !contentType.startsWith("image/")) {
+      sendBinaryError(reply, 404, "Art not found");
+      return;
+    }
 
     app.artCache.put(cacheKey, buffer, contentType);
 
