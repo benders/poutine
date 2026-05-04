@@ -335,6 +335,50 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"].error.code).toBe(70);
   });
 
+  it("getAlbum song carries albumArtist/albumArtistId from release group (#138)", async () => {
+    // Album artist ≠ track artist (e.g. compilation or "feat." track).
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("ua-album", "Album Artist", "album artist");
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("ua-track", "Featured Artist", "featured artist");
+    app.db
+      .prepare(
+        "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id) VALUES (?, ?, ?, ?)",
+      )
+      .run("rg-138", "Comp Album", "comp album", "ua-album");
+    app.db
+      .prepare(
+        "INSERT INTO unified_releases (id, release_group_id, name) VALUES (?, ?, ?)",
+      )
+      .run("rel-138", "rg-138", "Comp Album");
+    app.db
+      .prepare(
+        `INSERT INTO unified_tracks
+          (id, release_id, artist_id, title, title_normalized)
+          VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("tr-138", "rel-138", "ua-track", "Featured Track", "featured track");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getAlbum?u=tester&p=secret&f=json&id=alrg-138",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    const song = body["subsonic-response"].album.song[0];
+    expect(song.artist).toBe("Featured Artist");
+    expect(song.artistId).toBe("arua-track");
+    expect(song.albumArtist).toBe("Album Artist");
+    expect(song.albumArtistId).toBe("arua-album");
+  });
+
   it("getPlaylists → ok with empty playlist array", async () => {
     const res = await app.inject({
       method: "GET",

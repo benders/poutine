@@ -73,6 +73,8 @@ interface TrackRow {
   rg_name: string;
   rg_year: number | null;
   rg_image_url: string | null;
+  rg_artist_id: string;
+  rg_artist_name: string;
   format: string | null;
   bitrate: number | null;
   size: number | null;
@@ -161,6 +163,8 @@ function buildSong(row: TrackRow) {
     type: "music",
     albumId: encodeId("al", row.rg_id),
     artistId: encodeId("ar", row.artist_id),
+    albumArtist: row.rg_artist_name,
+    albumArtistId: encodeId("ar", row.rg_artist_id),
     discNumber: row.disc_number ?? undefined,
     sourceInstance: row.instance_name ?? undefined,
     musicBrainzId: row.musicbrainz_id ?? undefined,
@@ -273,6 +277,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       ut.artist_id, ua.name AS artist_name,
       urg.id AS rg_id, urg.name AS rg_name,
       urg.year AS rg_year, urg.image_url AS rg_image_url,
+      urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
       (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
        ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
       (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
@@ -289,6 +294,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     JOIN unified_artists ua ON ua.id = ut.artist_id
     JOIN unified_releases ur ON ur.id = ut.release_id
     JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+    JOIN unified_artists ua2 ON ua2.id = urg.artist_id
     WHERE us.user_id = ? AND us.kind = 'track'
     ORDER BY us.starred_at DESC`,
   );
@@ -754,6 +760,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
               ut.artist_id, ua.name AS artist_name,
               urg.id AS rg_id, urg.name AS rg_name,
               urg.year AS rg_year, urg.image_url AS rg_image_url,
+              urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
               (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
                ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
               (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
@@ -765,6 +772,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
             JOIN unified_artists ua ON ua.id = ut.artist_id
             JOIN unified_releases ur ON ur.id = ut.release_id
             JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+            JOIN unified_artists ua2 ON ua2.id = urg.artist_id
             WHERE ut.release_id = ?
             ORDER BY ut.disc_number, ut.track_number, ut.id`,
           )
@@ -833,6 +841,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           ut.artist_id, ua.name AS artist_name,
           urg.id AS rg_id, urg.name AS rg_name,
           urg.year AS rg_year, urg.image_url AS rg_image_url,
+          urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
           (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
           (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
@@ -844,6 +853,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         JOIN unified_artists ua ON ua.id = ut.artist_id
         JOIN unified_releases ur ON ur.id = ut.release_id
         JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+        JOIN unified_artists ua2 ON ua2.id = urg.artist_id
         WHERE ut.id = ?`,
       )
       .get(trackId) as TrackRow | undefined;
@@ -948,6 +958,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           ut.artist_id, ua.name AS artist_name,
           urg.id AS rg_id, urg.name AS rg_name,
           urg.year AS rg_year, urg.image_url AS rg_image_url,
+          urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
           (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
           (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
@@ -959,6 +970,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         JOIN unified_artists ua ON ua.id = ut.artist_id
         JOIN unified_releases ur ON ur.id = ut.release_id
         JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+        JOIN unified_artists ua2 ON ua2.id = urg.artist_id
         WHERE ut.title_normalized LIKE ?
           OR ut.id = ? OR ut.id = ?
           OR ut.musicbrainz_id = ? OR ut.musicbrainz_id = ?
