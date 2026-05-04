@@ -164,6 +164,7 @@ export function ReleaseGroupPage() {
                 key={song.id}
                 song={song}
                 index={index}
+                albumArtistId={album.artistId}
                 onPlay={() => playTracks(album.songs, index)}
                 onAddToQueue={() => addToQueue(song)}
                 isExpanded={expandedTrackId === song.id}
@@ -192,6 +193,7 @@ function MetadataField({ label, value }: { label: string; value: string | undefi
 function SongRow({
   song,
   index,
+  albumArtistId,
   onPlay,
   onAddToQueue,
   isExpanded,
@@ -201,6 +203,7 @@ function SongRow({
 }: {
   song: SubsonicSong;
   index: number;
+  albumArtistId: string;
   onPlay: () => void;
   onAddToQueue: () => void;
   isExpanded: boolean;
@@ -208,6 +211,9 @@ function SongRow({
   isCurrent: boolean;
   isPlaying: boolean;
 }) {
+  // Compilations and "feat." tracks: show the track artist under the title
+  // when it differs from the album's release-group artist. (#138)
+  const showTrackArtist = !!song.artistId && song.artistId !== albumArtistId;
   return (
     <>
       <tr className="group border-b border-border/50 last:border-0 hover:bg-surface-hover transition-colors">
@@ -242,6 +248,14 @@ function SongRow({
         </td>
         <td className="py-2.5 px-4">
           <p className="text-sm text-text-primary">{song.title}</p>
+          {showTrackArtist && (
+            <Link
+              to={`/artists/${song.artistId}`}
+              className="text-xs text-text-muted hover:text-accent transition-colors"
+            >
+              {song.artist}
+            </Link>
+          )}
         </td>
         <td className="py-2.5 px-4 text-sm text-text-muted">
           {song.suffix && <span className="uppercase">{song.suffix}</span>}
