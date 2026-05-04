@@ -49,15 +49,33 @@ export interface FanartTvArtistResponse {
   albums?: FanartTvAlbum[];
 }
 
+/** Minimal Fastify-compatible logger surface. */
+export interface FanartTvLogger {
+  error: (msg: string) => void;
+  info?: (msg: string) => void;
+}
+
+/** Per-request timeout for fanart.tv calls. Failures fall through to "no result". */
+const REQUEST_TIMEOUT_MS = 10_000;
+
 export class FanartTvClient {
   private readonly projectKey: string;
   private readonly personalKey: string | undefined;
   private readonly baseUrl: string;
+  private readonly log: FanartTvLogger;
 
-  constructor(opts: { projectKey: string; personalKey?: string; baseUrl?: string }) {
+  constructor(opts: {
+    projectKey: string;
+    personalKey?: string;
+    baseUrl?: string;
+    log?: FanartTvLogger;
+  }) {
     this.projectKey = opts.projectKey;
     this.personalKey = opts.personalKey;
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    this.log = opts.log ?? {
+      error: (msg) => console.error(msg),
+    };
   }
 
   isEnabled(): boolean {
@@ -75,15 +93,16 @@ export class FanartTvClient {
     try {
       const res = await fetch(this.buildUrl(path), {
         headers: { "user-agent": USER_AGENT },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (res.status === 404) return null;
       if (!res.ok) {
-        console.error(`fanart.tv API error: ${res.status} ${res.statusText}`);
+        this.log.error(`fanart.tv API error: ${res.status} ${res.statusText}`);
         return null;
       }
       return (await res.json()) as T;
     } catch (err) {
-      console.error(`fanart.tv API request failed: ${err}`);
+      this.log.error(`fanart.tv API request failed: ${err}`);
       return null;
     }
   }
