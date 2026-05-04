@@ -275,6 +275,97 @@ describe("admin — users CRUD", () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  it("PUT /admin/users/:id/password → updates a guest user's password (204)", async () => {
+    const create = await app.inject({
+      method: "POST",
+      url: "/admin/users",
+      headers: authHeader(token),
+      payload: { username: "pwuser", password: "originalpw" },
+    });
+    const { id } = create.json() as { id: string };
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/admin/users/${id}/password`,
+      headers: authHeader(token),
+      payload: { password: "newpassword1" },
+    });
+    expect(res.statusCode).toBe(204);
+
+    // Old password should no longer authenticate via Subsonic verifyPassword path.
+    const row = app.db
+      .prepare("SELECT password_enc FROM users WHERE id = ?")
+      .get(id) as { password_enc: string };
+    const { verifyPassword } = await import("../src/auth/passwords.js");
+    expect(verifyPassword(row.password_enc, "originalpw", app.passwordKey)).toBe(false);
+    expect(verifyPassword(row.password_enc, "newpassword1", app.passwordKey)).toBe(true);
+  });
+
+  it("PUT /admin/users/:id/password → admin can change own password and re-login", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/admin/users/admin-1/password",
+      headers: authHeader(token),
+      payload: { password: "newadminpw" },
+    });
+    expect(res.statusCode).toBe(204);
+
+    // Old password fails
+    const oldLogin = await app.inject({
+      method: "POST",
+      url: "/admin/login",
+      payload: { username: "owner", password: "adminpass" },
+    });
+    expect(oldLogin.statusCode).toBe(401);
+
+    // New password works
+    const newLogin = await app.inject({
+      method: "POST",
+      url: "/admin/login",
+      payload: { username: "owner", password: "newadminpw" },
+    });
+    expect(newLogin.statusCode).toBe(200);
+  });
+
+  it("PUT /admin/users/:id/password with short password → 400", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/admin/users/admin-1/password",
+      headers: authHeader(token),
+      payload: { password: "abc" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("PUT /admin/users/:id/password missing password → 400", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/admin/users/admin-1/password",
+      headers: authHeader(token),
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("PUT /admin/users/:id/password unknown id → 404", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/admin/users/nope/password",
+      headers: authHeader(token),
+      payload: { password: "validpassword" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("PUT /admin/users/:id/password without auth → 401", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/admin/users/admin-1/password",
+      payload: { password: "validpassword" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
 });
 
 // ── /admin/peers ──────────────────────────────────────────────────────────────

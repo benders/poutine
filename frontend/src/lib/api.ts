@@ -234,6 +234,13 @@ export function deleteUser(id: string) {
   return apiFetch(`/admin/users/${id}`, { method: "DELETE" });
 }
 
+export function updateUserPassword(id: string, password: string) {
+  return apiFetch(`/admin/users/${id}/password`, {
+    method: "PUT",
+    body: JSON.stringify({ password }),
+  });
+}
+
 export function getPeers() {
   return apiFetch<Peer[]>("/admin/peers");
 }

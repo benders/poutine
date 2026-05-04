@@ -228,6 +228,38 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // PUT /admin/users/:id/password — admin sets any user's password
+  app.put<{ Params: { id: string }; Body: { password?: string } }>(
+    "/users/:id/password",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { password } = request.body ?? {};
+      if (!password) {
+        return reply.code(400).send({ error: "Password required" });
+      }
+      if (password.length < 8) {
+        return reply
+          .code(400)
+          .send({ error: "Password must be at least 8 characters" });
+      }
+
+      const user = app.db
+        .prepare("SELECT id FROM users WHERE id = ?")
+        .get(id) as { id: string } | undefined;
+      if (!user) {
+        return reply.code(404).send({ error: "User not found" });
+      }
+
+      const enc = setPassword(password, app.passwordKey);
+      app.db
+        .prepare("UPDATE users SET password_enc = ? WHERE id = ?")
+        .run(enc, id);
+
+      return reply.code(204).send();
+    },
+  );
+
   // DELETE /admin/users/:id
   app.delete<{ Params: { id: string } }>(
     "/users/:id",
