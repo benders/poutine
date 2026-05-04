@@ -10,6 +10,7 @@ import {
   decodeId,
 } from "./subsonic-response.js";
 import { decodeCoverArtId } from "../library/cover-art.js";
+import { isAllowedExternalArtUrl } from "./external-art.js";
 import { normalizeName } from "../library/normalize.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { applyTranscodeRule, buildStreamParams } from "./stream-params.js";
@@ -1052,8 +1053,14 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     // External URL (e.g. fanart.tv album cover stored when Navidrome had none).
     // The decoded coverArtId is the full https:// URL — fetch it directly
-    // instead of routing through Navidrome or a peer proxy.
-    if (coverArtId.startsWith("https://") || coverArtId.startsWith("http://")) {
+    // instead of routing through Navidrome or a peer proxy. Restricted to a
+    // fanart.tv hostname allowlist; peer-supplied URLs to other hosts are
+    // rejected to prevent SSRF.
+    if (coverArtId.startsWith("http://") || coverArtId.startsWith("https://")) {
+      if (!isAllowedExternalArtUrl(coverArtId)) {
+        sendBinaryError(reply, 400, "Disallowed external art URL");
+        return;
+      }
       try {
         response = await fetch(coverArtId);
       } catch {
