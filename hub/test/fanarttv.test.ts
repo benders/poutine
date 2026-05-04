@@ -69,6 +69,52 @@ describe("FanartTvClient", () => {
     expect(await client.getArtist("mbid-1")).toBeNull();
   });
 
+  it("returns null on 429 rate-limit responses", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response("Too Many Requests", { status: 429 }),
+    );
+    const client = new FanartTvClient({ projectKey: "PROJ" });
+    expect(await client.getArtist("mbid-1")).toBeNull();
+  });
+
+  it("logs failures via the injected logger", async () => {
+    const log = { error: vi.fn(), info: vi.fn() };
+    fetchMock.mockResolvedValueOnce(new Response("oops", { status: 500 }));
+    const client = new FanartTvClient({ projectKey: "PROJ", log });
+    await client.getArtist("mbid-1");
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining("fanart.tv API error: 500"),
+    );
+  });
+
+  it("logs network errors via the injected logger", async () => {
+    const log = { error: vi.fn() };
+    fetchMock.mockRejectedValueOnce(new Error("DNS"));
+    const client = new FanartTvClient({ projectKey: "PROJ", log });
+    await client.getArtist("mbid-1");
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining("fanart.tv API request failed"),
+    );
+  });
+
+  it("passes an AbortSignal so requests cannot hang forever", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({}), { status: 200 }),
+    );
+    const client = new FanartTvClient({ projectKey: "PROJ" });
+    await client.getArtist("mbid-1");
+    const opts = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(opts.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("treats AbortError (timeout) as a non-fatal failure", async () => {
+    const log = { error: vi.fn() };
+    fetchMock.mockRejectedValueOnce(new DOMException("aborted", "AbortError"));
+    const client = new FanartTvClient({ projectKey: "PROJ", log });
+    expect(await client.getArtist("mbid-1")).toBeNull();
+    expect(log.error).toHaveBeenCalled();
+  });
+
   it("bestArtistImage prefers thumb, then background", () => {
     expect(
       FanartTvClient.bestArtistImage({
