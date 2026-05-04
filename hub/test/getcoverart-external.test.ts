@@ -67,6 +67,37 @@ describe("/rest/getCoverArt external URL passthrough", () => {
     );
   });
 
+  it("accepts a raw external URL as id (3rd-party Subsonic client form)", async () => {
+    // Supersonic / Vibrdrome echo back the coverArt value verbatim — for
+    // artist images that's a fanart.tv URL with no `local:` prefix.
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    fetchMock.mockResolvedValueOnce(
+      new Response(png, {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      }),
+    );
+
+    const url = `/rest/getCoverArt?u=tester&p=secret&f=json&id=${encodeURIComponent(
+      "https://assets.fanart.tv/fanart/stereolab.jpg",
+    )}`;
+    const res = await app.inject({ method: "GET", url });
+
+    expect(res.statusCode).toBe(200);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://assets.fanart.tv/fanart/stereolab.jpg",
+    );
+  });
+
+  it("rejects a raw non-allowlisted URL id with 400", async () => {
+    const url = `/rest/getCoverArt?u=tester&p=secret&f=json&id=${encodeURIComponent(
+      "https://evil.example.com/x.jpg",
+    )}`;
+    const res = await app.inject({ method: "GET", url });
+    expect(res.statusCode).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-allowlisted hostname with 400 and never fetches", async () => {
     const id = encodeCoverArtId("local", "https://evil.example.com/x.jpg");
     const res = await app.inject({ method: "GET", url: artUrl(id) });

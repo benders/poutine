@@ -1017,15 +1017,24 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const id = q.id ?? "";
     const size = q.size;
 
+    // Raw external URL `id` (e.g. 3rd-party Subsonic clients echoing back the
+    // `coverArt` value we returned for an artist image). Skip decodeCoverArtId
+    // — the embedded `https:` colon would mis-parse as an instance prefix —
+    // and route through the external-fetch branch below.
     let instanceId: string;
     let coverArtId: string;
-    try {
-      const decoded = decodeCoverArtId(id);
-      instanceId = decoded.instanceId;
-      coverArtId = decoded.coverArtId;
-    } catch {
-      sendBinaryError(reply, 400, "Invalid cover art ID");
-      return;
+    if (id.startsWith("http://") || id.startsWith("https://")) {
+      instanceId = "local";
+      coverArtId = id;
+    } else {
+      try {
+        const decoded = decodeCoverArtId(id);
+        instanceId = decoded.instanceId;
+        coverArtId = decoded.coverArtId;
+      } catch {
+        sendBinaryError(reply, 400, "Invalid cover art ID");
+        return;
+      }
     }
 
     const cacheKey = size ? `${id}:${size}` : id;
