@@ -147,6 +147,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
         projectKey: config.fanartTvProjectKey,
         personalKey: config.fanartTvPersonalKey,
         baseUrl: config.fanartTvBaseUrl,
+        log: app.log,
       })
     : null;
   if (fanartTvClient) {
