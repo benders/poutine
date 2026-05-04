@@ -5,7 +5,7 @@ import { search3 } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
-import { Search, Play, Disc, User, Music } from "lucide-react";
+import { Search, Play, Pause, Disc, User, Music } from "lucide-react";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 function hashColor(name: string): string {
@@ -27,7 +27,8 @@ function initials(name: string): string {
 
 export function SearchPage() {
   const navigate = useNavigate();
-  const { playTrack } = usePlayer();
+  const { playTrack, queue, currentIndex, isPlaying } = usePlayer();
+  const currentTrackId = currentIndex >= 0 ? queue[currentIndex]?.id : undefined;
   const [input, setInput] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
 
@@ -165,7 +166,13 @@ export function SearchPage() {
               </h2>
               <div className="space-y-1">
                 {results.songs.slice(0, 10).map((song) => (
-                  <SongResult key={song.id} song={song} onPlay={() => playTrack(song)} />
+                  <SongResult
+                    key={song.id}
+                    song={song}
+                    onPlay={() => playTrack(song)}
+                    isCurrent={currentTrackId === song.id}
+                    isPlaying={isPlaying}
+                  />
                 ))}
               </div>
             </section>
@@ -176,14 +183,33 @@ export function SearchPage() {
   );
 }
 
-function SongResult({ song, onPlay }: { song: SubsonicSong; onPlay: () => void }) {
+function SongResult({
+  song,
+  onPlay,
+  isCurrent,
+  isPlaying,
+}: {
+  song: SubsonicSong;
+  onPlay: () => void;
+  isCurrent: boolean;
+  isPlaying: boolean;
+}) {
+  const showPauseHover = isCurrent && isPlaying;
   return (
     <div className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-hover transition-colors">
       <button
         onClick={onPlay}
-        className="w-10 h-10 rounded-md bg-surface flex items-center justify-center shrink-0 text-text-muted hover:text-accent transition-colors cursor-pointer"
+        className={`group/play w-10 h-10 rounded-md bg-surface flex items-center justify-center shrink-0 transition-colors cursor-pointer ${isCurrent ? "text-accent" : "text-text-muted hover:text-accent"}`}
+        title={showPauseHover ? "Pause" : "Play"}
       >
-        <Play className="w-4 h-4 fill-current" />
+        {showPauseHover ? (
+          <>
+            <Play className="w-4 h-4 fill-current group-hover/play:hidden" />
+            <Pause className="w-4 h-4 fill-current hidden group-hover/play:block" />
+          </>
+        ) : (
+          <Play className="w-4 h-4 fill-current" />
+        )}
       </button>
       <div className="min-w-0 flex-1">
         <p className="text-sm text-text-primary truncate">{song.title}</p>
