@@ -51,8 +51,18 @@ Poutine caches results in `unified_artists.image_url` and `instance_albums.cover
 
 ## Data storage
 
-- Artist images: stored as a URL in `unified_artists.image_url` and `instance_artists.image_url`.
-- Album covers: when supplied by fanart.tv, stored as a URL in `instance_albums.cover_art_id`. Subsonic stream/cover-art handlers detect the leading `https://` and serve it directly rather than reverse-proxying Navidrome.
+- Artist images: stored as a URL in `unified_artists.image_url` and `instance_artists.image_url`. Frontend `artUrl()` short-circuits absolute URLs and the browser fetches them directly, so artist images do not go through `/rest/getCoverArt`.
+- Album covers: when supplied by fanart.tv, stored as a URL in `instance_albums.cover_art_id`. After merge, `unified_release_groups.image_url` holds the encoded `instanceId:https://...` form; `decodeCoverArtId` splits at the first colon so the URL survives. The Subsonic `getCoverArt` handler detects the leading `https://` and fetches it directly rather than reverse-proxying Navidrome.
+
+### SSRF allowlist
+
+External URLs reached via `/rest/getCoverArt` are validated by `hub/src/routes/external-art.ts` before fetching:
+
+- https only (http rejected).
+- Hostname must be `fanart.tv` or end in `.fanart.tv`.
+- All other hosts → 400 "Disallowed external art URL".
+
+This prevents a malicious peer from federating a `cover_art_id` pointing at intranet endpoints. If new external image sources are added later, extend the allowlist there — not at the call site.
 
 ## API reference
 
