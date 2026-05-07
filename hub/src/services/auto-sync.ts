@@ -5,7 +5,7 @@ import { syncLocal } from "../library/sync-local.js";
 import { mergeLibraries } from "../library/merge.js";
 import { SyncOperationService } from "./sync-operations.js";
 import { LastFmClient } from "./lastfm.js";
-import type { FanartTvClient } from "./fanarttv.js";
+import { FanartTvClient } from "./fanarttv.js";
 
 const POLL_INTERVAL_MS = 30_000;
 
