@@ -74,7 +74,12 @@ export class AutoSyncService {
       // a "running" sync row appearing every 30s for no-op poll ticks.
       const operationId = this.syncOpService?.start("auto", "local") || null;
       try {
-        const result = await syncLocal(this.db, this.config, this.lastFmClient ?? null);
+        const result = await syncLocal(
+          this.db,
+          this.config,
+          this.lastFmClient ?? null,
+          this.fanartTvClient ?? null,
+        );
         mergeLibraries(this.db);
         this.log.info(
           `AutoSync complete: ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks`,

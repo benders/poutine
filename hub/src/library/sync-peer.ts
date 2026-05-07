@@ -16,6 +16,7 @@ import { readNavidromeViaProxy } from "./sync-instance.js";
 import type { SyncLogger } from "./sync-instance.js";
 import type { SyncResult } from "./sync.js";
 import type { LastFmClient } from "../services/lastfm.js";
+import type { FanartTvClient } from "../services/fanarttv.js";
 
 export type FederationFetcher = ReturnType<typeof createFederationFetcher>;
 
@@ -25,6 +26,7 @@ export async function syncPeer(
   federatedFetch: FederationFetcher,
   asUser: string,
   lastFmClient: LastFmClient | null,
+  fanartTvClient: FanartTvClient | null,
   opts: { concurrency?: number; log?: SyncLogger } = {},
 ): Promise<SyncResult> {
   // Build a ProxyFetch for this peer's /proxy/* endpoint.
@@ -50,5 +52,6 @@ export async function syncPeer(
     concurrency: opts.concurrency,
     log,
     lastFmClient,
+    fanartTvClient,
   });
 }

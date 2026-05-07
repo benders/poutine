@@ -1,6 +1,5 @@
 import type { FastifyPluginAsync, RouteHandlerMethod } from "fastify";
 import { Readable } from "node:stream";
-import { readFileSync } from "node:fs";
 import type { Peer } from "../federation/peers.js";
 import { requireSubsonicAuth, requireSubsonicAuthBinary } from "../auth/subsonic-auth.js";
 import {
@@ -11,10 +10,12 @@ import {
   decodeId,
 } from "./subsonic-response.js";
 import { decodeCoverArtId } from "../library/cover-art.js";
+import { isAllowedExternalArtUrl } from "./external-art.js";
 import { normalizeName } from "../library/normalize.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { applyTranscodeRule, buildStreamParams } from "./stream-params.js";
 import type { StreamTrackingService } from "../services/stream-tracking.js";
+import { sqliteToIso } from "../util/time.js";
 
 // Extend Fastify app type for stream tracking
 declare module "fastify" {
@@ -72,6 +73,8 @@ interface TrackRow {
   rg_name: string;
   rg_year: number | null;
   rg_image_url: string | null;
+  rg_artist_id: string;
+  rg_artist_name: string;
   format: string | null;
   bitrate: number | null;
   size: number | null;
@@ -160,6 +163,8 @@ function buildSong(row: TrackRow) {
     type: "music",
     albumId: encodeId("al", row.rg_id),
     artistId: encodeId("ar", row.artist_id),
+    albumArtist: row.rg_artist_name,
+    albumArtistId: encodeId("ar", row.rg_artist_id),
     discNumber: row.disc_number ?? undefined,
     sourceInstance: row.instance_name ?? undefined,
     musicBrainzId: row.musicbrainz_id ?? undefined,
@@ -198,8 +203,7 @@ function annotateStarred<T extends { id: string }>(
   for (let i = 0; i < items.length; i++) {
     const ts = map.get(rawIds[i]);
     if (ts) {
-      const isoTs = ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`;
-      (items[i] as T & { starred?: string }).starred = isoTs;
+      (items[i] as T & { starred?: string }).starred = sqliteToIso(ts);
     }
   }
 }
@@ -232,6 +236,78 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     app.post(path, { preHandler }, handler);
     app.post(`${path}.view`, { preHandler }, handler);
   }
+
+  // ── Hoisted prepared statements for star/unstar/getStarred2 (#130) ──────────
+  // Prepared once at plugin init rather than per-request to avoid allocation
+  // churn on hot endpoints.
+  const starInsertStmt = app.db.prepare(
+    "INSERT OR IGNORE INTO user_stars (user_id, kind, target_id) VALUES (?, ?, ?)",
+  );
+  const starDeleteStmt = app.db.prepare(
+    "DELETE FROM user_stars WHERE user_id = ? AND kind = ? AND target_id = ?",
+  );
+  const starredArtistsStmt = app.db.prepare(
+    `SELECT ua.id, ua.name, ua.image_url,
+      COUNT(urg.id) AS albumCount,
+      us.starred_at
+    FROM user_stars us
+    JOIN unified_artists ua ON ua.id = us.target_id
+    LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
+    WHERE us.user_id = ? AND us.kind = 'artist'
+    GROUP BY ua.id, ua.name, ua.image_url, us.starred_at
+    ORDER BY us.starred_at DESC`,
+  );
+  const starredAlbumsStmt = app.db.prepare(
+    `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
+      urg.year, urg.genre, urg.image_url,
+      (SELECT COUNT(*) FROM unified_tracks ut
+       JOIN unified_releases ur ON ur.id = ut.release_id
+       WHERE ur.release_group_id = urg.id) AS songCount,
+      us.starred_at
+    FROM user_stars us
+    JOIN unified_release_groups urg ON urg.id = us.target_id
+    JOIN unified_artists ua ON ua.id = urg.artist_id
+    WHERE us.user_id = ? AND us.kind = 'album'
+    ORDER BY us.starred_at DESC`,
+  );
+  const starredSongsStmt = app.db.prepare(
+    `SELECT
+      ut.id, ut.title, ut.track_number, ut.disc_number,
+      ut.duration_ms, ut.genre, ut.musicbrainz_id,
+      ut.artist_id, ua.name AS artist_name,
+      urg.id AS rg_id, urg.name AS rg_name,
+      urg.year AS rg_year, urg.image_url AS rg_image_url,
+      urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
+      (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
+      (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
+      (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+      (SELECT i.name FROM track_sources ts
+       JOIN instances i ON i.id = ts.instance_id
+       WHERE ts.unified_track_id = ut.id
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name,
+      us.starred_at
+    FROM user_stars us
+    JOIN unified_tracks ut ON ut.id = us.target_id
+    JOIN unified_artists ua ON ua.id = ut.artist_id
+    JOIN unified_releases ur ON ur.id = ut.release_id
+    JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+    JOIN unified_artists ua2 ON ua2.id = urg.artist_id
+    WHERE us.user_id = ? AND us.kind = 'track'
+    ORDER BY us.starred_at DESC`,
+  );
+  const starInsertTx = app.db.transaction(
+    (userId: string, rows: Array<{ kind: StarKind; raw: string }>) => {
+      for (const r of rows) starInsertStmt.run(userId, r.kind, r.raw);
+    },
+  );
+  const starDeleteTx = app.db.transaction(
+    (userId: string, rows: Array<{ kind: StarKind; raw: string }>) => {
+      for (const r of rows) starDeleteStmt.run(userId, r.kind, r.raw);
+    },
+  );
 
   // ── ping ────────────────────────────────────────────────────────────────────
 
@@ -684,6 +760,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
               ut.artist_id, ua.name AS artist_name,
               urg.id AS rg_id, urg.name AS rg_name,
               urg.year AS rg_year, urg.image_url AS rg_image_url,
+              urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
               (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
                ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
               (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
@@ -695,6 +772,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
             JOIN unified_artists ua ON ua.id = ut.artist_id
             JOIN unified_releases ur ON ur.id = ut.release_id
             JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+            JOIN unified_artists ua2 ON ua2.id = urg.artist_id
             WHERE ut.release_id = ?
             ORDER BY ut.disc_number, ut.track_number, ut.id`,
           )
@@ -763,6 +841,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           ut.artist_id, ua.name AS artist_name,
           urg.id AS rg_id, urg.name AS rg_name,
           urg.year AS rg_year, urg.image_url AS rg_image_url,
+          urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
           (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
           (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
@@ -774,6 +853,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         JOIN unified_artists ua ON ua.id = ut.artist_id
         JOIN unified_releases ur ON ur.id = ut.release_id
         JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+        JOIN unified_artists ua2 ON ua2.id = urg.artist_id
         WHERE ut.id = ?`,
       )
       .get(trackId) as TrackRow | undefined;
@@ -878,6 +958,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           ut.artist_id, ua.name AS artist_name,
           urg.id AS rg_id, urg.name AS rg_name,
           urg.year AS rg_year, urg.image_url AS rg_image_url,
+          urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
           (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
           (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
@@ -889,6 +970,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         JOIN unified_artists ua ON ua.id = ut.artist_id
         JOIN unified_releases ur ON ur.id = ut.release_id
         JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+        JOIN unified_artists ua2 ON ua2.id = urg.artist_id
         WHERE ut.title_normalized LIKE ?
           OR ut.id = ? OR ut.id = ?
           OR ut.musicbrainz_id = ? OR ut.musicbrainz_id = ?
@@ -947,36 +1029,66 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const id = q.id ?? "";
     const size = q.size;
 
+    // Raw external URL `id` (e.g. 3rd-party Subsonic clients echoing back the
+    // `coverArt` value we returned for an artist image). Skip decodeCoverArtId
+    // — the embedded `https:` colon would mis-parse as an instance prefix —
+    // and route through the external-fetch branch below.
     let instanceId: string;
     let coverArtId: string;
-    try {
-      const decoded = decodeCoverArtId(id);
-      instanceId = decoded.instanceId;
-      coverArtId = decoded.coverArtId;
-    } catch {
-      sendBinaryError(reply, 400, "Invalid cover art ID");
-      return;
+    if (id.startsWith("http://") || id.startsWith("https://")) {
+      instanceId = "local";
+      coverArtId = id;
+    } else {
+      try {
+        const decoded = decodeCoverArtId(id);
+        instanceId = decoded.instanceId;
+        coverArtId = decoded.coverArtId;
+      } catch {
+        sendBinaryError(reply, 400, "Invalid cover art ID");
+        return;
+      }
     }
 
     const cacheKey = size ? `${id}:${size}` : id;
 
-    // Check cache first (covers both local and peer art)
+    // Check cache first (covers both local and peer art). Skip a hit if the
+    // cached entry is not a real image — old Navidrome "missing cover" XML
+    // envelopes may have been cached before the upstream-validation fix.
     const cached = app.artCache.get(cacheKey);
-    if (cached) {
-      const data = readFileSync(cached.filePath);
+    if (cached && cached.contentType.startsWith("image/") && cached.data.length > 0) {
       reply.raw.writeHead(200, {
         "content-type": cached.contentType,
-        "content-length": String(data.length),
+        "content-length": String(cached.data.length),
         "cache-control": "public, max-age=2592000",
         "x-cache": "HIT",
       });
-      reply.raw.end(data);
+      reply.raw.end(cached.data);
       return;
+    }
+    if (cached) {
+      // Poisoned entry — drop it and re-fetch.
+      app.artCache.delete(cacheKey);
     }
 
     let response: Response;
 
-    if (instanceId !== "local") {
+    // External URL (e.g. fanart.tv album cover stored when Navidrome had none).
+    // The decoded coverArtId is the full https:// URL — fetch it directly
+    // instead of routing through Navidrome or a peer proxy. Restricted to a
+    // fanart.tv hostname allowlist; peer-supplied URLs to other hosts are
+    // rejected to prevent SSRF.
+    if (coverArtId.startsWith("http://") || coverArtId.startsWith("https://")) {
+      if (!isAllowedExternalArtUrl(coverArtId)) {
+        sendBinaryError(reply, 400, "Disallowed external art URL");
+        return;
+      }
+      try {
+        response = await fetch(coverArtId);
+      } catch {
+        sendBinaryError(reply, 502, "Failed to fetch external art");
+        return;
+      }
+    } else if (instanceId !== "local") {
       // Peer art routing via /proxy/rest/getCoverArt — Ed25519-signed request to the peer's proxy.
       // The signing path must include the /proxy prefix (as seen by the peer's Fastify router).
       const peer = app.peerRegistry.peers.get(instanceId);
@@ -1036,6 +1148,15 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     }
     const buffer = Buffer.concat(chunks);
     const contentType = response.headers.get("content-type") || "image/jpeg";
+
+    // Navidrome answers a missing cover with HTTP 200 + a Subsonic XML/JSON
+    // error envelope (Content-Type: text/xml or application/json), not an
+    // image. Don't cache or serve those — let the client treat it as 404 so
+    // a future re-sync can supply a real cover (e.g. via fanart.tv).
+    if (buffer.length === 0 || !contentType.startsWith("image/")) {
+      sendBinaryError(reply, 404, "Art not found");
+      return;
+    }
 
     app.artCache.put(cacheKey, buffer, contentType);
 
@@ -1301,99 +1422,30 @@ try {
     return out;
   }
 
-  // SQLite's datetime('now') yields "YYYY-MM-DD HH:MM:SS" UTC; Subsonic clients
-  // expect ISO 8601 with 'T' separator and 'Z' suffix.
-  function toIsoStarred(ts: string): string {
-    return ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`;
-  }
-
   route("/star", async (request, reply) => {
     const q = request.query as Record<string, string | string[] | undefined>;
-    const userId = request.subsonicUser.id;
     const targets = collectStarTargets(q);
-    const stmt = app.db.prepare(
-      "INSERT OR IGNORE INTO user_stars (user_id, kind, target_id) VALUES (?, ?, ?)",
-    );
-    const tx = app.db.transaction((rows: Array<{ kind: StarKind; raw: string }>) => {
-      for (const r of rows) stmt.run(userId, r.kind, r.raw);
-    });
-    tx(targets);
+    starInsertTx(request.subsonicUser.id, targets);
     sendSubsonicOk(reply, q as Record<string, string>, {});
   });
 
   route("/unstar", async (request, reply) => {
     const q = request.query as Record<string, string | string[] | undefined>;
-    const userId = request.subsonicUser.id;
     const targets = collectStarTargets(q);
-    const stmt = app.db.prepare(
-      "DELETE FROM user_stars WHERE user_id = ? AND kind = ? AND target_id = ?",
-    );
-    const tx = app.db.transaction((rows: Array<{ kind: StarKind; raw: string }>) => {
-      for (const r of rows) stmt.run(userId, r.kind, r.raw);
-    });
-    tx(targets);
+    starDeleteTx(request.subsonicUser.id, targets);
     sendSubsonicOk(reply, q as Record<string, string>, {});
   });
 
   function buildStarredEnvelope(userId: string) {
-    const artists = app.db
-      .prepare(
-        `SELECT ua.id, ua.name, ua.image_url,
-          COUNT(urg.id) AS albumCount,
-          us.starred_at
-        FROM user_stars us
-        JOIN unified_artists ua ON ua.id = us.target_id
-        LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
-        WHERE us.user_id = ? AND us.kind = 'artist'
-        GROUP BY ua.id, ua.name, ua.image_url, us.starred_at
-        ORDER BY us.starred_at DESC`,
-      )
-      .all(userId) as Array<ArtistRow & { starred_at: string }>;
-
-    const albums = app.db
-      .prepare(
-        `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-          urg.year, urg.genre, urg.image_url,
-          (SELECT COUNT(*) FROM unified_tracks ut
-           JOIN unified_releases ur ON ur.id = ut.release_id
-           WHERE ur.release_group_id = urg.id) AS songCount,
-          us.starred_at
-        FROM user_stars us
-        JOIN unified_release_groups urg ON urg.id = us.target_id
-        JOIN unified_artists ua ON ua.id = urg.artist_id
-        WHERE us.user_id = ? AND us.kind = 'album'
-        ORDER BY us.starred_at DESC`,
-      )
-      .all(userId) as Array<ReleaseGroupRow & { starred_at: string }>;
-
-    const songs = app.db
-      .prepare(
-        `SELECT
-          ut.id, ut.title, ut.track_number, ut.disc_number,
-          ut.duration_ms, ut.genre, ut.musicbrainz_id,
-          ut.artist_id, ua.name AS artist_name,
-          urg.id AS rg_id, urg.name AS rg_name,
-          urg.year AS rg_year, urg.image_url AS rg_image_url,
-          (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
-          (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
-          (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
-          (SELECT i.name FROM track_sources ts
-           JOIN instances i ON i.id = ts.instance_id
-           WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name,
-          us.starred_at
-        FROM user_stars us
-        JOIN unified_tracks ut ON ut.id = us.target_id
-        JOIN unified_artists ua ON ua.id = ut.artist_id
-        JOIN unified_releases ur ON ur.id = ut.release_id
-        JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-        WHERE us.user_id = ? AND us.kind = 'track'
-        ORDER BY us.starred_at DESC`,
-      )
-      .all(userId) as Array<TrackRow & { starred_at: string }>;
+    const artists = starredArtistsStmt.all(userId) as Array<
+      ArtistRow & { starred_at: string }
+    >;
+    const albums = starredAlbumsStmt.all(userId) as Array<
+      ReleaseGroupRow & { starred_at: string }
+    >;
+    const songs = starredSongsStmt.all(userId) as Array<
+      TrackRow & { starred_at: string }
+    >;
 
     return {
       artist: artists.map((a) => ({
@@ -1401,15 +1453,15 @@ try {
         name: a.name,
         albumCount: a.albumCount,
         coverArt: a.image_url ?? undefined,
-        starred: toIsoStarred(a.starred_at),
+        starred: sqliteToIso(a.starred_at),
       })),
       album: albums.map((a) => ({
         ...buildAlbum(a),
-        starred: toIsoStarred(a.starred_at),
+        starred: sqliteToIso(a.starred_at),
       })),
       song: songs.map((s) => ({
         ...buildSong(s),
-        starred: toIsoStarred(s.starred_at),
+        starred: sqliteToIso(s.starred_at),
       })),
     };
   }

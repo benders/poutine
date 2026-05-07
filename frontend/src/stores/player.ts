@@ -49,10 +49,23 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   },
 
   playTrack: (track) =>
-    set({ queue: [track], currentIndex: 0, isPlaying: true }),
+    set((state) => {
+      const current = state.queue[state.currentIndex];
+      if (current && current.id === track.id) {
+        return { isPlaying: !state.isPlaying };
+      }
+      return { queue: [track], currentIndex: 0, isPlaying: true };
+    }),
 
   playTracks: (tracks, startIndex = 0) =>
-    set({ queue: tracks, currentIndex: startIndex, isPlaying: true }),
+    set((state) => {
+      const requested = tracks[startIndex];
+      const current = state.queue[state.currentIndex];
+      if (requested && current && current.id === requested.id) {
+        return { isPlaying: !state.isPlaying };
+      }
+      return { queue: tracks, currentIndex: startIndex, isPlaying: true };
+    }),
 
   addToQueue: (track) =>
     set((state) => ({ queue: [...state.queue, track] })),

@@ -135,6 +135,16 @@ Album / artist / song objects returned by `getAlbum`, `getArtist`,
 field when the requesting user has starred that target. Stars are local
 to the hub the user logs into and are not federated.
 
+### Song `albumArtist` / `albumArtistId` (#138)
+
+Every Song emitted by `getAlbum`, `getSong`, `search3`, and the starred
+endpoints carries both `artist`/`artistId` (track-level artist) and
+`albumArtist`/`albumArtistId` (release-group artist). On compilations
+and "feat." tracks these differ; on single-artist albums they match.
+SuperSonic, Symfonium, DSub, and play:Sub use `albumArtist` to decide
+whether to render the per-track artist line — emitting it lets those
+clients behave correctly without per-client workarounds.
+
 ### Sharing
 
 | Endpoint      | Status          | Notes |

@@ -90,6 +90,10 @@ export interface SubsonicSong {
   albumId: string;
   artist: string;
   artistId: string;
+  /** Album-level (release-group) artist; may differ from track artist on
+   * compilations or "feat." tracks. (#138) */
+  albumArtist?: string;
+  albumArtistId?: string;
   track?: number;
   discNumber?: number;
   /** Duration in milliseconds (converted from Subsonic's seconds) */
@@ -169,6 +173,8 @@ interface RawSong {
   albumId?: string;
   artist?: string;
   artistId?: string;
+  albumArtist?: string;
+  albumArtistId?: string;
   track?: number;
   discNumber?: number;
   duration?: number;
@@ -217,6 +223,8 @@ function parseSong(raw: RawSong): SubsonicSong {
     albumId: raw.albumId ?? "",
     artist: raw.artist ?? "",
     artistId: raw.artistId ?? "",
+    albumArtist: raw.albumArtist,
+    albumArtistId: raw.albumArtistId,
     track: raw.track,
     discNumber: raw.discNumber,
     durationMs: (raw.duration ?? 0) * 1000,

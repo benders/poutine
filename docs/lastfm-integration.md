@@ -1,8 +1,21 @@
-# Last.fm Artist Image Integration
+# Artist & Album Image Integration
 
 ## Overview
 
-This feature enables automatic fetching of artist images from Last.fm during library sync and on-demand via the `/rest/getArtistInfo2` endpoint.
+Poutine fetches artist images from two sources, picked per-artist by what's available:
+
+| Source         | Used when                                                | Lookup key                |
+|----------------|----------------------------------------------------------|---------------------------|
+| **fanart.tv**  | Artist has a MusicBrainz ID. Always enabled (bundled key). | Artist MBID               |
+| **Last.fm**    | Artist has **no** MBID **and** `LASTFM_API_KEY` is set.  | Artist name               |
+
+Album covers come from Navidrome. fanart.tv is also consulted as a cover fallback when an album has a release-group MBID but Navidrome has no cover (expected to be rare).
+
+See [`fanarttv-integration.md`](./fanarttv-integration.md) for the fanart.tv-specific details.
+
+## Last.fm overview
+
+Last.fm is the fallback path for artists missing an MBID. It is also exposed on-demand via `/rest/getArtistInfo2`.
 
 ## Setup
 
@@ -49,13 +62,13 @@ Last.fm integration disabled — set LASTFM_API_KEY env var to enable
 
 ### During Sync
 
-When you trigger a sync via `/admin/sync`:
+For each artist, in order:
 
-1. For each artist, poutine first tries to get the image from Navidrome's `getArtist()` response
-2. If no image is found and Last.fm is enabled:
-   - Fetches artist info from Last.fm using the artist name
-   - Falls back to MusicBrainz ID if available (more accurate)
-   - Caches the best available image URL in `unified_artists.image_url`
+1. If the artist has an **MBID**, fanart.tv is queried first. Result wins over Navidrome's cover.
+2. Otherwise the Navidrome-provided `coverArt` is used.
+3. If still no image and the artist has **no MBID** and `LASTFM_API_KEY` is set, Last.fm is queried by artist name.
+
+Artists with an MBID never trigger Last.fm.
 
 ### On-Demand via API
 

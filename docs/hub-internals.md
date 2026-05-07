@@ -33,6 +33,11 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `POUTINE_PASSWORD_KEY_PATH`  | no       | `./data/poutine_password_key`| AES-256 password encryption key (32 bytes, base64, mode 0600). Auto-generated if absent. **Back this up — losing it makes every stored password unrecoverable.** |
 | `POUTINE_PEERS_CONFIG`       | no       | `./config/peers.yaml`        | Peer registry file                                              |
 | `PUBLIC_DIR`                 | no       | —                            | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
+| `LASTFM_API_KEY`             | no       | —                            | Last.fm API key. Fallback artist-image source for artists **without** an MBID. See [lastfm-integration.md](lastfm-integration.md) |
+| `FANARTTV_API_KEY`           | no       | bundled Poutine project key  | fanart.tv project API key. Primary source for MBID-keyed artist images and an album-cover fallback. Set to `""` to disable. See [fanarttv-integration.md](fanarttv-integration.md) |
+| `FANARTTV_CLIENT_KEY`        | no       | —                            | Optional fanart.tv personal `client_key` — drops the new-image delay from 7 days to 2 |
+| `FANARTTV_API_URL`           | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors)                  |
+| `ART_CACHE_MAX_BYTES`        | no       | `100 MB` (104857600)         | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
 
 `hub/src/config.ts` is the authoritative list.
 
@@ -79,7 +84,7 @@ Returns `401` if all three methods fail.
 
 - Served via `GET /rest/getCoverArt?id={encodedId}`. Disk cache with LRU eviction.
 - Cache metadata: `art_cache` table. Files: `{dataDir}/cache/art/`.
-- Max size configurable via `GET/PUT /admin/cache`; clear via `DELETE /admin/cache`. Stored in `settings` table, default 10 MB.
+- Max size configurable via `GET/PUT /admin/cache`; clear via `DELETE /admin/cache`. Stored in `settings` table, default 100 MB. `ART_CACHE_MAX_BYTES` env var, when set, overrides the stored value on every boot.
 - **Encoded IDs:** `{instanceId}:{coverArtId}`. Subsonic art IDs are instance-local, so the hub must know which upstream to query. Helpers in `hub/src/library/cover-art.ts`.
 - The Subsonic `coverArt` field IS the encoded ID — `buildAlbum`/`buildSong` set it to `row.image_url`, which already stores the encoded form. Pass directly to `artUrl()` on the frontend; no further encoding.
 

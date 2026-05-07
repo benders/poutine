@@ -45,9 +45,6 @@ CREATE TABLE IF NOT EXISTS instances (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_instances_musicfolder_id
-  ON instances(musicfolder_id) WHERE musicfolder_id IS NOT NULL;
-
 -- ============================================================
 -- Raw Instance Data (per-instance mirror)
 -- ============================================================

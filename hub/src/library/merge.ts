@@ -433,6 +433,45 @@ export function mergeLibraries(db: Database.Database): void {
       .prepare("SELECT * FROM instance_tracks")
       .all() as Array<Record<string, unknown>>;
 
+    // Build a normalized-name → unified_artist_id map from artists created in
+    // Step 1. Used to resolve each track's own `artist_name` (which is not in
+    // instance_artists for compilation guests, "feat." collaborators, etc.).
+    // (#142)
+    const unifiedArtistByNorm = new Map<string, string>();
+    {
+      const rows = db
+        .prepare("SELECT id, name_normalized FROM unified_artists")
+        .all() as Array<{ id: string; name_normalized: string }>;
+      for (const r of rows) unifiedArtistByNorm.set(r.name_normalized, r.id);
+    }
+
+    /**
+     * Resolve a track's artist string to a unified_artist id. Looks up by
+     * normalized name; creates a new unified_artists row (no MBID, no
+     * instance source) if unseen. Empty / whitespace-only strings return
+     * null so the caller can fall back to the album artist.
+     */
+    const resolveTrackArtistId = (rawName: string | null | undefined): string | null => {
+      const name = (rawName ?? "").trim();
+      if (!name) return null;
+      const norm = normalizeName(name);
+      if (!norm) return null;
+      const existing = unifiedArtistByNorm.get(norm);
+      if (existing) return existing;
+      const id = generateArtistId(norm, null);
+      try {
+        insertUnifiedArtist.run(id, name, norm, null, null);
+      } catch {
+        // Race / id collision — refetch row and use it.
+        const row = db
+          .prepare("SELECT id FROM unified_artists WHERE id = ?")
+          .get(id) as { id: string } | undefined;
+        if (!row) throw new Error(`failed to create unified artist for ${name}`);
+      }
+      unifiedArtistByNorm.set(norm, id);
+      return id;
+    };
+
     const insertTrack = db.prepare(`
       INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, musicbrainz_id, track_number, disc_number, duration_ms, genre)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -478,7 +517,12 @@ export function mergeLibraries(db: Database.Database): void {
 
       for (const [mbid, group] of byMbid) {
         const rep = group[0];
-        const artistId = instanceAlbumToArtist.get(rep.album_id as string) ?? "unknown";
+        // Track artist comes from the track's own artist_name first, falling
+        // back to the album's unified artist only when the tag is empty.
+        // (#142)
+        const albumArtistId = instanceAlbumToArtist.get(rep.album_id as string) ?? "unknown";
+        const artistId =
+          resolveTrackArtistId(rep.artist_name as string | null) ?? albumArtistId;
         const titleNorm = normalizeName(rep.title as string);
         const durationMs = rep.duration_ms as number | null;
         const id = generateTrackId(
@@ -612,8 +656,11 @@ export function mergeLibraries(db: Database.Database): void {
         }
 
         if (!matched) {
-          // Create a new unified track
-          const artistId = instanceAlbumToArtist.get(track.album_id as string) ?? "unknown";
+          // Create a new unified track. Track artist comes from the track's
+          // own artist_name; album artist is the fallback only. (#142)
+          const albumArtistId = instanceAlbumToArtist.get(track.album_id as string) ?? "unknown";
+          const artistId =
+            resolveTrackArtistId(track.artist_name as string | null) ?? albumArtistId;
           const durationMs = track.duration_ms as number | null;
           const id = generateTrackId(
             titleNorm,
