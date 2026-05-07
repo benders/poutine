@@ -24,8 +24,8 @@ Peers report both versions through `/api/health`, which `GET /admin/peers` reads
 
 | Field                              | Value            |
 |------------------------------------|------------------|
-| Protocol (`Poutine-Api-Version`)   | `3`              |
-| Application (`User-Agent`)         | `Poutine/0.2.0`  |
+| Protocol (`Poutine-Api-Version`)   | `4`              |
+| Application (`User-Agent`)         | `Poutine/0.4.3`  |
 
 ---
 
@@ -72,9 +72,11 @@ All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header i
 | Method | Path                       | Purpose                                                                       |
 |--------|----------------------------|-------------------------------------------------------------------------------|
 | `GET`  | `/federation/stream/:id`   | Stream audio from the receiver's local Navidrome to a peer (`:id` is the receiver's Navidrome track ID). Forwards Subsonic transcode params (`format`, `maxBitRate`, `timeOffset`, `estimateContentLength`) and `Range`. The receiver records each successful stream in its own activity log as `kind='proxy'` (issue #121). |
-| `GET`  | `/api/health`              | Health check endpoint (no auth required). Returns instance status, versions, and last Navidrome sync timestamp. Used by peers for health monitoring and automatic sync decisions. |
+| `GET`  | `/api/health`              | **Unsigned, unauthenticated** — Health check endpoint for peer monitoring. Returns instance status, versions, and `lastNavidromeSync`. Not part of the Ed25519-signed federation contract. |
 
 Library metadata and cover art travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
+
+**Note:** `/api/health` is the only endpoint that does not require Ed25519 signing. All other endpoints (including `/federation/*` and `/proxy/*`) require authenticated, signed requests.
 
 ---
 

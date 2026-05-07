@@ -49,19 +49,11 @@ export class PeerSyncService {
 
     this.log.info(`PeerSyncService starting — first check in ${Math.round(delay / 1000)}s, then every ${Math.round(this.config.peerSyncIntervalMs / 1000)}s`);
 
-    // Initial delayed start
-    const initialTimer = setTimeout(() => {
+    // Initial delayed start, then interval
+    setTimeout(() => {
       this.timer = setInterval(() => void this.checkAndSync(), this.config.peerSyncIntervalMs);
       void this.checkAndSync();
     }, delay);
-
-    // Handle startup by clearing the initial timer when first check runs
-    const originalCheck = this.checkAndSync.bind(this);
-    this.checkAndSync = async () => {
-      clearTimeout(initialTimer);
-      this.checkAndSync = originalCheck;
-      await originalCheck();
-    };
   }
 
   stop(): void {
@@ -143,20 +135,23 @@ export class PeerSyncService {
    * Check a single peer and sync if needed.
    */
   private async checkAndSyncPeer(peer: Peer): Promise<void> {
-    // Perform health check and update last_seen
+    // Perform health check
     const health = await this.healthCheckPeer(peer);
     if (!health) {
-      this.log.debug(`[${peer.id}] peer unreachable — last_seen updated, skipping sync`);
+      this.log.debug(`[${peer.id}] peer unreachable — skipping sync`);
+      // Set status to offline on health check failure for consistency
+      this.updateLastSeen(peer.id);
+      this.setStatusOffline(peer.id);
       return;
     }
 
-    // Update last_seen in database
+    // Update last_seen in database (only on successful health check)
     this.updateLastSeen(peer.id);
 
-    // Get last Navidrome sync from peer's health response
+    // Get last Navidrome sync from peer's health response (already ISO-8601 with Z)
     const peerLastNavidromeSync = health.lastNavidromeSync ? new Date(health.lastNavidromeSync) : null;
 
-    // Get our last sync with this peer
+    // Get our last sync with this peer (SQLite datetime without Z, so append Z for UTC parsing)
     const ourLastSync = this.getLastSyncWithPeer(peer.id);
 
     // Decide whether to sync
@@ -208,13 +203,26 @@ export class PeerSyncService {
   private updateLastSeen(peerId: string): void {
     this.db
       .prepare(
-        "UPDATE instances SET last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+        "UPDATE instances SET last_seen = datetime('now'), status = 'online', updated_at = datetime('now') WHERE id = ?",
+      )
+      .run(peerId);
+  }
+
+  /**
+   * Set peer status to offline.
+   */
+  private setStatusOffline(peerId: string): void {
+    this.db
+      .prepare(
+        "UPDATE instances SET status = 'offline', updated_at = datetime('now') WHERE id = ?",
       )
       .run(peerId);
   }
 
   /**
    * Get our last sync timestamp with a peer.
+   * SQLite datetime() returns 'YYYY-MM-DD HH:MM:SS' without timezone indicator.
+   * Node's Date constructor interprets this as local time, so we append 'Z' to force UTC parsing.
    */
   private getLastSyncWithPeer(peerId: string): Date | null {
     const row = this.db
@@ -222,7 +230,8 @@ export class PeerSyncService {
       .get(peerId) as { last_synced_at: string | null } | undefined;
 
     if (!row?.last_synced_at) return null;
-    return new Date(row.last_synced_at);
+    // Append 'Z' to force UTC interpretation, matching the peer's ISO-8601 timestamp
+    return new Date(row.last_synced_at + 'Z');
   }
 
   /**
