@@ -295,6 +295,7 @@ export class PeerSyncService {
         this.federatedFetch,
         this.ownerUsername,
         this.lastFmClient,
+        this.fanartTvClient,
         {
           concurrency: this.config.instanceConcurrency,
           log: {
