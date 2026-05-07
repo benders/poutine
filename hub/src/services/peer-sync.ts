@@ -16,6 +16,7 @@ import { syncPeer } from "../library/sync-peer.js";
 import type { FederationFetcher } from "../library/sync-peer.js";
 import { USER_AGENT } from "../version.js";
 import type { LastFmClient } from "./lastfm.js";
+import type { FanartTvClient } from "./fanarttv.js";
 
 interface SyncDecision {
   shouldSync: boolean;
@@ -36,6 +37,7 @@ export class PeerSyncService {
     private readonly ownerUsername: string,
     private readonly log: { info: (msg: string) => void; debug: (msg: string) => void; error: (msg: string) => void; warn: (msg: string) => void },
     private readonly lastFmClient: LastFmClient | null = null,
+    private readonly fanartTvClient: FanartTvClient | null = null,
   ) {}
 
   /**

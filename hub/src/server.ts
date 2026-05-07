@@ -24,6 +24,7 @@ import { PeerSyncService } from "./services/peer-sync.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
 import { LastFmClient } from "./services/lastfm.js";
+import { FanartTvClient } from "./services/fanarttv.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -44,6 +45,7 @@ declare module "fastify" {
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
   lastFmClient: LastFmClient | null;
+  fanartTvClient: FanartTvClient | null;
   peerSyncService: PeerSyncService;
 }
 }
@@ -208,10 +210,22 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     app.log.info(`Marked ${orphanCount} orphaned sync_operations row(s) as failed at startup`);
   }
 
+  // Fanart.tv client — optional, for artist images
+  const fanartTvClient = new FanartTvClient({
+    projectKey: config.fanartTvProjectKey,
+    personalKey: config.fanartTvPersonalKey,
+    baseUrl: config.fanartTvBaseUrl,
+    log: { info: (msg) => app.log.info(msg), error: (msg) => app.log.error(msg) },
+  });
+  if (fanartTvClient) {
+    app.log.info("Fanart.tv integration enabled — artist images will be fetched from fanart.tv");
+  }
+  app.decorate("fanartTvClient", fanartTvClient);
+
   const autoSync = new AutoSyncService(db, config, {
     info: (msg) => app.log.info(msg),
     error: (msg) => app.log.error(msg),
-}, syncOpService, lastFmClient);
+}, syncOpService, lastFmClient, fanartTvClient);
 
   const peerSyncService = new PeerSyncService(
     db,
@@ -226,6 +240,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
       warn: (msg) => app.log.warn(msg),
     },
     lastFmClient,
+    fanartTvClient,
   );
   app.decorate("peerSyncService", peerSyncService);
 
