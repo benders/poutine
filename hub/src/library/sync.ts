@@ -7,6 +7,7 @@ import type { FederationFetcher } from "./sync-peer.js";
 import type { SyncOperationType } from "../services/sync-operations.js";
 import { SyncOperationService } from "../services/sync-operations.js";
 import { mergeLibraries } from "./merge.js";
+import { gossipFromPeer } from "../federation/gossip.js";
 import type { LastFmClient } from "../services/lastfm.js";
 import type { FanartTvClient } from "../services/fanarttv.js";
 
@@ -72,6 +73,18 @@ export async function syncAll(
       peers.push(peerResult);
       if (peerOperationId && syncOpService) {
         syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);
+      }
+      // Gossip: pull this peer's known-peers list and admit any new entries
+      // whose embedded invitation signatures verify (#147). Errors here do
+      // not fail the sync — gossip is best-effort. Older peers without
+      // /federation/peers will return 404 and we move on.
+      try {
+        await gossipFromPeer(db, peerRegistry, peer, federatedFetch, ownerUsername, {
+          info: (msg) => console.log(`[sync] ${msg}`),
+          warn: (msg) => console.warn(`[sync] ${msg}`),
+        });
+      } catch {
+        // swallow
       }
     } catch (err) {
       const syncMessage = `Peer sync failed: ${String(err)}`;
