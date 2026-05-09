@@ -7,6 +7,8 @@ import {
   getPeers,
   triggerSync,
   deletePeerData,
+  generateInvitation,
+  acceptInvitation,
   getCacheStats,
   updateCacheSettings,
   clearArtCache,
@@ -583,6 +585,115 @@ function ActivitySettingsSection() {
 }
 
 
+/**
+ * v5 invitation flow: generate a signed invite, or paste one received
+ * out-of-band to admit the inviter as a peer. Discovered peers (via gossip)
+ * appear in the peers list automatically after the next sync round.
+ */
+function InvitationsSection({ onPeerAdded }: { onPeerAdded: () => void }) {
+  const [ourUrl, setOurUrl] = useState<string>(
+    typeof window !== "undefined" ? window.location.origin : "",
+  );
+  const [inviteeUrl, setInviteeUrl] = useState("");
+  const [generated, setGenerated] = useState<string>("");
+  const [pasted, setPasted] = useState("");
+  const [acceptResult, setAcceptResult] = useState<string>("");
+
+  const generate = useMutation({
+    mutationFn: () =>
+      generateInvitation({
+        ourUrl,
+        inviteeUrl: inviteeUrl || undefined,
+      }),
+    onSuccess: (data) => setGenerated(data.invitation),
+  });
+
+  const accept = useMutation({
+    mutationFn: () => acceptInvitation({ invitation: pasted.trim(), ourUrl }),
+    onSuccess: (data) => {
+      setAcceptResult(`Admitted peer: ${data.peerId} (${data.peerUrl})`);
+      setPasted("");
+      onPeerAdded();
+    },
+    onError: (err) =>
+      setAcceptResult(err instanceof Error ? err.message : String(err)),
+  });
+
+  return (
+    <div className="space-y-4 mb-6 p-4 rounded-lg border border-border bg-surface">
+      <div>
+        <label className="block text-sm text-text-muted mb-1">
+          This hub's public URL
+        </label>
+        <input
+          type="text"
+          value={ourUrl}
+          onChange={(e) => setOurUrl(e.target.value)}
+          placeholder="https://my-hub.example"
+          className="w-full px-3 py-2 bg-background border border-border rounded text-sm text-text-primary"
+        />
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-text-primary">Generate invite</h3>
+          <input
+            type="text"
+            value={inviteeUrl}
+            onChange={(e) => setInviteeUrl(e.target.value)}
+            placeholder="Invitee URL (optional — leave blank for open invite)"
+            className="w-full px-3 py-2 bg-background border border-border rounded text-sm text-text-primary"
+          />
+          <button
+            onClick={() => generate.mutate()}
+            disabled={generate.isPending || !ourUrl}
+            className="px-3 py-2 bg-surface-hover border border-border rounded text-sm text-text-primary disabled:opacity-50"
+          >
+            {generate.isPending ? "Signing..." : "Generate"}
+          </button>
+          {generated && (
+            <textarea
+              readOnly
+              value={generated}
+              onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+              rows={4}
+              className="w-full px-3 py-2 bg-background border border-border rounded text-xs font-mono text-text-primary"
+            />
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-text-primary">Accept invite</h3>
+          <textarea
+            value={pasted}
+            onChange={(e) => setPasted(e.target.value)}
+            placeholder="Paste invitation here"
+            rows={4}
+            className="w-full px-3 py-2 bg-background border border-border rounded text-xs font-mono text-text-primary"
+          />
+          <button
+            onClick={() => accept.mutate()}
+            disabled={accept.isPending || !pasted.trim() || !ourUrl}
+            className="px-3 py-2 bg-surface-hover border border-border rounded text-sm text-text-primary disabled:opacity-50"
+          >
+            {accept.isPending ? "Verifying..." : "Accept"}
+          </button>
+          {acceptResult && (
+            <p
+              className={cn(
+                "text-xs",
+                accept.isError ? "text-error" : "text-success",
+              )}
+            >
+              {acceptResult}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AdminPage() {
   const queryClient = useQueryClient();
 
@@ -679,12 +790,16 @@ export function AdminPage() {
           </p>
         )}
 
+        <InvitationsSection
+          onPeerAdded={() => queryClient.invalidateQueries({ queryKey: ["admin-peers"] })}
+        />
+
         <div className="space-y-2">
           {peersLoading && <p className="text-sm text-text-muted py-4">Loading peers...</p>}
           {!peersLoading && peers?.length === 0 && (
             <p className="text-sm text-text-muted py-4">
-              No peers configured. Add peers to <code className="text-xs">peers.yaml</code> and
-              reload.
+              No peers yet. Generate an invite above and send it to the other operator,
+              or paste one you've received.
             </p>
           )}
           {peers?.map((peer) => <PeerRow key={peer.id} peer={peer} />)}

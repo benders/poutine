@@ -97,7 +97,7 @@ Setting a different `POUTINE_OWNER_PASSWORD` in env never overwrites a non-empty
 
 `/proxy/*` is a transparent authenticated proxy to the local Navidrome. Three auth modes tried in order by `hub/src/proxy/auth.ts`:
 
-1. **Ed25519** — all four `x-poutine-*` headers present → validated against `peers.yaml` registry. `request.proxyAuth.kind = "peer"`. Used by peer hubs during catalog sync and streaming.
+1. **Ed25519** — all four `x-poutine-*` headers present → validated against the in-memory peer registry (DB-backed, sourced from the `instances` table since federation v5; see [federation-api.md](federation-api.md)). `request.proxyAuth.kind = "peer"`. Used by peer hubs during catalog sync and streaming.
 2. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param → verified with `verifyToken`. `request.proxyAuth.kind = "jwt"`. Used internally for any admin-tree proxy calls.
 3. **Subsonic `u+p` or `u+t+s`** — same logic as `/rest/*`. `request.proxyAuth.kind = "subsonic"`.
 

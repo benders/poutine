@@ -62,13 +62,25 @@ export async function syncAll(
   }
 
   const peers: SyncResult[] = [];
-  for (const peer of peerRegistry.peers.values()) {
-    let peerOperationId: string | null = null;
-    if (syncOpService) {
-      peerOperationId = syncOpService.start(operationType, "peer", peer.id);
-    }
+  // Process peers in a queue-style loop so gossip-discovered peers admitted
+  // mid-pass are picked up in the same syncAll call. (We can't rely on the
+  // for-of iterator over `peerRegistry.peers.values()` because reload()
+  // replaces the underlying Map, leaving the active iterator pointing at the
+  // previous snapshot.)
+  const processed = new Set<string>();
+  while (true) {
+    const queue = Array.from(peerRegistry.peers.values()).filter(
+      (p) => !processed.has(p.id),
+    );
+    if (queue.length === 0) break;
+    for (const peer of queue) {
+      processed.add(peer.id);
+      let peerOperationId: string | null = null;
+      if (syncOpService) {
+        peerOperationId = syncOpService.start(operationType, "peer", peer.id);
+      }
 
-    try {
+      try {
       const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername, lastFmClient ?? null, fanartTvClient ?? null);
       peers.push(peerResult);
       if (peerOperationId && syncOpService) {
@@ -101,6 +113,7 @@ export async function syncAll(
       if (peerOperationId && syncOpService) {
         syncOpService.fail(peerOperationId, [`Peer sync failed: ${String(err)}`]);
       }
+    }
     }
   }
 

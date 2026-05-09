@@ -154,6 +154,40 @@ login_and_sync() {
   done
 }
 
+# ── v5 invitation admission helpers ───────────────────────────────────────────
+
+login_only() {
+  # echoes the admin JWT
+  local port="$1"
+  curl -sf -X POST "http://localhost:${port}/admin/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"owner\",\"password\":\"${SUB_PASS}\"}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['accessToken'])"
+}
+
+# admit <inviter-port> <inviter-url-on-fed-net> <invitee-port> <invitee-url-on-fed-net>
+# Inviter issues a v5 signed invitation; invitee posts it to inviter's
+# /federation/handshake via /admin/peers/accept. Both hubs end up with each
+# other in their `instances` table.
+admit() {
+  local in_port="$1" in_url="$2" out_port="$3" out_url="$4"
+  local in_jwt out_jwt invite invite_resp accept_resp
+  in_jwt=$(login_only "$in_port")
+  out_jwt=$(login_only "$out_port")
+
+  invite_resp=$(curl -sf -X POST "http://localhost:${in_port}/admin/peers/invite" \
+    -H "Authorization: Bearer $in_jwt" \
+    -H "Content-Type: application/json" \
+    -d "{\"ourUrl\":\"${in_url}\",\"inviteeUrl\":\"${out_url}\",\"expiresInSec\":600}")
+  invite=$(echo "$invite_resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['invitation'])")
+
+  accept_resp=$(curl -sf -X POST "http://localhost:${out_port}/admin/peers/accept" \
+    -H "Authorization: Bearer $out_jwt" \
+    -H "Content-Type: application/json" \
+    -d "{\"invitation\":\"${invite}\",\"ourUrl\":\"${out_url}\"}")
+  echo "  admitted: $(echo "$accept_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('peerId','?'))")"
+}
+
 # ── Test execution ────────────────────────────────────────────────────────────
 
 echo ""
@@ -161,6 +195,12 @@ echo "==> Checking hub health..."
 wait_http "http://localhost:3011/api/health" "hub-a" 120
 wait_http "http://localhost:3012/api/health" "hub-b" 120
 wait_http "http://localhost:3013/api/health" "hub-c" 120
+
+echo ""
+echo "==> Admitting peers via v5 signed invitations..."
+# Direct admission for two pairs; hub-a discovers hub-c via gossip during sync.
+admit 3011 "http://hub-a:3000" 3012 "http://hub-b:3000"   # a ↔ b
+admit 3012 "http://hub-b:3000" 3013 "http://hub-c:3000"   # b ↔ c
 
 echo ""
 echo "==> Syncing hub-c local library (navidrome-c must scan first)..."
