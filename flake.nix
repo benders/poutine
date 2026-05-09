@@ -17,6 +17,7 @@
             navidrome
             docker
             sqlite
+            trivy
           ];
           
           # Environment variables for Python packages

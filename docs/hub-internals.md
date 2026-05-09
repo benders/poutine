@@ -29,7 +29,7 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `POUTINE_INSTANCE_ID`        | prod     | —                            | Unique instance ID (e.g. `poutine-alice`)                       |
 | `POUTINE_OWNER_USERNAME`     | no       | —                            | Seeds owner on first boot; also used to recover post-#106 migration |
 | `POUTINE_OWNER_PASSWORD`     | no       | —                            | Seeds owner on first boot; also used to recover post-#106 migration |
-| `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Ed25519 federation key. Auto-generated if absent                |
+| `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Ed25519 federation key. Auto-generated if absent. **Never commit this file — it contains the private key for federation signing.** |
 | `POUTINE_PASSWORD_KEY_PATH`  | no       | `./data/poutine_password_key`| AES-256 password encryption key (32 bytes, base64, mode 0600). Auto-generated if absent. **Back this up — losing it makes every stored password unrecoverable.** |
 | `POUTINE_PEERS_CONFIG`       | no       | `./config/peers.yaml`        | Peer registry file                                              |
 | `PUBLIC_DIR`                 | no       | —                            | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
