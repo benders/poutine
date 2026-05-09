@@ -7,6 +7,14 @@ import { StreamTrackingService } from "../services/stream-tracking.js";
 import { mergeLibraries } from "../library/merge.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { APP_VERSION, FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
+import {
+  createInvitation,
+  encodeInvitation,
+  decodeInvitation,
+  verifyInvitationSignature,
+  signInviteeProof,
+} from "../federation/invitations.js";
+import { randomUUID } from "node:crypto";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -408,6 +416,162 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       };
     });
   });
+
+  // POST /admin/peers/invite — issue a signed invitation (federation v5, #147).
+  // Body: { ourUrl: string, inviteeUrl?: string, expiresInSec?: number }
+  // Returns: { invitation: <base64-encoded signed payload> }
+  // Persists the nonce in the `invitations` table; consumed via /federation/handshake.
+  app.post<{ Body: { ourUrl?: string; inviteeUrl?: string; expiresInSec?: number } }>(
+    "/peers/invite",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { ourUrl, inviteeUrl, expiresInSec } = request.body ?? {};
+      if (!ourUrl || typeof ourUrl !== "string") {
+        return reply.code(400).send({
+          error: "ourUrl is required (the public base URL of this hub)",
+        });
+      }
+
+      const signed = createInvitation({
+        privateKey: app.privateKey,
+        inviterId: app.peerRegistry.instanceId,
+        inviterUrl: ourUrl,
+        inviterPublicKey: app.publicKeySpec,
+        inviteeUrl: inviteeUrl ?? null,
+        expiresInSec,
+      });
+
+      app.db
+        .prepare(
+          `INSERT INTO invitations (id, payload, signature, invitee_url, nonce, issued_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          randomUUID(),
+          JSON.stringify(signed.payload),
+          signed.signature,
+          signed.payload.invitee_url,
+          signed.payload.nonce,
+          signed.payload.issued_at,
+          signed.payload.expires_at,
+        );
+
+      return { invitation: encodeInvitation(signed) };
+    },
+  );
+
+  // POST /admin/peers/accept — admin pastes an invitation received out-of-band;
+  // we contact the inviter's /federation/handshake to complete admission.
+  // Body: { invitation: string, ourUrl: string }
+  app.post<{ Body: { invitation?: string; ourUrl?: string } }>(
+    "/peers/accept",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { invitation, ourUrl } = request.body ?? {};
+      if (!invitation || typeof invitation !== "string") {
+        return reply.code(400).send({ error: "invitation is required" });
+      }
+      if (!ourUrl || typeof ourUrl !== "string") {
+        return reply.code(400).send({ error: "ourUrl is required" });
+      }
+
+      let signed;
+      try {
+        signed = decodeInvitation(invitation);
+      } catch (err) {
+        return reply.code(400).send({ error: `Invalid invitation: ${String(err)}` });
+      }
+
+      const verified = verifyInvitationSignature(signed);
+      if (!verified.ok) {
+        return reply.code(400).send({ error: verified.error });
+      }
+
+      // Defend against the inviter's id colliding with ours.
+      if (signed.payload.inviter_id === app.peerRegistry.instanceId) {
+        return reply
+          .code(400)
+          .send({ error: "Invitation issuer is this hub" });
+      }
+
+      const proof = signInviteeProof(app.privateKey, signed.payload.nonce);
+      const handshakeUrl = `${signed.payload.inviter_url}/federation/handshake`;
+      const ourBaseUrl = ourUrl.replace(/\/+$/, "");
+      const requestBody = {
+        invitation,
+        invitee: {
+          id: app.peerRegistry.instanceId,
+          url: ourBaseUrl,
+          public_key: app.publicKeySpec,
+          proof_signature: proof,
+        },
+      };
+
+      let res: Response;
+      try {
+        res = await fetch(handshakeUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "user-agent": USER_AGENT,
+            "poutine-api-version": String(FEDERATION_API_VERSION),
+          },
+          body: JSON.stringify(requestBody),
+        });
+      } catch (err) {
+        return reply.code(502).send({ error: `Inviter unreachable: ${String(err)}` });
+      }
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        return reply.code(res.status).send({
+          error: `Handshake rejected by inviter: ${text || res.statusText}`,
+        });
+      }
+
+      // On success, mirror the inviter's row locally: store the inviter as a
+      // peer, with the same invitation payload as our own provenance for that
+      // peer (so it can be re-gossiped to others).
+      const owner = app.db.prepare("SELECT id FROM users LIMIT 1").get() as
+        | { id: string }
+        | undefined;
+      if (!owner) {
+        return reply.code(500).send({ error: "No user row available for instance ownership" });
+      }
+      const next = (
+        app.db
+          .prepare("SELECT COALESCE(MAX(musicfolder_id), 0) + 1 AS next FROM instances")
+          .get() as { next: number }
+      ).next;
+      const url = signed.payload.inviter_url.replace(/\/+$/, "");
+      try {
+        app.db
+          .prepare(
+            `INSERT INTO instances
+               (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id,
+                public_key, invitation_payload, invitation_signature, inviter_id, inviter_url, inviter_public_key)
+             VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            signed.payload.inviter_id,
+            signed.payload.inviter_id,
+            url,
+            owner.id,
+            next,
+            signed.payload.inviter_public_key,
+            JSON.stringify(signed.payload),
+            signed.signature,
+            signed.payload.inviter_id,
+            url,
+            signed.payload.inviter_public_key,
+          );
+      } catch (err) {
+        return reply.code(409).send({ error: `Could not insert peer: ${String(err)}` });
+      }
+      app.peerRegistry.reload();
+      return { ok: true, peerId: signed.payload.inviter_id, peerUrl: url };
+    },
+  );
 
   // POST /admin/sync — trigger a full sync (local + peers)
   app.post("/sync", { preHandler: requireOwner }, async (request) => {
