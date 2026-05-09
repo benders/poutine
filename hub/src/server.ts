@@ -14,8 +14,6 @@ import { loadOrCreatePrivateKey } from "./federation/signing.js";
 import { loadPeerRegistry } from "./federation/peers.js";
 import { createFederationFetcher } from "./federation/sign-request.js";
 import { seedSyntheticInstances } from "./library/seed-instances.js";
-import { pruneOrphanInstances } from "./library/prune-instances.js";
-import { mergeLibraries } from "./library/merge.js";
 import { setPassword } from "./auth/passwords.js";
 import { ensureJwtSecret } from "./auth/jwt-secret.js";
 import { loadOrCreatePasswordKey } from "./auth/password-crypto.js";
@@ -174,10 +172,15 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     "Poutine instance public key — share with peers",
   );
 
-  const peerRegistry = loadPeerRegistry(
-    config.poutinePeersConfig,
-    config.poutineInstanceId,
-  );
+  // Seed (or recover) owner user before the registry — the synthetic 'local'
+  // instance row needs a user FK target, and seedSyntheticInstances runs next.
+  seedOwner(db, config, passwordKey);
+
+  // Seed only the synthetic 'local' instance row. Peers are admitted via the
+  // signed-invitation flow (federation v5) and live in `instances` directly.
+  seedSyntheticInstances(db, config);
+
+  const peerRegistry = loadPeerRegistry(db, config.poutineInstanceId);
   app.log.info(
     { instanceId: peerRegistry.instanceId, peerCount: peerRegistry.peers.size },
     "Loaded peer registry",
@@ -193,23 +196,6 @@ export async function buildApp(configOverrides?: Partial<Config>) {
       instanceId: peerRegistry.instanceId,
     }),
   );
-
-  // Seed (or recover) owner user
-  seedOwner(db, config, passwordKey);
-
-  // Seed synthetic instance rows (local Navidrome + known peers) — idempotent
-  seedSyntheticInstances(db, config, peerRegistry);
-
-  // Prune instances for peers no longer listed in peers.yaml. Cascades remove
-  // all instance_* data and unified_*_sources; re-merge rebuilds unified_*.
-  const pruned = pruneOrphanInstances(db, peerRegistry);
-  if (pruned.removed.length > 0) {
-    app.log.info(
-      { removedInstances: pruned.removed },
-      "Removed orphan peer instances no longer in peers.yaml",
-    );
-    mergeLibraries(db);
-  }
 
   // Auto-sync: polls Navidrome every 30s and syncs when a new scan has completed
   const syncOpService = new SyncOperationService(db);
@@ -239,7 +225,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     error: (msg) => app.log.error(msg),
 }, syncOpService, lastFmClient, fanartTvClient);
 
-  // SIGHUP handler to reload peer registry without restart
+  // SIGHUP refreshes the peer registry snapshot from the `instances` table
+  // (useful after manual DB edits; admin/handshake/gossip paths reload
+  // automatically).
   const sighupHandler = () => {
     peerRegistry.reload();
     app.log.info(

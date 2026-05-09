@@ -158,7 +158,6 @@ describe("Last.fm integration during sync", () => {
       navidromeUsername: "test",
       navidromePassword: "test",
       poutineInstanceId: "test-instance",
-      poutinePeersConfig: "{}",
       instanceConcurrency: 3,
     } as any, {
       instanceId: "test-instance",
@@ -172,7 +171,6 @@ describe("Last.fm integration during sync", () => {
       navidromeUsername: "test",
       navidromePassword: "test",
       poutineInstanceId: "test-instance",
-      poutinePeersConfig: "{}",
       instanceConcurrency: 1,
     } as unknown as Config;
 
@@ -256,7 +254,6 @@ describe("Last.fm integration during sync", () => {
       navidromeUsername: "test",
       navidromePassword: "test",
       poutineInstanceId: "test-instance",
-      poutinePeersConfig: "{}",
       instanceConcurrency: 3,
     } as any, {
       instanceId: "test-instance",
@@ -270,7 +267,6 @@ describe("Last.fm integration during sync", () => {
       navidromeUsername: "test",
       navidromePassword: "test",
       poutineInstanceId: "test-instance",
-      poutinePeersConfig: "{}",
       instanceConcurrency: 1,
     } as unknown as Config;
 
@@ -347,7 +343,6 @@ describe("Last.fm integration during sync", () => {
       navidromeUsername: "test",
       navidromePassword: "test",
       poutineInstanceId: "test-instance",
-      poutinePeersConfig: "{}",
       instanceConcurrency: 3,
     } as any, {
       instanceId: "test-instance",
@@ -361,7 +356,6 @@ describe("Last.fm integration during sync", () => {
       navidromeUsername: "test",
       navidromePassword: "test",
       poutineInstanceId: "test-instance",
-      poutinePeersConfig: "{}",
       instanceConcurrency: 1,
     } as unknown as Config;
 
@@ -441,7 +435,6 @@ describe("Last.fm integration during sync", () => {
       navidromeUsername: "test",
       navidromePassword: "test",
       poutineInstanceId: "test-instance",
-      poutinePeersConfig: "{}",
       instanceConcurrency: 3,
     } as any, {
       instanceId: "test-instance",
@@ -455,7 +448,6 @@ describe("Last.fm integration during sync", () => {
       navidromeUsername: "test",
       navidromePassword: "test",
       poutineInstanceId: "test-instance",
-      poutinePeersConfig: "{}",
       instanceConcurrency: 1,
     } as unknown as Config;
 

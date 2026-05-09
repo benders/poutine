@@ -19,6 +19,7 @@ import { buildApp } from "../src/server.js";
 import { loadOrCreatePrivateKey } from "../src/federation/signing.js";
 import { syncPeer } from "../src/library/sync-peer.js";
 import { mergeLibraries } from "../src/library/merge.js";
+import { seedPeer } from "./helpers/seed-peer.js";
 import type { Config } from "../src/config.js";
 
 // ── Fake Navidrome helpers ────────────────────────────────────────────────────
@@ -165,10 +166,6 @@ function tmpPath(suffix = "") {
   );
 }
 
-function writeYaml(filePath: string, content: string) {
-  fs.writeFileSync(filePath, content, "utf8");
-}
-
 // ── Test suite ────────────────────────────────────────────────────────────────
 
 describe("sync-peer (via /proxy/*)", () => {
@@ -179,8 +176,8 @@ describe("sync-peer (via /proxy/*)", () => {
   let setArtists: (artists: FakeArtist[]) => void;
   let keyPathA: string;
   let keyPathB: string;
-  let peersYamlA: string;
-  let peersYamlB: string;
+  let pubKeyA: string;
+  let pubKeyB: string;
 
   const defaultArtist: FakeArtist = {
     id: "art-1",
@@ -199,11 +196,11 @@ describe("sync-peer (via /proxy/*)", () => {
   beforeEach(async () => {
     keyPathA = tmpPath("key-a.pem");
     keyPathB = tmpPath("key-b.pem");
-    peersYamlA = tmpPath("peers-a.yaml");
-    peersYamlB = tmpPath("peers-b.yaml");
 
     const { publicKeyBase64: pubA } = loadOrCreatePrivateKey(keyPathA);
     const { publicKeyBase64: pubB } = loadOrCreatePrivateKey(keyPathB);
+    pubKeyA = pubA;
+    pubKeyB = pubB;
 
     // Build configurable fake Navidrome
     const fake = buildConfigurableFakeNavidrome();
@@ -214,23 +211,11 @@ describe("sync-peer (via /proxy/*)", () => {
     await new Promise<void>((resolve) => fakeNavidrome.listen(0, "127.0.0.1", () => resolve()));
     const fakePort = (fakeNavidrome.address() as AddressInfo).port;
 
-    // B trusts A
-    writeYaml(
-      peersYamlB,
-      [
-        `peers:`,
-        `  - id: "poutine-a"`,
-        `    url: "http://localhost"`,
-        `    public_key: "ed25519:${pubA}"`,
-      ].join("\n"),
-    );
-
     // Build and start B (B's Navidrome is the fake server)
     const configB: Partial<Config> = {
       databasePath: ":memory:",
       jwtSecret: "test-b",
       poutinePrivateKeyPath: keyPathB,
-      poutinePeersConfig: peersYamlB,
       poutineInstanceId: "poutine-b",
       navidromeUrl: `http://127.0.0.1:${fakePort}`,
       navidromeUsername: "admin",
@@ -241,33 +226,35 @@ describe("sync-peer (via /proxy/*)", () => {
     await appB.listen({ port: 0, host: "127.0.0.1" });
     portB = (appB.server.address() as AddressInfo).port;
 
-    // A knows B's URL
-    writeYaml(
-      peersYamlA,
-      [
-        `peers:`,
-        `  - id: "poutine-b"`,
-        `    url: "http://127.0.0.1:${portB}"`,
-        `    public_key: "ed25519:${pubB}"`,
-      ].join("\n"),
-    );
+    // B trusts A — seed A as a peer in B's instances table
+    seedPeer(appB, {
+      id: "poutine-a",
+      url: "http://localhost",
+      publicKeySpec: `ed25519:${pubKeyA}`,
+    });
 
     const configA: Partial<Config> = {
       databasePath: ":memory:",
       jwtSecret: "test-a",
       poutinePrivateKeyPath: keyPathA,
-      poutinePeersConfig: peersYamlA,
       poutineInstanceId: "poutine-a",
     };
     appA = await buildApp(configA);
     await appA.ready();
+
+    // A knows B's URL — seed B as a peer in A's instances table
+    seedPeer(appA, {
+      id: "poutine-b",
+      url: `http://127.0.0.1:${portB}`,
+      publicKeySpec: `ed25519:${pubKeyB}`,
+    });
   });
 
   afterEach(async () => {
     await appA.close();
     await appB.close();
     await new Promise<void>((resolve) => fakeNavidrome.close(() => resolve()));
-    for (const f of [keyPathA, keyPathB, peersYamlA, peersYamlB]) {
+    for (const f of [keyPathA, keyPathB]) {
       if (fs.existsSync(f)) fs.unlinkSync(f);
     }
   });

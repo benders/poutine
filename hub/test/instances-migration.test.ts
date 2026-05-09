@@ -61,18 +61,17 @@ describe("instances.musicfolder_id migration (#123)", () => {
     const names = new Set(cols.map((c) => c.name));
     expect(names.has("musicfolder_id")).toBe(true);
 
-    // Verify values were backfilled (ordered by created_at)
+    // Verify musicfolder_id was backfilled. Legacy peer rows ('peer-1' /
+     // 'peer-2') had no public_key (the column didn't exist pre-v5) and are
+    // removed by the federation v5 migration (#147) — operators re-invite
+    // peers under the new flow. Only the synthetic 'local' row survives.
     const rows = db
       .prepare("SELECT name, musicfolder_id FROM instances ORDER BY musicfolder_id")
       .all() as Array<{ name: string; musicfolder_id: number }>;
 
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe("Local");
     expect(rows[0].musicfolder_id).toBe(1);
-    expect(rows[1].name).toBe("Peer One");
-    expect(rows[1].musicfolder_id).toBe(2);
-    expect(rows[2].name).toBe("Peer Two");
-    expect(rows[2].musicfolder_id).toBe(3);
 
     // Verify unique index was created
     const indexes = db

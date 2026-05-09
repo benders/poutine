@@ -7,7 +7,6 @@ import type { FederationFetcher } from "./sync-peer.js";
 import type { SyncOperationType } from "../services/sync-operations.js";
 import { SyncOperationService } from "../services/sync-operations.js";
 import { mergeLibraries } from "./merge.js";
-import { seedSyntheticInstances } from "./seed-instances.js";
 import type { LastFmClient } from "../services/lastfm.js";
 import type { FanartTvClient } from "../services/fanarttv.js";
 
@@ -51,9 +50,6 @@ export async function syncAll(
 ): Promise<{ local: SyncResult; peers: SyncResult[] }> {
   const operationId = syncOpService?.start(operationType, "local") || null;
   let localResult: SyncResult;
-
-  // Ensure synthetic instance rows exist (idempotent)
-  seedSyntheticInstances(db, config, peerRegistry);
 
   try {
     localResult = await syncLocal(db, config, lastFmClient ?? null, fanartTvClient ?? null);

@@ -15,7 +15,6 @@ export interface Config {
   poutineInstanceId: string;
   poutinePrivateKeyPath: string;
   poutinePasswordKeyPath: string;
-  poutinePeersConfig: string;
   poutineOwnerUsername: string;
   poutineOwnerPassword: string;
   // Optional: path to a directory of static frontend files to serve.
@@ -80,8 +79,6 @@ export function loadConfig(): Config {
       process.env.POUTINE_PRIVATE_KEY_PATH || "./data/poutine_ed25519.pem",
     poutinePasswordKeyPath:
       process.env.POUTINE_PASSWORD_KEY_PATH || "./data/poutine_password_key",
-    poutinePeersConfig:
-      process.env.POUTINE_PEERS_CONFIG || "./config/peers.yaml",
     poutineOwnerUsername: requireInProd(
       "POUTINE_OWNER_USERNAME",
       process.env.POUTINE_OWNER_USERNAME
