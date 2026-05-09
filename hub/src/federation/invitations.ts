@@ -124,12 +124,16 @@ export interface VerifyResult {
 
 /**
  * Verify an invitation's signature against its embedded inviter_public_key.
- * Optionally checks expiry. Does not check single-use / replay — that's the
- * caller's responsibility (look up nonce in `invitations` table).
+ * Optionally checks expiry (default: yes). For provenance verification on
+ * gossiped peer entries, pass {checkExpiry: false} — expiry only matters at
+ * redemption time, not for already-admitted peers.
+ *
+ * Does not check single-use / replay — that's the caller's responsibility
+ * (look up nonce in `invitations` table).
  */
 export function verifyInvitationSignature(
   signed: SignedInvitation,
-  opts?: { now?: Date },
+  opts?: { now?: Date; checkExpiry?: boolean },
 ): VerifyResult {
   let pubKey: KeyObject;
   try {
@@ -144,9 +148,12 @@ export function verifyInvitationSignature(
   );
   if (!ok) return { ok: false, error: "Signature does not verify" };
 
-  const now = opts?.now ?? new Date();
-  if (new Date(signed.payload.expires_at).getTime() <= now.getTime()) {
-    return { ok: false, error: "Invitation expired" };
+  const checkExpiry = opts?.checkExpiry ?? true;
+  if (checkExpiry) {
+    const now = opts?.now ?? new Date();
+    if (new Date(signed.payload.expires_at).getTime() <= now.getTime()) {
+      return { ok: false, error: "Invitation expired" };
+    }
   }
   return { ok: true };
 }

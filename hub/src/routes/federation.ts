@@ -222,6 +222,48 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true, peerId: invitee.id });
   });
 
+  // GET /federation/peers — gossip endpoint (federation v5, #147).
+  // Authenticated via existing peer-auth (Ed25519 request signing). Returns
+  // every peer we know about — minus 'local', the calling peer, and any peer
+  // without invitation provenance — so receivers can verify each entry.
+  app.get("/peers", { preHandler: requirePeerAuth }, async (request) => {
+    const callerId = request.peer.id;
+    const rows = app.db
+      .prepare(
+        `SELECT id, url, public_key, invitation_payload, invitation_signature,
+                inviter_id, inviter_url, inviter_public_key
+         FROM instances
+         WHERE id != 'local'
+           AND id != ?
+           AND public_key IS NOT NULL
+           AND invitation_payload IS NOT NULL
+           AND invitation_signature IS NOT NULL`,
+      )
+      .all(callerId) as Array<{
+      id: string;
+      url: string;
+      public_key: string;
+      invitation_payload: string;
+      invitation_signature: string;
+      inviter_id: string;
+      inviter_url: string;
+      inviter_public_key: string;
+    }>;
+
+    const peers = rows.map((r) => ({
+      id: r.id,
+      url: r.url,
+      public_key: r.public_key,
+      invitation_payload: JSON.parse(r.invitation_payload),
+      invitation_signature: r.invitation_signature,
+      inviter_id: r.inviter_id,
+      inviter_url: r.inviter_url,
+      inviter_public_key: r.inviter_public_key,
+    }));
+
+    return { peers };
+  });
+
   // Stream audio from local Navidrome to peer
   app.get("/stream/:id", { preHandler: requirePeerAuth }, async (request, reply) => {
     const config = app.config;
