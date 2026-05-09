@@ -46,7 +46,6 @@ function seedAndConfig(db: Database.Database) {
       navidromeUsername: "test",
       navidromePassword: "test",
       poutineInstanceId: "test-instance",
-      poutinePeersConfig: "{}",
       instanceConcurrency: 3,
     } as unknown as Config,
     {
@@ -62,7 +61,6 @@ function seedAndConfig(db: Database.Database) {
     navidromeUsername: "test",
     navidromePassword: "test",
     poutineInstanceId: "test-instance",
-    poutinePeersConfig: "{}",
     instanceConcurrency: 1,
   } as unknown as Config;
 }

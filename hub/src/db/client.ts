@@ -81,6 +81,42 @@ function ensureColumns(db: Database.Database): void {
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_instances_musicfolder_id ON instances(musicfolder_id) WHERE musicfolder_id IS NOT NULL",
   );
 
+  // Issue #147: peer federation fields. Hard-cut from peers.yaml — peers are
+  // now DB-authoritative and admitted via signed invitations.
+  for (const col of [
+    "public_key",
+    "invitation_payload",
+    "invitation_signature",
+    "inviter_id",
+    "inviter_url",
+    "inviter_public_key",
+  ] as const) {
+    if (!instanceColNames.has(col)) {
+      logMigration(`Adding ${col} column to instances table`);
+      db.exec(`ALTER TABLE instances ADD COLUMN ${col} TEXT`);
+    }
+  }
+
+  // Drop legacy peer rows that pre-date federation v5. They have no
+  // public_key (the column didn't exist) so they can't be authenticated; the
+  // only honest move under the hard-cut decision is to remove them. Operators
+  // re-invite peers under the new flow. CASCADE clears instance_* mirror rows.
+  const legacyPeers = db
+    .prepare(
+      "SELECT id FROM instances WHERE id != 'local' AND public_key IS NULL",
+    )
+    .all() as Array<{ id: string }>;
+  if (legacyPeers.length > 0) {
+    logMigration(
+      `Removing ${legacyPeers.length} legacy peer instance row(s) without federation v5 invitation provenance: ${legacyPeers.map((r) => r.id).join(", ")}. Re-invite peers via /admin/peers/invite.`,
+    );
+    const del = db.prepare("DELETE FROM instances WHERE id = ?");
+    const tx = db.transaction((ids: string[]) => {
+      for (const id of ids) del.run(id);
+    });
+    tx(legacyPeers.map((r) => r.id));
+  }
+
   const trackSourceCols = db
     .prepare("PRAGMA table_info(track_sources)")
     .all() as Array<{ name: string }>;

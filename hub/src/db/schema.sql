@@ -41,9 +41,42 @@ CREATE TABLE IF NOT EXISTS instances (
   -- Uniqueness enforced via partial index below to match the on-upgrade
   -- migration shape (SQLite forbids ADD COLUMN ... UNIQUE).
   musicfolder_id INTEGER,
+  -- Federation peer fields (issue #147, federation API v5).
+  -- public_key is the peer's Ed25519 federation key in "ed25519:<base64>" form;
+  -- NULL on the synthetic 'local' row. invitation_* columns carry the signed
+  -- invitation payload that admitted the peer to the cluster — gossiped
+  -- alongside the peer entry so receivers can verify provenance.
+  public_key TEXT,
+  invitation_payload TEXT,
+  invitation_signature TEXT,
+  inviter_id TEXT,
+  inviter_url TEXT,
+  inviter_public_key TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ============================================================
+-- Federation: Invitations (issuer-local)
+-- ============================================================
+-- Issued via POST /admin/peers/invite, consumed via POST /federation/handshake.
+-- Single-use: consumed_at is set when an invitee completes the handshake.
+-- Never gossiped — invitations stay local to the issuer; the *signed payload*
+-- travels with the accepted peer record (instances.invitation_payload) instead.
+
+CREATE TABLE IF NOT EXISTS invitations (
+  id TEXT PRIMARY KEY,                -- UUID
+  payload TEXT NOT NULL,              -- canonical JSON of the signed payload
+  signature TEXT NOT NULL,            -- base64 Ed25519 signature
+  invitee_url TEXT,                   -- nullable = open invite
+  nonce TEXT NOT NULL UNIQUE,
+  issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  consumed_by_id TEXT                 -- invitee instance id (set on acceptance)
+);
+
+CREATE INDEX IF NOT EXISTS idx_invitations_nonce ON invitations(nonce);
 
 -- ============================================================
 -- Raw Instance Data (per-instance mirror)

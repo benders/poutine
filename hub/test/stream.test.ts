@@ -22,6 +22,7 @@ import { setPassword } from "../src/auth/passwords.js";
 import { loadOrCreatePrivateKey } from "../src/federation/signing.js";
 import { syncPeer } from "../src/library/sync-peer.js";
 import { mergeLibraries } from "../src/library/merge.js";
+import { seedPeer } from "./helpers/seed-peer.js";
 import type { Config } from "../src/config.js";
 
 // ── Fake Navidrome ────────────────────────────────────────────────────────────
@@ -194,10 +195,6 @@ function tmpPath(suffix = "") {
     os.tmpdir(),
     `poutine-stream-${Date.now()}-${Math.random().toString(36).slice(2)}-${suffix}`,
   );
-}
-
-function writeYaml(filePath: string, content: string) {
-  fs.writeFileSync(filePath, content, "utf8");
 }
 
 function seedUser(
@@ -384,8 +381,6 @@ describe("stream — peer source", () => {
   let navidromePort: number;
   let keyPathA: string;
   let keyPathB: string;
-  let peersYamlA: string;
-  let peersYamlB: string;
 
   beforeEach(async () => {
     // Start fake Navidrome B — responds to Subsonic JSON catalog API + audio stream
@@ -398,29 +393,15 @@ describe("stream — peer source", () => {
 
     keyPathA = tmpPath("key-a.pem");
     keyPathB = tmpPath("key-b.pem");
-    peersYamlA = tmpPath("peers-a.yaml");
-    peersYamlB = tmpPath("peers-b.yaml");
 
     const { publicKeyBase64: pubA } = loadOrCreatePrivateKey(keyPathA);
     const { publicKeyBase64: pubB } = loadOrCreatePrivateKey(keyPathB);
-
-    // B trusts A
-    writeYaml(
-      peersYamlB,
-      [
-        `peers:`,
-        `  - id: "poutine-a"`,
-        `    url: "http://localhost"`,
-        `    public_key: "ed25519:${pubA}"`,
-      ].join("\n"),
-    );
 
     // Build B with fake Navidrome, then start listening
     const configB: Partial<Config> = {
       databasePath: ":memory:",
       jwtSecret: "test-b",
       poutinePrivateKeyPath: keyPathB,
-      poutinePeersConfig: peersYamlB,
       poutineInstanceId: "poutine-b",
       navidromeUrl: `http://127.0.0.1:${navidromePort}`,
       navidromeUsername: "admin",
@@ -434,27 +415,29 @@ describe("stream — peer source", () => {
     await appB.listen({ port: 0, host: "127.0.0.1" });
     portB = (appB.server.address() as AddressInfo).port;
 
-    // A knows B's URL (now that B is listening)
-    writeYaml(
-      peersYamlA,
-      [
-        `peers:`,
-        `  - id: "poutine-b"`,
-        `    url: "http://127.0.0.1:${portB}"`,
-        `    public_key: "ed25519:${pubB}"`,
-      ].join("\n"),
-    );
+    // B trusts A
+    seedPeer(appB, {
+      id: "poutine-a",
+      url: "http://localhost",
+      publicKeySpec: `ed25519:${pubA}`,
+    });
 
     // Build A (no listening needed — we use inject)
     const configA: Partial<Config> = {
       databasePath: ":memory:",
       jwtSecret: "test-a",
       poutinePrivateKeyPath: keyPathA,
-      poutinePeersConfig: peersYamlA,
       poutineInstanceId: "poutine-a",
     };
     appA = await buildApp(configA);
     await appA.ready();
+
+    // A knows B's URL (now that B is listening)
+    seedPeer(appA, {
+      id: "poutine-b",
+      url: `http://127.0.0.1:${portB}`,
+      publicKeySpec: `ed25519:${pubB}`,
+    });
 
     // A syncs B via /proxy/* — reads catalog from B's fake Navidrome, then merges
     const peerB = appA.peerRegistry.peers.get("poutine-b");
@@ -469,7 +452,7 @@ describe("stream — peer source", () => {
     await appA.close();
     await appB.close();
     await new Promise<void>((resolve) => navidrome.close(() => resolve()));
-    for (const f of [keyPathA, keyPathB, peersYamlA, peersYamlB]) {
+    for (const f of [keyPathA, keyPathB]) {
       if (fs.existsSync(f)) fs.unlinkSync(f);
     }
   });
@@ -567,8 +550,6 @@ async function buildSharedTrackSetup(opts: {
   navB: http.Server;
   keyPathA: string;
   keyPathB: string;
-  peersYamlA: string;
-  peersYamlB: string;
 }> {
   // Fake Navidrome A — serves local audio as audio/mpeg + Subsonic JSON for catalog
   const navA = http.createServer(
@@ -596,24 +577,14 @@ async function buildSharedTrackSetup(opts: {
 
   const keyPathA = tmpPath("key-a.pem");
   const keyPathB = tmpPath("key-b.pem");
-  const peersYamlA = tmpPath("peers-a.yaml");
-  const peersYamlB = tmpPath("peers-b.yaml");
 
   const { publicKeyBase64: pubA } = loadOrCreatePrivateKey(keyPathA);
   const { publicKeyBase64: pubB } = loadOrCreatePrivateKey(keyPathB);
-
-  writeYaml(peersYamlB, [
-    `peers:`,
-    `  - id: "poutine-a"`,
-    `    url: "http://localhost"`,
-    `    public_key: "ed25519:${pubA}"`,
-  ].join("\n"));
 
   const configB: Partial<Config> = {
     databasePath: ":memory:",
     jwtSecret: "test-b",
     poutinePrivateKeyPath: keyPathB,
-    poutinePeersConfig: peersYamlB,
     poutineInstanceId: "poutine-b",
     navidromeUrl: `http://127.0.0.1:${navBPort}`,
     navidromeUsername: "admin",
@@ -623,19 +594,16 @@ async function buildSharedTrackSetup(opts: {
   await appB.ready();
   await appB.listen({ port: 0, host: "127.0.0.1" });
   const portB = (appB.server.address() as AddressInfo).port;
-
-  writeYaml(peersYamlA, [
-    `peers:`,
-    `  - id: "poutine-b"`,
-    `    url: "http://127.0.0.1:${portB}"`,
-    `    public_key: "ed25519:${pubB}"`,
-  ].join("\n"));
+  seedPeer(appB, {
+    id: "poutine-a",
+    url: "http://localhost",
+    publicKeySpec: `ed25519:${pubA}`,
+  });
 
   const configA: Partial<Config> = {
     databasePath: ":memory:",
     jwtSecret: "test-a",
     poutinePrivateKeyPath: keyPathA,
-    poutinePeersConfig: peersYamlA,
     poutineInstanceId: "poutine-a",
     navidromeUrl: `http://127.0.0.1:${navAPort}`,
     navidromeUsername: "admin",
@@ -643,6 +611,11 @@ async function buildSharedTrackSetup(opts: {
   };
   const appA = await buildApp(configA);
   await appA.ready();
+  seedPeer(appA, {
+    id: "poutine-b",
+    url: `http://127.0.0.1:${portB}`,
+    publicKeySpec: `ed25519:${pubB}`,
+  });
 
   // Seed A's local library: MP3 @ 320 kbps via direct DB insert (local sync reads Navidrome directly).
   appA.db.prepare(
@@ -669,7 +642,7 @@ async function buildSharedTrackSetup(opts: {
 
   seedUser(appA);
 
-  return { appA, appB, navA, navB, keyPathA, keyPathB, peersYamlA, peersYamlB };
+  return { appA, appB, navA, navB, keyPathA, keyPathB };
 }
 
 async function teardownSharedTrackSetup(setup: {
@@ -679,14 +652,12 @@ async function teardownSharedTrackSetup(setup: {
   navB: http.Server;
   keyPathA: string;
   keyPathB: string;
-  peersYamlA: string;
-  peersYamlB: string;
 }) {
   await setup.appA.close();
   await setup.appB.close();
   await new Promise<void>((resolve) => setup.navA.close(() => resolve()));
   await new Promise<void>((resolve) => setup.navB.close(() => resolve()));
-  for (const f of [setup.keyPathA, setup.keyPathB, setup.peersYamlA, setup.peersYamlB]) {
+  for (const f of [setup.keyPathA, setup.keyPathB]) {
     if (fs.existsSync(f)) fs.unlinkSync(f);
   }
 }
