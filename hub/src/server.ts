@@ -220,10 +220,23 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     app.log.info(`Marked ${orphanCount} orphaned sync_operations row(s) as failed at startup`);
   }
 
-  const autoSync = new AutoSyncService(db, config, {
-    info: (msg) => app.log.info(msg),
-    error: (msg) => app.log.error(msg),
-}, syncOpService, lastFmClient, fanartTvClient);
+  const autoSync = new AutoSyncService(
+    db,
+    config,
+    {
+      info: (msg) => app.log.info(msg),
+      error: (msg) => app.log.error(msg),
+    },
+    syncOpService,
+    lastFmClient,
+    fanartTvClient,
+    {
+      peerRegistry,
+      federatedFetch: app.federatedFetch,
+      // Owner username may be empty in tests; fall back to a stable label.
+      asUser: config.poutineOwnerUsername || "auto-sync",
+    },
+  );
 
   // SIGHUP refreshes the peer registry snapshot from the `instances` table
   // (useful after manual DB edits; admin/handshake/gossip paths reload
