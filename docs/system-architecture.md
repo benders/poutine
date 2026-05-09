@@ -52,19 +52,21 @@ Per-hub private music server. Bundled in Docker Compose, reachable only over the
 
 ## Federation model
 
-Hubs are peers listed in each other's `peers.yaml`, authenticated by Ed25519 public keys. Every `/federation/*` (and `/proxy/*`) request is signed by the sender. Peer-to-peer means:
+Hubs are peers stored in each other's `instances` table (DB-authoritative since v0.5.0 / federation v5), authenticated by Ed25519 public keys. Every `/federation/*` (and `/proxy/*`) request is signed by the sender. Peer-to-peer means:
 
 - No central registry or directory.
 - Small, trusted networks (4–12 participants).
 - Each hub has a stable instance ID and a long-lived Ed25519 keypair.
-- Adding a peer is a two-sided manual config change (both hubs edit their `peers.yaml`, exchanging public keys and reachable `proxy_url`s).
+- Adding a peer takes one signed invitation: the inviter issues, the invitee accepts, and gossip during the next sync round propagates the new member to the rest of the cluster.
 
-The `/federation/*` surface carries only peer identity/auth in v3. Content (audio streams, cover art) and catalog metadata travel through `/proxy/*`:
+The `/federation/*` surface carries peer identity, the invitation handshake, and gossip in v5. Content (audio streams, cover art) and catalog metadata travel through `/proxy/*`:
 
-| Route              | Purpose                                                                                   |
-|--------------------|-------------------------------------------------------------------------------------------|
-| `/federation/*`    | Peer identity and signing only — no content endpoints in v3 (see [federation-api.md](federation-api.md)) |
-| `/proxy/rest/*`    | Authenticated transparent proxy to local Navidrome — used by both local clients and peers for catalog sync and streaming |
+| Route                       | Purpose                                                                                                                              |
+|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------|
+| `/federation/handshake`     | Signed-invitation peer admission (v5)                                                                                                |
+| `/federation/peers`         | Gossip — receivers verify the embedded signed invitation against the named inviter's pubkey                                          |
+| `/federation/stream/:id`    | Cross-peer audio stream                                                                                                              |
+| `/proxy/rest/*`             | Authenticated transparent proxy to local Navidrome — used by both local clients and peers for catalog sync, art, and streaming      |
 
 Contract details (headers, signing payload, error codes): [federation-api.md](federation-api.md). `/proxy/*` auth modes: [hub-internals.md#proxy](hub-internals.md#proxy).
 

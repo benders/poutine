@@ -24,8 +24,12 @@ Peers report both versions through `/api/health`, which `GET /admin/peers` reads
 
 | Field                              | Value            |
 |------------------------------------|------------------|
-| Protocol (`Poutine-Api-Version`)   | `3`              |
-| Application (`User-Agent`)         | `Poutine/0.2.0`  |
+| Protocol (`Poutine-Api-Version`)   | `5`              |
+| Application (`User-Agent`)         | `Poutine/0.5.0`  |
+
+The minimum accepted protocol version is **5**. Peers below the floor are
+rejected with `403`. v0.4.x peers (api version 3) cannot join a v5 cluster
+— they lack the signed-invitation provenance v5 requires.
 
 ---
 
@@ -69,17 +73,73 @@ All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header i
 
 ## Endpoints
 
-| Method | Path                       | Purpose                                                                       |
-|--------|----------------------------|-------------------------------------------------------------------------------|
-| `GET`  | `/federation/stream/:id`   | Stream audio from the receiver's local Navidrome to a peer (`:id` is the receiver's Navidrome track ID). Forwards Subsonic transcode params (`format`, `maxBitRate`, `timeOffset`, `estimateContentLength`) and `Range`. The receiver records each successful stream in its own activity log as `kind='proxy'` (issue #121). |
+| Method | Path                       | Auth          | Purpose                                                                                                                                                                                                                                                                                                                          |
+|--------|----------------------------|---------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `POST` | `/federation/handshake`    | invitation    | Invitee→inviter peer admission. Body: `{ invitation: <base64>, invitee: { id, url, public_key, proof_signature } }`. Inserts the invitee into the inviter's `instances` and marks the invitation consumed. See **Invitations & handshake** below.                                                                                |
+| `GET`  | `/federation/peers`        | peer-signed   | Gossip endpoint. Returns the receiver's known peers (minus `local`, the caller, and any peer without invitation provenance). Each entry carries the original signed invitation that admitted that peer to the cluster, so receivers can verify provenance against the named inviter's public key without prior trust (issue #147). |
+| `GET`  | `/federation/stream/:id`   | peer-signed   | Stream audio from the receiver's local Navidrome to a peer (`:id` is the receiver's Navidrome track ID). Forwards Subsonic transcode params (`format`, `maxBitRate`, `timeOffset`, `estimateContentLength`) and `Range`. The receiver records each successful stream in its own activity log as `kind='proxy'` (issue #121).      |
 
 Library metadata and cover art travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
 
 ---
 
+## Invitations & handshake (v5)
+
+Peers join a cluster via signed invitations rather than shared config files. The protocol has three steps:
+
+1. **Issue.** An admin on hub *A* posts to `POST /admin/peers/invite`:
+
+   ```
+   { "ourUrl": "https://a.example", "inviteeUrl": "https://b.example", "expiresInSec": 600 }
+   ```
+
+   The hub signs an invitation payload with its Ed25519 federation key, persists the nonce in the `invitations` table, and returns `{ "invitation": "<base64>" }`. `inviteeUrl` is optional — `null` means open invite (any URL).
+
+2. **Accept.** The admin pastes the invitation into hub *B*'s `POST /admin/peers/accept`:
+
+   ```
+   { "invitation": "<base64>", "ourUrl": "https://b.example" }
+   ```
+
+   Hub *B* signs the invitation nonce with **its** Ed25519 key (proof of pubkey ownership) and POSTs the bundle to *A*'s `/federation/handshake`.
+
+3. **Admit.** *A* verifies (a) its own signature on the invitation, (b) *B*'s proof signature against *B*'s claimed public key, (c) the invitation row is unconsumed and unexpired, (d) `inviteeUrl` matches if specified, (e) *B*'s `/api/health` is reachable and reports `apiVersion >= 5`. On success, *A* inserts *B* into `instances` with full provenance (`invitation_payload`, `invitation_signature`, `inviter_*` columns) and marks the invitation consumed. *B* mirrors the same row locally for *A*.
+
+### Invitation payload (canonical signing form)
+
+Newline-joined fields, in this order:
+
+```
+poutine-invitation/v5
+<inviter_id>
+<inviter_url>
+<inviter_public_key>
+<invitee_url-or-empty>
+<nonce>
+<issued_at>
+<expires_at>
+```
+
+Wire format: `base64(JSON({ payload, signature }))`.
+
+### Gossip
+
+After each library sync, hubs call peers' `GET /federation/peers` and ingest entries they don't yet know. Each gossiped entry carries its full invitation provenance — receivers verify the embedded signature against the named inviter's public key (no expiry check at gossip time; expiry only applies at redemption). This makes cluster membership transitive: once any single hub admits a new peer, the rest discover it on their next sync.
+
+---
+
 ## Changelog
 
-### Version 3 (current)
+### Version 5 (current)
+
+- **Added** `POST /federation/handshake` — signed-invitation admission protocol (issue #147). Replaces filesystem-based peer admission (`peers.yaml`).
+- **Added** `GET /federation/peers` — gossip endpoint. Each entry carries the signed invitation that admitted that peer; receivers verify against the named inviter's pubkey.
+- **Removed** `peers.yaml` loader. The `instances` table is authoritative; legacy peer rows without invitation provenance are pruned by the upgrade migration.
+- **Schema:** new `invitations` table; `instances` gains `public_key`, `invitation_payload`, `invitation_signature`, `inviter_id`, `inviter_url`, `inviter_public_key`.
+- **Floor:** `MIN_FEDERATION_API_VERSION = 5`. v3 peers cannot join a v5 cluster (lack the provenance fields).
+- v4 was skipped — the protocol jumped directly from 3 to 5 to mark the discontinuity.
+
+### Version 3
 
 - **Removed** `GET /federation/library/export` — library metadata sync is superseded by the `/proxy/*` tier.
 - **Removed** `GET /federation/art/:encodedId` — cover art proxying now handled by `/proxy/*`.
@@ -111,4 +171,7 @@ Initial protocol version.
 - Ed25519 signing is exercised in `hub/test/federation-signing.test.ts` and `hub/test/proxy.test.ts`.
 - Signing helpers: `hub/src/federation/signing.ts`, `hub/src/federation/sign-request.ts`.
 - Peer auth middleware: `hub/src/federation/peer-auth.ts`.
-- Peer registry: `hub/src/federation/peers.ts` (loaded from `peers.yaml`, reloaded on SIGHUP).
+- Peer registry: `hub/src/federation/peers.ts` (DB-backed, reads `instances`; SIGHUP triggers a snapshot refresh).
+- Invitations: `hub/src/federation/invitations.ts` — sign/verify/encode helpers; `hub/test/invitations.test.ts` covers signature, expiry, replay.
+- Handshake: `hub/src/routes/federation.ts` (`POST /handshake`); `hub/src/routes/admin.ts` (`POST /peers/invite`, `POST /peers/accept`); `hub/test/handshake.test.ts` covers the e2e flow.
+- Gossip: `hub/src/federation/gossip.ts`; ingested via `syncAll` (hub/src/library/sync.ts) and `AutoSyncService.pollPeers` (hub/src/services/auto-sync.ts); `hub/test/gossip.test.ts` covers transitive discovery + tampered-signature rejection.

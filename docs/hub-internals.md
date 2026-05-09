@@ -31,7 +31,6 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `POUTINE_OWNER_PASSWORD`     | no       | —                            | Seeds owner on first boot; also used to recover post-#106 migration |
 | `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Ed25519 federation key. Auto-generated if absent                |
 | `POUTINE_PASSWORD_KEY_PATH`  | no       | `./data/poutine_password_key`| AES-256 password encryption key (32 bytes, base64, mode 0600). Auto-generated if absent. **Back this up — losing it makes every stored password unrecoverable.** |
-| `POUTINE_PEERS_CONFIG`       | no       | `./config/peers.yaml`        | Peer registry file                                              |
 | `PUBLIC_DIR`                 | no       | —                            | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
 | `LASTFM_API_KEY`             | no       | —                            | Last.fm API key. Fallback artist-image source for artists **without** an MBID. See [lastfm-integration.md](lastfm-integration.md) |
 | `FANARTTV_API_KEY`           | no       | bundled Poutine project key  | fanart.tv project API key. Primary source for MBID-keyed artist images and an album-cover fallback. Set to `""` to disable. See [fanarttv-integration.md](fanarttv-integration.md) |
@@ -63,7 +62,7 @@ Transparent authenticated proxy to the local Navidrome. Introduced in Phase 1 (i
 
 **Auth** — unified preHandler in `hub/src/proxy/auth.ts`, tried in order:
 
-1. **Ed25519** — all four `x-poutine-*` headers present → validated against `peers.yaml` registry (same logic as federation). `request.proxyAuth.kind = "peer"`.
+1. **Ed25519** — all four `x-poutine-*` headers present → validated against the in-memory peer registry (DB-backed, sourced from `instances`). `request.proxyAuth.kind = "peer"`.
 2. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param → verified with `verifyToken`. `request.proxyAuth.kind = "jwt"`.
 3. **Subsonic u+p / u+t+s** — `u` + `p` (plaintext or `enc:<hex>`) **or** `u` + `t` + `s` (MD5 token+salt). Verified by AES-decrypting `users.password_enc` and either constant-time comparing the plaintext or recomputing `md5(plaintext + salt)`. `request.proxyAuth.kind = "subsonic"`.
 
@@ -92,8 +91,9 @@ Returns `401` if all three methods fail.
 
 Contract: [federation-api.md](federation-api.md). Read before modifying `/federation/*`. Increment `FEDERATION_API_VERSION` in `hub/src/version.ts` on any breaking change and update the doc.
 
-- **Peers:** `peers.yaml`, loaded at boot, reloaded on SIGHUP via `hub/src/federation/peers.ts`. Entries whose `id` matches `POUTINE_INSTANCE_ID` are skipped, so all cluster nodes can share one file (used by both the federation test and the local cluster).
-- **`peers.yaml` schema**: each peer entry has `id`, `url` (hub base URL), `public_key`, and optional `proxy_url` (defaults to `url`). `proxy_url` is the base used to reach the peer's `/proxy/*` endpoint (for catalog sync and streaming).
+- **Peers:** DB-backed since v0.5.0 / federation API v5 (issue #147). The `instances` table is authoritative; `loadPeerRegistry(db, instanceId)` (`hub/src/federation/peers.ts`) builds the in-memory snapshot from rows where `id != 'local'` and `public_key IS NOT NULL`. SIGHUP refreshes the snapshot. Admission is via signed invitations (`POST /admin/peers/invite` → `POST /federation/handshake` → `POST /admin/peers/accept`); discovery is via gossip on sync (`GET /federation/peers`). See [federation-api.md](federation-api.md) for the contract. **`config/peers.yaml` is no longer read** — legacy peer rows without invitation provenance are pruned by the v5 upgrade migration.
+- **Provenance columns on `instances`:** `public_key`, `invitation_payload`, `invitation_signature`, `inviter_id`, `inviter_url`, `inviter_public_key`. Set when admitting via handshake or gossip; required for a peer to be re-gossiped to others. The synthetic `'local'` row has them NULL.
+- **`invitations` table** (issuer-local, never gossiped): persists each issued nonce so handshakes can enforce single-use. Columns: `id`, `payload` (JSON), `signature`, `invitee_url`, `nonce` UNIQUE, `issued_at`, `expires_at`, `consumed_at`, `consumed_by_id`.
 - **`federatedFetch(peer, path, opts)`:** `path` must include the appropriate prefix (`/federation` or `/proxy`) — the fetcher concatenates `peer.url + path`. For proxy calls, use a synthetic peer with `url = peer.proxyUrl`.
 - **`track_sources`** keys each source by `instance_id` (matches `instances.id` — `'local'` for the bundled Navidrome, peer id for federated peers). Streaming routes branch on whether `instance_id === 'local'`; peer routes use `instance_id` to look up the peer in the registry. `remote_id` is fetched from `instance_tracks` via JOIN when needed for streaming.
 - **`selectBestSource()`** (`hub/src/library/source-selection.ts`) scores sources by format quality → bitrate → local tie-break. Single decision point for stream routing.
@@ -102,14 +102,17 @@ Contract: [federation-api.md](federation-api.md). Read before modifying `/federa
   - `syncPeer` (`sync-peer.ts`) reads a peer's Navidrome via the peer's `/proxy/rest/*` using Ed25519-signed requests (`createFederationFetcher`). The signing path includes `/proxy` prefix as seen by the peer's Fastify router.
   - Both funnel through `readNavidromeViaProxy` (`sync-instance.ts`) which calls `getArtists` → `getArtist` (per-artist) → `getAlbum` (per-album), upserts into `instance_*` tables, and prunes stale rows on success (tracks/albums/artists no longer returned get deleted from `instance_*`).
 - **Track dedup across hubs** requires: (1) matching normalized title + `track_number` + duration (±3 s); AND (2) falling under the same `unified_release`, which requires their parent albums share normalized artist name, normalized album name, AND `track_count`. Mismatched `track_count` creates a separate release even within the same release group.
-- **`seedSyntheticInstances()`** is idempotent — called at startup and before every `syncAll()` to ensure instance rows exist for local Navidrome and each peer.
+- **`seedSyntheticInstances()`** is idempotent — called at startup; only seeds the synthetic `'local'` row. Peer rows are inserted by the handshake/gossip paths (federation v5).
 - **`syncAll()`** (`sync.ts`) is the main entry: local Navidrome + all peers → merge. Returns `{ local: SyncResult, peers: SyncResult[] }` where `SyncResult.trackCount` (not `tracks`). The admin `POST /admin/sync` response shape matches.
 - **`syncPeer`** on success sets `status = 'online'` + `last_seen` + `last_synced_at` + `track_count`. On error: `status = 'offline'` only — never update `last_seen` (false "just now" in UI). On success, also prunes stale `instance_*` rows for the peer (tracks/albums/artists no longer returned by the peer's Navidrome) using temp-table NOT IN deletes — prevents stale accumulation across syncs.
-- **Orphan peer prune (startup):** after `seedSyntheticInstances`, `server.ts` calls `pruneOrphanInstances` (`hub/src/library/prune-instances.ts`). Any `instances` row whose id is not `local` and not present in `peers.yaml` is deleted; FK `ON DELETE CASCADE` wipes its `instance_*` rows and all `unified_*_sources` / `track_sources` join rows. If anything was pruned, `mergeLibraries()` runs to rebuild `unified_*` so orphaned unified rows are dropped. Re-adding a peer to `peers.yaml` re-seeds the instance on next boot and the next sync re-populates.
+- **Legacy peer prune (v5 upgrade migration, one-shot):** the v0.5.0 boot migration in `hub/src/db/client.ts::ensureColumns` deletes `instances` rows where `id != 'local'` AND `public_key IS NULL`. These are pre-v5 peer rows seeded from `peers.yaml`; they cannot be authenticated under v5 and must be re-admitted via the invitation flow. CASCADE clears `instance_*` and join-table rows.
 - **Unreachable peer wipe:** if `getArtists` fails at sync start (peer offline / network error), `readNavidromeViaProxy` deletes every `instance_*` row for that instance and zeroes `track_count`. Rationale: empty library beats stale library — next successful sync re-populates. `syncAll` always calls `mergeLibraries()` after the peer loop so `unified_*` reflects the wipe.
 - **Catalogs may diverge between hubs** — each hub builds its own catalog by reading Navidrome instances directly. No fan-out re-export risk.
 - **`GET /admin/peers`** does live health checks: parallel `fetch` to each peer's `/api/health` with a 5 s `AbortController` timeout. `status` from live reachability; `lastSeen` from DB.
-- **`AutoSyncService`** (`hub/src/services/auto-sync.ts`) polls Navidrome every 30 s. When Navidrome's `lastScan` > `instances.last_synced_at` for `'local'`, runs `syncLocal` + `mergeLibraries`. Skips when already running (boolean lock) or when Navidrome is scanning. Wired via `onReady`/`onClose` in `server.ts`.
+- **`AutoSyncService`** (`hub/src/services/auto-sync.ts`) runs two independent timers:
+  - **Local poll (30 s):** when Navidrome's `lastScan` > `instances.last_synced_at` for `'local'`, runs `syncLocal` + `mergeLibraries`. Skips when already running (boolean lock) or when Navidrome is scanning.
+  - **Peer poll (~5 min ± 60 s splay, issue #14):** for each peer, GET `/api/health` (updates `last_seen` on success, `status='offline'` on failure), then GET `/proxy/rest/getScanStatus` (federation-signed) and skip the sync if the peer's `lastScan` is no newer than our `last_synced_at` for that peer. Otherwise runs `syncPeer` + `gossipFromPeer`; merges once at the end if anything changed. Per-peer errors are isolated.
+  - Wired via `onReady`/`onClose` in `server.ts`. `pollPeers()` is exposed publicly so tests can drive one round without timer plumbing.
 - **`instances.musicfolder_id`** (issue #123) is a stable monotonically-assigned int that surfaces each instance as a Subsonic MusicFolder. Subsonic clients require integer folder ids but `instances.id` is a UUID (or `'local'`); this column is the int↔UUID bridge. Assigned in `seedSyntheticInstances` via `MAX(musicfolder_id)+1`; backfilled on upgrade in `db/client.ts` ordered by `created_at`. Resolve via `SELECT id FROM instances WHERE musicfolder_id = ?` — never reuse a value, never recompute on the fly.
 - **`user_stars`** (issue #104) holds per-user starred tracks/albums/artists. Single table keyed on `(user_id, kind, target_id)` where `kind ∈ {'track','album','artist'}` and `target_id` is the unified `*.id` UUID. Intentionally not FK-bound to the unified library: target rows can be transiently absent during sync, so orphans are filtered by JOIN at read time rather than blocking the star. `ON DELETE CASCADE` on the user. Stars are local to the hub the user logs into — federation does not carry per-user state.
 
@@ -188,7 +191,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 ## Docker
 
 - **`hub/Dockerfile`** — multi-stage: `deps` (all deps) → `prod-deps` (prod-only deps, compiles native addons) → `build` (`tsc` + `vite build` + copy sql) → `runtime` (`node:22-slim`, no build tools — copies pre-built node_modules from `prod-deps`). Frontend `dist/` copied into `hub/public/`. `PUBLIC_DIR=/app/hub/public` baked in. `deps` and `prod-deps` run independently and can be parallelized by BuildKit.
-- **`docker-compose.yml`** — hub (port `${POUTINE_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports). Single service for both API and SPA. `PEERS_CONFIG_HOST_PATH` overrides the peers.yaml bind-mount source (default `./peers.yaml`).
+- **`docker-compose.yml`** — hub (port `${POUTINE_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports). Single service for both API and SPA. (`PEERS_CONFIG_HOST_PATH` is no longer read since v0.5.0.)
 - **Native deps:** `better-sqlite3` needs `python3 make g++`. Root `package.json` has `pnpm.onlyBuiltDependencies` to allow its postinstall scripts. pnpm v10+ ignores build scripts by default — any new native dep must be added there.
 - **Rebuild after source changes.** Running containers use the compiled image, not live source. `docker compose build <service> && docker compose up -d <service>` or stale routes/assets will be served.
 
@@ -202,7 +205,7 @@ Tag-triggered. `.github/workflows/release.yml` fires on `v*.*.*` pushes, verifie
 - Shared external Docker network `poutine-federation-test`; containers connected with DNS aliases `hub-a`/`hub-b`/`hub-c` matching peer URLs in `test/federation/peers-{a,b,c}.yaml`.
 - Committed test keypairs (`test/federation/keys/`) are seeded into each project's `hub-data` volume via a throwaway `alpine` container before `up`. Each hub boots with a known identity.
 - All three instances are fully-connected peers. Test verifies hub-a sees albums from all three and can stream tracks federated from both b and c. Ports 3011–3013 avoid conflicting with live instances on 3001–3003.
-- **Ed25519 keys:** PKCS8 PEM for private. `peers.yaml` spec is `ed25519:<base64>` where base64 encodes the raw 32-byte key (last 32 bytes of SPKI DER). Canonical encoding: `hub/src/federation/signing.ts::loadOrCreatePrivateKey`.
+- **Ed25519 keys:** PKCS8 PEM for private. Public-key spec is `ed25519:<base64>` where base64 encodes the raw 32-byte key (last 32 bytes of SPKI DER). Canonical encoding: `hub/src/federation/signing.ts::loadOrCreatePrivateKey`.
 
 ## Local cluster setup
 

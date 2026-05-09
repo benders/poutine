@@ -265,6 +265,30 @@ export async function deletePeerData(): Promise<void> {
   await apiFetch("/admin/peers/data", { method: "DELETE" });
 }
 
+export function generateInvitation(opts: {
+  ourUrl: string;
+  inviteeUrl?: string;
+  expiresInSec?: number;
+}): Promise<{ invitation: string }> {
+  return apiFetch<{ invitation: string }>("/admin/peers/invite", {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+}
+
+export function acceptInvitation(opts: {
+  invitation: string;
+  ourUrl: string;
+}): Promise<{ ok: true; peerId: string; peerUrl: string }> {
+  return apiFetch<{ ok: true; peerId: string; peerUrl: string }>(
+    "/admin/peers/accept",
+    {
+      method: "POST",
+      body: JSON.stringify(opts),
+    },
+  );
+}
+
 export function getCacheStats() {
   return apiFetch<CacheStats>("/admin/cache");
 }

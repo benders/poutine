@@ -15,8 +15,8 @@ Serves on `http://localhost:3000` (or `POUTINE_HOST_PORT`). SQLite and cover-art
 
 3. `docker compose up`. (Use `docker compose up --build` to build from source.) Navidrome scans on startup; the hub's `AutoSyncService` picks up the scan and populates the unified library.
 4. Log in to `http://localhost:3000/` with the Poutine Owner credentials that you set.
-5. To federate with peers, edit `config/peers.yaml` on both sides — each peer entry needs `id`, `url`, and `public_key` — then reload (`docker compose kill -s HUP hub`). It is recommended that every peer in a cluster uses a copy of the same file.
-6. Your own public key can be found on hub startup logs (`"publicKey":"ed25519:fooBARbaz==","msg":"Poutine instance public key — share with peers"`) or on the Settings page of the running app
+5. To federate with a peer, use the **invite** flow from the admin UI (`/admin` → Peers → "Generate invite"). Send the resulting blob to the other operator out-of-band; they paste it on their hub's "Accept invite" form. Once admitted, every other peer in the cluster discovers the new member automatically on the next sync round (gossip). No file edits, no SIGHUP required.
+6. Your own public key can be found in hub startup logs (`"publicKey":"ed25519:fooBARbaz==","msg":"Poutine instance public key — share with peers"`) or on the Settings page of the running app.
 
 Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-internals.md#environment-variables).
 

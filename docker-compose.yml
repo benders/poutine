@@ -15,7 +15,6 @@ services:
       - NAVIDROME_PASSWORD=${NAVIDROME_PASSWORD:?Set NAVIDROME_PASSWORD in .env}
       - POUTINE_INSTANCE_ID=${POUTINE_INSTANCE_ID:?Set POUTINE_INSTANCE_ID in .env}
       - POUTINE_PRIVATE_KEY_PATH=/app/data/poutine_ed25519.pem
-      - POUTINE_PEERS_CONFIG=/app/config/peers.yaml
       - POUTINE_OWNER_USERNAME=${POUTINE_OWNER_USERNAME:?Set POUTINE_OWNER_USERNAME in .env}
       - POUTINE_OWNER_PASSWORD=${POUTINE_OWNER_PASSWORD:?Set POUTINE_OWNER_PASSWORD in .env}
       # Optional overrides — empty in prod, used by test/local-cluster/.
@@ -28,7 +27,6 @@ services:
       # Override here only if you want to mount a custom frontend build.
     volumes:
       - hub-data:/app/data
-      - ${POUTINE_CONFIG_HOST_PATH:-./config}:/app/config:ro
     depends_on:
       - navidrome
     networks:

@@ -12,8 +12,12 @@ declare module "fastify" {
  * Minimum accepted federation API version.
  * Peers advertising an apiVersion below this floor will be rejected.
  * May be disabled via POUTINE_DISABLE_VERSION_CHECK=true for testing/migration.
+ *
+ * Bumped to 5 with #147 (signed-invitation admission). v0.4.x peers cannot
+ * be admitted to a v5 cluster — they lack the invitation provenance fields
+ * and are removed by the v5 migration on first boot.
  */
-const MIN_FEDERATION_API_VERSION = 3;
+const MIN_FEDERATION_API_VERSION = 5;
 
 export function createRequirePeerAuth(deps: {
   registry: PeerRegistry;
