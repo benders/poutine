@@ -20,6 +20,7 @@ export interface Peer {
 
 export interface PeerRegistry {
   instanceId: string;
+  publicKeySpec: string; // this hub's own "ed25519:<base64>" — for trust pinning
   peers: Map<string, Peer>;
   reload(): void;
 }
@@ -66,6 +67,7 @@ function buildSnapshot(
 export function loadPeerRegistry(
   db: Database.Database,
   instanceId: string,
+  publicKeySpec: string,
 ): PeerRegistry {
   const warn = (msg: string) => console.warn(`[peers] ${msg}`);
   let snapshot = buildSnapshot(db, instanceId, warn);
@@ -73,6 +75,9 @@ export function loadPeerRegistry(
   return {
     get instanceId() {
       return instanceId;
+    },
+    get publicKeySpec() {
+      return publicKeySpec;
     },
     get peers() {
       return snapshot;

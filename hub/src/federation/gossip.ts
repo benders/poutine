@@ -112,6 +112,32 @@ export async function gossipFromPeer(
       continue;
     }
 
+    // Trust is not transitive: only admit an entry whose inviter is already
+    // a peer we trust (either ourselves or a peer in our registry). Without
+    // this check, any admitted peer could vouch in arbitrary "inviters" by
+    // signing entries with a self-generated keypair (issue #156, #153).
+    const inviterIsLocal = p.inviter_id === localId;
+    const inviterPeer = registry.peers.get(p.inviter_id);
+    if (!inviterIsLocal && !inviterPeer) {
+      log?.warn?.(
+        `gossip ${peer.id}: entry ${entry.id} rejected — inviter ${p.inviter_id} is not a known peer`,
+      );
+      result.rejected++;
+      continue;
+    }
+    // Pin the inviter's public key against our registry: a peer can't claim
+    // an inviter we know but supply a different key.
+    const expectedInviterKey = inviterIsLocal
+      ? registry.publicKeySpec
+      : inviterPeer?.publicKeySpec;
+    if (expectedInviterKey && p.inviter_public_key !== expectedInviterKey) {
+      log?.warn?.(
+        `gossip ${peer.id}: entry ${entry.id} rejected — inviter_public_key does not match registry for ${p.inviter_id}`,
+      );
+      result.rejected++;
+      continue;
+    }
+
     const signed: SignedInvitation = {
       payload: p,
       signature: entry.invitation_signature,

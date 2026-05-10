@@ -53,7 +53,7 @@ describe("loadPeerRegistry (DB-backed, federation v5)", () => {
       url: "http://navidrome:4533",
       public_key: null,
     });
-    const registry = loadPeerRegistry(db, "fallback-id");
+    const registry = loadPeerRegistry(db, "fallback-id", "ed25519:test-self");
     expect(registry.instanceId).toBe("fallback-id");
     expect(registry.peers.size).toBe(0);
   });
@@ -69,7 +69,7 @@ describe("loadPeerRegistry (DB-backed, federation v5)", () => {
         public_key: `ed25519:${publicKeyBase64}`,
       });
 
-      const registry = loadPeerRegistry(db, "test-alice");
+      const registry = loadPeerRegistry(db, "test-alice", "ed25519:test-self");
       expect(registry.peers.size).toBe(1);
       const bob = registry.peers.get("test-bob");
       expect(bob).toBeDefined();
@@ -96,7 +96,7 @@ describe("loadPeerRegistry (DB-backed, federation v5)", () => {
         public_key: `ed25519:${publicKeyBase64}`,
       });
 
-      const registry = loadPeerRegistry(db, "alice");
+      const registry = loadPeerRegistry(db, "alice", "ed25519:test-self");
       expect(registry.peers.has("alice")).toBe(false);
       expect(registry.peers.has("bob")).toBe(true);
       expect(registry.peers.size).toBe(1);
@@ -115,7 +115,7 @@ describe("loadPeerRegistry (DB-backed, federation v5)", () => {
         url: "https://bob.example///",
         public_key: `ed25519:${publicKeyBase64}`,
       });
-      const registry = loadPeerRegistry(db, "alice");
+      const registry = loadPeerRegistry(db, "alice", "ed25519:test-self");
       const bob = registry.peers.get("bob");
       expect(bob!.url).toBe("https://bob.example");
     } finally {
@@ -139,7 +139,7 @@ describe("loadPeerRegistry (DB-backed, federation v5)", () => {
         public_key: `ed25519:${publicKeyBase64}`,
       });
 
-      const registry = loadPeerRegistry(db, "fallback");
+      const registry = loadPeerRegistry(db, "fallback", "ed25519:test-self");
       expect(registry.peers.has("bad-peer")).toBe(false);
       expect(registry.peers.has("good-peer")).toBe(true);
     } finally {
@@ -154,7 +154,7 @@ describe("loadPeerRegistry (DB-backed, federation v5)", () => {
       url: "https://nokey.example",
       public_key: null,
     });
-    const registry = loadPeerRegistry(db, "alice");
+    const registry = loadPeerRegistry(db, "alice", "ed25519:test-self");
     expect(registry.peers.size).toBe(0);
   });
 
@@ -164,7 +164,7 @@ describe("loadPeerRegistry (DB-backed, federation v5)", () => {
       const { publicKeyBase64 } = loadOrCreatePrivateKey(keyPath);
       const ownerId = seedOwner(db);
 
-      const registry = loadPeerRegistry(db, "alice");
+      const registry = loadPeerRegistry(db, "alice", "ed25519:test-self");
       expect(registry.peers.size).toBe(0);
 
       insertInstance(db, ownerId, {

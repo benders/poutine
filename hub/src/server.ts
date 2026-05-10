@@ -180,7 +180,11 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // signed-invitation flow (federation v5) and live in `instances` directly.
   seedSyntheticInstances(db, config);
 
-  const peerRegistry = loadPeerRegistry(db, config.poutineInstanceId);
+  const peerRegistry = loadPeerRegistry(
+    db,
+    config.poutineInstanceId,
+    `ed25519:${publicKeyBase64}`,
+  );
   app.log.info(
     { instanceId: peerRegistry.instanceId, peerCount: peerRegistry.peers.size },
     "Loaded peer registry",
