@@ -16,6 +16,7 @@ import {
   verifyInviteeProof,
 } from "../federation/invitations.js";
 import { parsePeerPublicKey } from "../federation/signing.js";
+import { checkPeerUrlSafe } from "../federation/url-safety.js";
 import { USER_AGENT, FEDERATION_API_VERSION } from "../version.js";
 import { buildStreamParams } from "./stream-params.js";
 
@@ -143,7 +144,20 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "Invitee id collides with this hub" });
     }
 
-    // Reachability + version check.
+    // SSRF guard: refuse to fetch /api/health unless the URL is a public
+    // http(s) endpoint. Open invites otherwise let any caller probe internal
+    // hosts via the inviter (issue #156).
+    const safe = await checkPeerUrlSafe(inviteeUrl);
+    if (!safe.ok) {
+      app.log.warn(
+        { inviteeUrl, reason: safe.reason },
+        "Rejecting handshake: invitee URL failed SSRF check",
+      );
+      return reply.code(400).send({ error: "Invitee URL not permitted" });
+    }
+
+    // Reachability + version check. Errors are logged but not echoed in the
+    // response — the body otherwise leaks probe information to the caller.
     let healthApiVersion: number | null = null;
     let healthAppVersion: string | null = null;
     try {
@@ -162,9 +176,8 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
         clearTimeout(timeout);
       }
     } catch (err) {
-      return reply
-        .code(502)
-        .send({ error: `Invitee /api/health unreachable: ${String(err)}` });
+      app.log.warn({ inviteeUrl, err: String(err) }, "Invitee /api/health unreachable");
+      return reply.code(502).send({ error: "Invitee /api/health unreachable" });
     }
     if (healthApiVersion === null || healthApiVersion < FEDERATION_API_VERSION) {
       return reply.code(409).send({
@@ -207,11 +220,17 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
           signed.payload.inviter_url,
           signed.payload.inviter_public_key,
         );
-      app.db
+      // Atomic single-use enforcement: only consume rows that are still
+      // unconsumed. Concurrent handshakes on the same nonce will see
+      // changes===0 here, abort the txn, and fail with 409.
+      const upd = app.db
         .prepare(
-          "UPDATE invitations SET consumed_at = datetime('now'), consumed_by_id = ? WHERE id = ?",
+          "UPDATE invitations SET consumed_at = datetime('now'), consumed_by_id = ? WHERE id = ? AND consumed_at IS NULL",
         )
         .run(invitee.id, inv.id);
+      if (upd.changes === 0) {
+        throw new Error("Invitation already consumed");
+      }
     });
     try {
       tx();

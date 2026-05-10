@@ -44,6 +44,8 @@ export class AutoSyncService {
   start(): void {
     if (this.localTimer === null) {
       this.localTimer = setInterval(() => void this.poll(), POLL_INTERVAL_MS);
+      // unref so the timer never holds the process open during shutdown.
+      this.localTimer.unref();
       this.log.info("AutoSyncService started (local poll interval 30s)");
     }
     if (this.peerTimer === null && this.peerDeps) {
@@ -70,6 +72,7 @@ export class AutoSyncService {
         if (this.peerTimer !== null) this.schedulePeerPoll();
       });
     }, PEER_POLL_INTERVAL_MS + splay);
+    this.peerTimer.unref();
   }
 
   private async poll(): Promise<void> {

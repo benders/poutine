@@ -216,6 +216,70 @@ describe("federation gossip (v5, #147)", () => {
     }
   });
 
+  it("rejects a gossiped entry whose inviter_id is not a known peer (#156)", async () => {
+    // A admits B. B then forges an entry whose inviter is a stranger hub
+    // (not local, not in A's registry). The signature would verify against
+    // the embedded stranger key, but A must refuse: trust does not extend
+    // to inviters A has never admitted.
+    await admit(hubA, hubB);
+
+    const strangerKey = tmpPath("stranger.pem");
+    try {
+      const { privateKey: strangerPriv, publicKeyBase64: strangerPub } =
+        loadOrCreatePrivateKey(strangerKey);
+      const fakeInvite = createInvitation({
+        privateKey: strangerPriv,
+        inviterId: "stranger-hub",
+        inviterUrl: "http://stranger.example",
+        inviterPublicKey: `ed25519:${strangerPub}`,
+        inviteeUrl: null,
+      });
+      // Need encodeInvitation only to silence unused-import if we kept it;
+      // here we reference the encoded form to keep parity with other tests.
+      void encodeInvitation(fakeInvite);
+
+      const bDb = hubB.app.db;
+      const owner = bDb.prepare("SELECT id FROM users LIMIT 1").get() as { id: string };
+      const next = (
+        bDb
+          .prepare("SELECT COALESCE(MAX(musicfolder_id), 0) + 1 AS next FROM instances")
+          .get() as { next: number }
+      ).next;
+      bDb
+        .prepare(
+          `INSERT INTO instances
+             (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id,
+              public_key, invitation_payload, invitation_signature, inviter_id, inviter_url, inviter_public_key)
+           VALUES ('stranger-peer','stranger','http://stranger-peer.example','subsonic','',?,'online',?,
+                   ?, ?, ?, 'stranger-hub', 'http://stranger.example', ?)`,
+        )
+        .run(
+          owner.id,
+          next,
+          `ed25519:${strangerPub}`,
+          JSON.stringify(fakeInvite.payload),
+          fakeInvite.signature,
+          `ed25519:${strangerPub}`,
+        );
+      hubB.app.peerRegistry.reload();
+
+      const bAsPeer = hubA.app.peerRegistry.peers.get("hub-b");
+      const result = await gossipFromPeer(
+        hubA.app.db,
+        hubA.app.peerRegistry,
+        bAsPeer!,
+        hubA.app.federatedFetch,
+        "admin-a",
+      );
+
+      expect(result.added).not.toContain("stranger-peer");
+      expect(result.rejected).toBeGreaterThanOrEqual(1);
+      expect(hubA.app.peerRegistry.peers.has("stranger-peer")).toBe(false);
+    } finally {
+      if (fs.existsSync(strangerKey)) fs.unlinkSync(strangerKey);
+    }
+  });
+
   it("filters self and the calling peer from /federation/peers", async () => {
     await admit(hubA, hubB);
     await admit(hubB, hubC);
