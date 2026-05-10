@@ -632,6 +632,13 @@ function InvitationsSection({ onPeerAdded }: { onPeerAdded: () => void }) {
           placeholder="https://my-hub.example"
           className="w-full px-3 py-2 bg-background border border-border rounded text-sm text-text-primary"
         />
+        <p className="mt-1 text-xs text-text-muted">
+          Used in both flows: when generating an invite it's embedded so the
+          invitee knows where to handshake back; when accepting one it's the
+          URL we send to the inviter so they know how to reach us.
+          Defaults to this browser's origin — override if peers reach this
+          hub at a different address.
+        </p>
       </div>
 
       <div className="grid md:grid-cols-2 gap-4">
@@ -652,13 +659,18 @@ function InvitationsSection({ onPeerAdded }: { onPeerAdded: () => void }) {
             {generate.isPending ? "Signing..." : "Generate"}
           </button>
           {generated && (
-            <textarea
-              readOnly
-              value={generated}
-              onClick={(e) => (e.target as HTMLTextAreaElement).select()}
-              rows={4}
-              className="w-full px-3 py-2 bg-background border border-border rounded text-xs font-mono text-text-primary"
-            />
+            <div className="relative">
+              <textarea
+                readOnly
+                value={generated}
+                onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                rows={4}
+                className="w-full px-3 py-2 pr-10 bg-background border border-border rounded text-xs font-mono text-text-primary"
+              />
+              <div className="absolute top-1.5 right-1.5">
+                <CopyButton text={generated} />
+              </div>
+            </div>
           )}
         </div>
 
@@ -734,6 +746,14 @@ export function AdminPage() {
         <InstanceSection />
       </section>
 
+      {/* Invitations — generate or accept (above Federation Peers) */}
+      <section>
+        <h1 className="text-xl font-bold text-text-primary mb-4">Invitations</h1>
+        <InvitationsSection
+          onPeerAdded={() => queryClient.invalidateQueries({ queryKey: ["admin-peers"] })}
+        />
+      </section>
+
       {/* Peers */}
       <section>
         <div className="flex items-center justify-between mb-4">
@@ -789,10 +809,6 @@ export function AdminPage() {
             {syncMutation.error instanceof Error ? syncMutation.error.message : "Sync failed"}
           </p>
         )}
-
-        <InvitationsSection
-          onPeerAdded={() => queryClient.invalidateQueries({ queryKey: ["admin-peers"] })}
-        />
 
         <div className="space-y-2">
           {peersLoading && <p className="text-sm text-text-muted py-4">Loading peers...</p>}
