@@ -45,6 +45,14 @@ services:
       - ND_SESSIONTIMEOUT=24h
       - ND_BASEURL=
       - ND_ENABLEEXTERNALSERVICES=false
+      # Purge missing rows at the end of each scan so transient FS unmounts
+      # (SMB/NFS/sshfs/Tailscale, sleeping USB volumes) don't permanently
+      # quarantine folders via Navidrome's folder.missing=1 flag. See #159
+      # and docs/hub-internals.md (Navidrome integration). Trade-off:
+      # Navidrome-side annotations on a row that briefly disappears are
+      # discarded rather than reattached. Poutine tracks plays via its own
+      # activity service, so this is acceptable.
+      - ND_SCANNER_PURGEMISSING=always
       # Auto-create the "admin" user on first boot using the same credential
       # the hub uses to connect. Username is always "admin" with this method.
       # In Navidrome 0.52+, the internal config key is DevAutoCreateAdminPassword
