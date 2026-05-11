@@ -25,6 +25,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
    - Touching hub internals, conventions, or anything with a known gotcha: check `docs/hub-internals.md`.
    - Architectural changes: read `docs/system-architecture.md`.
 3. Write tests alongside code. Run `pnpm test` + `pnpm typecheck` before declaring done.
+   - When querying the live database: check `hub/src/db/schema.sql` for the schema, then use `scripts/db-query.sh "SQL"`. Never exec into the container and try to import `better-sqlite3` manually.
 4. Update documentation and check for any outdated or inconsistent information.
 6. Commit work in phases, when all tests are passing
 7. Push branch to origin
@@ -49,7 +50,8 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 | `docs/federation-api.md`             | **Federation protocol contract** — read before `/federation/*`   |
 | `docs/hub-internals.md`              | Conventions, env vars, gotchas, lessons learned, Docker          |
 | `docs/opensubsonic.md`               | OpenSubsonic endpoint compatibility table and caveats            |
-| `hub/src/db/schema.sql`              | Canonical DB schema — source of truth                            |
+| `hub/src/db/schema.sql`              | Canonical DB schema — source of truth; read before writing DB queries |
+| `scripts/db-query.sh`               | Run ad-hoc SQL against the live hub DB via `docker compose`       |
 | `docs/system-architecture.md`        | Current system architecture                                      |
 | `docs/frontend-testing.md`           | Vitest + RTL setup, patterns, gotchas                            |
 | `docs/fanarttv-integration.md`       | fanart.tv artist image / album cover source (primary, MBID-keyed) |
