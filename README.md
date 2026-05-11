@@ -95,6 +95,19 @@ git push --follow-tags
 
 The `.github/workflows/release.yml` workflow verifies the tag matches `package.json`, builds `linux/amd64` + `linux/arm64`, and tags the image `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` (non-prerelease only). Pre-release tags (e.g. `v0.3.1-rc.0`) publish without `:latest` and are marked pre-release on GitHub.
 
+### Casting to Sonos (optional, issue #108)
+
+Lets the bottom-of-screen player stream to Sonos devices on the LAN. Requires host networking for SSDP multicast.
+
+```bash
+# in .env:
+#   SONOS_ENABLED=true
+#   POUTINE_LAN_URL=http://<your-lan-ip>:3000
+docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
+```
+
+Then pick a device from the cast icon next to the volume slider. Selection resets to local browser on each session. Full details in [docs/hub-internals.md](docs/hub-internals.md#sonos-integration-issue-108).
+
 ### Wiping the Navidrome volume
 
 Navidrome's admin-bootstrap env vars only run on a fresh volume. To force a reset, use:

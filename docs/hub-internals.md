@@ -37,6 +37,9 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `FANARTTV_CLIENT_KEY`        | no       | —                            | Optional fanart.tv personal `client_key` — drops the new-image delay from 7 days to 2 |
 | `FANARTTV_API_URL`           | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors)                  |
 | `ART_CACHE_MAX_BYTES`        | no       | `100 MB` (104857600)         | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
+| `SONOS_ENABLED`              | no       | `false`                      | Enable Sonos casting (issue #108). Requires host networking — see [Sonos integration](#sonos-integration-issue-108) |
+| `POUTINE_LAN_URL`            | if Sonos | —                            | Absolute base URL Sonos devices use to fetch streams (e.g. `http://192.168.1.10:3000`). Must be reachable from the LAN |
+| `SONOS_DISCOVERY_INTERVAL_MS`| no       | `30000`                      | How often to re-issue SSDP M-SEARCH                              |
 
 `hub/src/config.ts` is the authoritative list.
 
@@ -218,6 +221,30 @@ docker network create poutine-local-cluster
 docker network connect --alias hub-a poutine-local-cluster cd-rips-hub-1
 # ...etc
 ```
+
+## Sonos integration (issue #108)
+
+Optional feature — gated by `SONOS_ENABLED=true`. Lets the bottom-of-screen player cast to Sonos devices on the LAN instead of playing in the browser.
+
+**Components:**
+- `services/sonos-discovery.ts` — SSDP M-SEARCH on UDP `239.255.255.250:1900` for `urn:schemas-upnp-org:device:ZonePlayer:1`. Fetches `/xml/device_description.xml` for UDN + roomName.
+- `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`) on each device's `:1400`.
+- `services/cast-tokens.ts` — HMAC-signed short-lived (1h) tokens for unauthenticated stream URLs. Secret derived from the instance Ed25519 key via `deriveCastSecret`.
+- `routes/cast.ts` — `GET /cast/stream/:trackId?token=...`. Token-verified; reuses the local/peer source selection + transcoding pipeline.
+- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`.
+- `GET /api/capabilities` — frontend probe; returns `{ sonos: boolean }`.
+
+**Networking gotcha — host mode required.** SSDP needs UDP multicast which Docker's bridge networking blocks. Run with the Sonos override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
+```
+
+Under host networking the container binds directly to the host's NICs. `POUTINE_LAN_URL` must be the address Sonos can reach the hub at (e.g. `http://192.168.1.10:3000`).
+
+**Queue model.** App-managed, one track at a time. The frontend pushes the current track via `sonosPlay`, polls `/state` every 1.5s for position/duration, and calls `next()` from the store when the device transitions `PLAYING → STOPPED`. Shuffle/repeat live in the store, not on the device.
+
+**Device picker.** `frontend/src/components/player/DevicePicker.tsx`. Cast icon in `PlayerBar` next to the volume slider — only rendered if `/api/capabilities` reports `sonos: true`. Device selection is not persisted across sessions (always defaults to local browser playback).
 
 ## Testing notes
 

@@ -1,9 +1,18 @@
-import { useEffect, useRef, useCallback, useMemo } from "react";
+import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { usePlayer } from "@/stores/player";
 import { useToasts } from "@/stores/toast";
 import { formatDuration } from "@/lib/format";
 import { streamUrl, artUrl, effectiveStream } from "@/lib/subsonic";
+import {
+  getCapabilities,
+  sonosPlay,
+  sonosCommand,
+  sonosSeek,
+  sonosSetVolume,
+  getSonosState,
+} from "@/lib/api";
+import { DevicePicker } from "./DevicePicker";
 import {
   Play,
   Pause,
@@ -40,12 +49,24 @@ export function PlayerBar() {
     setDuration,
     toggleShuffle,
     cycleRepeat,
+    sink,
   } = usePlayer();
 
   const currentTrack =
     currentIndex >= 0 && currentIndex < queue.length
       ? queue[currentIndex]
       : null;
+
+  const isSonos = sink !== "local";
+
+  // Capabilities are static per backend boot; fetch once and stash. We only
+  // use this to decide whether to render the DevicePicker.
+  const [sonosAvailable, setSonosAvailable] = useState(false);
+  useEffect(() => {
+    getCapabilities()
+      .then((c) => setSonosAvailable(c.sonos))
+      .catch(() => setSonosAvailable(false));
+  }, []);
 
   // Base offset (seconds) for the current <audio> src. Non-zero when the
   // server was asked to start mid-track via Subsonic timeOffset. The browser
@@ -103,8 +124,10 @@ export function PlayerBar() {
     }
   }, [currentStreamUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Update audio element when track changes
+  // Update audio element when track changes. Skipped when casting to Sonos
+  // — the Sonos effect below handles track changes via the control API.
   useEffect(() => {
+    if (isSonos) return;
     const audio = audioRef.current;
     if (!audio || !currentStreamUrl) return;
 
@@ -113,7 +136,7 @@ export function PlayerBar() {
     if (isPlaying) {
       audio.play().catch(() => {});
     }
-  }, [currentStreamUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentStreamUrl, isSonos]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // True if `target` (track-time seconds) lies in any of audio.buffered's
   // ranges, translated by the current base offset.
@@ -127,8 +150,9 @@ export function PlayerBar() {
     return false;
   };
 
-  // Sync play/pause state
+  // Sync play/pause state for local playback
   useEffect(() => {
+    if (isSonos) return;
     const audio = audioRef.current;
     if (!audio || !currentStreamUrl) return;
 
@@ -137,7 +161,7 @@ export function PlayerBar() {
     } else {
       audio.pause();
     }
-  }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isPlaying, isSonos]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync volume. Depends on currentStreamUrl so a freshly mounted <audio>
   // element (e.g. on first track load) picks up the stored volume instead
@@ -145,6 +169,76 @@ export function PlayerBar() {
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
   }, [volume, currentStreamUrl]);
+
+  // ── Sonos sink: route playback through the hub's Sonos API ───────────────
+  //
+  // Track-change effect: when casting and the track changes, push it via
+  // sonosPlay() — the backend mints a signed cast URL and issues
+  // SetAVTransportURI + Play.
+  useEffect(() => {
+    if (!isSonos || !currentTrack) return;
+    void sonosPlay(sink.deviceId, currentTrack.id).catch((err) => {
+      pushToast({
+        kind: "error",
+        title: "Sonos play failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      setPlaying(false);
+    });
+  }, [isSonos, sink, currentTrack?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Play/pause toggle while casting.
+  useEffect(() => {
+    if (!isSonos || !currentTrack) return;
+    void sonosCommand(sink.deviceId, isPlaying ? "resume" : "pause").catch(() => {
+      // Best effort — state poll will resync.
+    });
+  }, [isPlaying, isSonos]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Volume on Sonos. 0..1 in the UI → 0..100 on the device.
+  useEffect(() => {
+    if (!isSonos) return;
+    void sonosSetVolume(sink.deviceId, Math.round(volume * 100)).catch(() => {});
+  }, [volume, isSonos]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Stop local audio when switching to Sonos so it doesn't keep playing
+  // in the background.
+  useEffect(() => {
+    if (!isSonos) return;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.src = "";
+    }
+  }, [isSonos]);
+
+  // Poll Sonos transport state for position + end-of-track detection.
+  useEffect(() => {
+    if (!isSonos || !currentTrack) return;
+    let cancelled = false;
+    let lastState = "";
+    const tick = async () => {
+      try {
+        const s = await getSonosState(sink.deviceId);
+        if (cancelled) return;
+        if (s.duration > 0) setDuration(s.duration);
+        setCurrentTime(s.position);
+        // STOPPED after we observed PLAYING means the track ended.
+        if (s.state === "STOPPED" && lastState === "PLAYING") {
+          next();
+        }
+        lastState = s.state;
+      } catch {
+        // device probably went away — let the UI keep its last state
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [isSonos, sink, currentTrack?.id, next, setCurrentTime, setDuration]);
 
   const handleTimeUpdate = useCallback(() => {
     if (audioRef.current) {
@@ -195,6 +289,11 @@ export function PlayerBar() {
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
+    if (isSonos) {
+      setCurrentTime(time);
+      void sonosSeek(sink.deviceId, time).catch(() => {});
+      return;
+    }
     const audio = audioRef.current;
     if (!audio || !currentTrack) return;
 
@@ -362,6 +461,7 @@ export function PlayerBar() {
 
       {/* Volume */}
       <div className="shrink-0 flex items-center gap-2">
+        {sonosAvailable && <DevicePicker />}
         <button
           onClick={() => setVolume(volume > 0 ? 0 : 0.8)}
           className="p-1 text-text-muted hover:text-text-primary transition-colors"

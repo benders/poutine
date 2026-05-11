@@ -102,6 +102,8 @@ instance_tracks     ─┘              unified_release_groups
 
 Transcoding happens on whichever Navidrome owns the bytes, never on the hub.
 
+**Sonos casting sink (issue #108):** optional alternative to local browser playback. When `SONOS_ENABLED=true`, the player can route playback through a discovered Sonos device on the LAN. The hub signs a short-lived HMAC token, builds `${POUTINE_LAN_URL}/cast/stream/:trackId?token=…`, and issues SOAP `SetAVTransportURI + Play` on the device. The Sonos device fetches the stream from the hub directly, reusing the same source-selection + transcoding pipeline. See [hub-internals.md](hub-internals.md#sonos-integration-issue-108).
+
 ## Auth model
 
 | Concern         | Approach                                                             |
