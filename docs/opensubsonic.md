@@ -192,7 +192,7 @@ clients behave correctly without per-client workarounds.
 
 | Endpoint         | Status          | Notes |
 |------------------|-----------------|-------|
-| `getUser`        | NOT IMPLEMENTED |       |
+| `getUser`        | IMPLEMENTED     | Returns auth'd user's roles (admin from `users.is_admin`); non-admin requesting another username → error 50. Required by Feishin login. |
 | `getUsers`       | NOT IMPLEMENTED |       |
 | `createUser`     | NOT IMPLEMENTED |       |
 | `updateUser`     | NOT IMPLEMENTED |       |
