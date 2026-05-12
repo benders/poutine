@@ -18,7 +18,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 
 ## Per-task checklist
 
-1. **Start every task by reading `docs/system-architecture.md`.** It is short by design. No exceptions.
+1. **Start every task by reading `docs/system-architecture.md` and skimming `docs/pitfalls.md`.** Both are short by design. No exceptions.
 2. Open or assign a GitHub Issue.
 3. Read the relevant doc(s):
    - Touching auth, JWT, login, tokens, or Subsonic credentials: read `docs/authentication.md` FIRST.
@@ -40,7 +40,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 - **Condense, don't duplicate.** If something is documented once, reference it by path — do not copy it.
 - **Terse, technical language.** Fragments OK. Audience: coding agents and experienced engineers, not newcomers.
 - **Markdown tables:** pad headers and rows so columns align vertically in source.
-- **When you learn a new gotcha:** add it to the relevant section of `docs/`, not AGENTS.md.
+- **When you learn a new gotcha:** add it to `docs/pitfalls.md` (or the relevant section of `docs/` if it's narrow), not AGENTS.md.
 
 ## Pointers
 
@@ -49,7 +49,8 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 | `README.md`                          | Setup, commands, testing, operations                             |
 | `docs/authentication.md`             | **Auth reference** — JWT, Subsonic dual-auth, token refresh      |
 | `docs/federation-api.md`             | **Federation protocol contract** — read before `/federation/*`   |
-| `docs/hub-internals.md`              | Conventions, env vars, gotchas, lessons learned, Docker          |
+| `docs/hub-internals.md`              | Conventions, env vars, lessons learned, Docker                   |
+| `docs/pitfalls.md`                   | **Recurring traps** — check before touching merge, SQLite, auth, federation, external fetches |
 | `docs/opensubsonic.md`               | OpenSubsonic endpoint compatibility table and caveats            |
 | `hub/src/db/schema.sql`              | Canonical DB schema — source of truth; read before writing DB queries |
 | `scripts/db-query.sh`               | Run ad-hoc SQL against the live hub DB via `docker compose`       |
