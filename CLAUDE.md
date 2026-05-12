@@ -12,7 +12,7 @@ Default flow should be to use Pull Requests.
 
 * Create a feature branch before starting work
 * Work in phases
-* Check documentation and tests after implementation to make sure they cover new behvaior
+* Check documentation and tests after implementation to make sure they cover new behavior
 * Commit when tests pass and push branch to origin
 * Create a PR when it is ready for the user to review it. PR should be created in "Draft" state
 * DO NOT create "stacked" PRs. If new work is identified during review, it must be made directly onto the same feature branch
