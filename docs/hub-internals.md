@@ -1,6 +1,6 @@
 # Hub internals
 
-Engineering reference for working on the hub (`hub/`) and frontend (`frontend/`). Audience: coding agents and senior engineers. For the federation protocol contract, see [federation-api.md](federation-api.md). For the high-level architecture, see [02-system-architecture.md](02-system-architecture.md).
+Engineering reference for working on the hub (`hub/`) and frontend (`frontend/`). Audience: coding agents and senior engineers. For the federation protocol contract, see [federation-api.md](federation-api.md). For the high-level architecture, see [system-architecture.md](system-architecture.md). For recurring failure modes, see [pitfalls.md](pitfalls.md).
 
 ## Repo structure
 
