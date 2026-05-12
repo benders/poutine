@@ -13,7 +13,7 @@ Poutine implements the [OpenSubsonic API](https://opensubsonic.netlify.app/) —
 
 ## Response formats
 
-Both JSON (`f=json`, default) and XML (`f=xml`) supported. Default is JSON.
+Both JSON (`f=json`) and XML (`f=xml`) supported. Default is XML when `f=` is omitted, per Subsonic spec — clients like Amperfy and Feishin probe without `f=` and fail to parse a JSON envelope (surfaces as an auth error).
 
 ## Auth
 
