@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import crypto from "node:crypto";
 import { canonicalSigningPayload, verifyRequest } from "./signing.js";
 import type { PeerRegistry } from "./peers.js";
 
@@ -81,10 +82,13 @@ export function createRequirePeerAuth(deps: {
       return;
     }
 
-    // Phase 3: all /federation/* endpoints are GET, so body hash is always "-".
-    // TODO: when POST endpoints are added, raw body parsing will be needed to
-    // compute sha256(body) here. Until then this simplification is safe.
-    const bodyHash = "-";
+    // POST routes that carry a signed body must register a content-type parser
+    // that exposes the raw bytes on request.body as a Buffer (see
+    // federationRoutes for /peers/announce). Anything else hashes as "-",
+    // matching what createFederationFetcher signs when body is undefined.
+    const bodyHash = Buffer.isBuffer(request.body)
+      ? crypto.createHash("sha256").update(request.body).digest("hex")
+      : "-";
 
     const payload = canonicalSigningPayload({
       method: request.method,

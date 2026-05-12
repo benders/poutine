@@ -98,8 +98,11 @@ describe("federation gossip (v5, #147)", () => {
   });
 
   it("A discovers C through B's gossip after A↔B and B↔C admissions", async () => {
-    await admit(hubA, hubB); // A invites B → both hubs know each other
+    // Order matters here: do B↔C first so B has no other peers to fan-out
+    // the v6 announce to (#163). Then A↔B leaves A without knowledge of C
+    // until gossip runs, which is what this test exercises.
     await admit(hubB, hubC); // B invites C → both hubs know each other
+    await admit(hubA, hubB); // A invites B → both hubs know each other
 
     // Pre-condition: A does not yet know C
     expect(hubA.app.peerRegistry.peers.has("hub-c")).toBe(false);
