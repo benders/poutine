@@ -18,18 +18,19 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 
 ## Per-task checklist
 
-1. Open or assign a GitHub Issue.
-2. Read the relevant doc(s):
+1. **Start every task by reading `docs/system-architecture.md`.** It is short by design. No exceptions.
+2. Open or assign a GitHub Issue.
+3. Read the relevant doc(s):
    - Touching auth, JWT, login, tokens, or Subsonic credentials: read `docs/authentication.md` FIRST.
    - Touching `/federation/*`: read `docs/federation-api.md` FIRST. Update it AND bump `FEDERATION_API_VERSION` in `hub/src/version.ts` on any contract change.
    - Touching hub internals, conventions, or anything with a known gotcha: check `docs/hub-internals.md`.
-   - Architectural changes: read `docs/system-architecture.md`.
-3. Write tests alongside code. Run `pnpm test` + `pnpm typecheck` before declaring done.
+   - Architectural changes: update `docs/system-architecture.md` as part of the work.
+4. Write tests alongside code. Run `pnpm verify` (typecheck + test) before declaring done.
    - When querying the live database: check `hub/src/db/schema.sql` for the schema, then use `scripts/db-query.sh "SQL"`. Never exec into the container and try to import `better-sqlite3` manually.
-4. Update documentation and check for any outdated or inconsistent information.
-6. Commit work in phases, when all tests are passing
-7. Push branch to origin
-8. When work is completed, open a Pull Request in the Draft state
+5. Update documentation and check for any outdated or inconsistent information.
+6. Commit work in phases, when all tests are passing.
+7. Push branch to origin.
+8. When work is completed, open a Pull Request in the Draft state.
 
 ## Documentation rules
 
