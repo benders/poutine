@@ -35,16 +35,18 @@ The React SPA (served by the hub) or any third-party Subsonic-compatible app. Bo
 
 ### Hub
 
-Fastify + better-sqlite3. Four concerns:
+Fastify + better-sqlite3. Six concerns:
 
-| Concern            | Responsibility                                                                                                     |
-|--------------------|---------------------------------------------------------------------------------------------------------------------|
-| Client API         | Serve the SPA and the Subsonic `/rest/*` surface over a unified library view                                        |
-| Sync + merge       | Pull from local Navidrome (`syncLocal`) and each peer's Navidrome via `/proxy/rest/*`; merge into unified tables; dedup across instances |
-| Stream / art proxy | Route stream and cover-art requests to the correct source (local Navidrome via `/proxy/*`, or peer Navidrome via peer's `/proxy/*`) |
-| Admin              | Owner-only management: sync trigger, peer list, cache stats, instance identity                                      |
+| Concern            | Responsibility                                                                                                                                  |
+|--------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| Client API         | Serve the SPA and the Subsonic `/rest/*` surface over a unified library view                                                                     |
+| Sync + merge       | Pull from local Navidrome (`syncLocal`) and each peer's Navidrome via `/proxy/rest/*`; merge into unified tables; dedup across instances         |
+| Auto-sync          | `AutoSyncService` polls Navidrome's scan status; when a scan completes, kicks a local sync, then fans out to peers on a `SYNC_INTERVAL_MS` cadence |
+| Stream / art proxy | Route stream and cover-art requests to the correct source (local Navidrome via `/proxy/*`, or peer Navidrome via peer's `/proxy/*`)              |
+| External art       | `/external-art/*` resolves missing artist/release-group artwork from fanart.tv (primary, MBID-keyed) then Last.fm (fallback); results land in `art_cache` |
+| Admin              | Owner-only management under `/admin/*`: sync trigger, peer list, invitation issue/accept, cache stats, instance identity, user management        |
 
-Engineering details (directory layout, service classes, env vars) live in [hub-internals.md](hub-internals.md).
+Engineering details (directory layout, service classes, env vars) live in [hub-internals.md](hub-internals.md). External-art sources: [fanarttv-integration.md](fanarttv-integration.md) and [lastfm-integration.md](lastfm-integration.md).
 
 ### Navidrome
 
@@ -74,18 +76,33 @@ Cross-hub share IDs for albums and artists are resolved entirely locally by each
 
 ## Data model
 
-Two tables per entity — one "raw" (per-instance), one "unified" (deduped across instances):
+Catalog tables come in pairs — one "raw" (per-instance, scraped from Navidrome) and one "unified" (deduped across instances by MBID first, then normalized name):
 
 ```
 instance_artists    ─┐
-instance_albums     ─┼─ merge.ts ─> unified_artists
+instance_albums     ─┼─ merge.ts ─> unified_artists           ◀── unified_artist_sources
 instance_tracks     ─┘              unified_release_groups
-                                    unified_releases
+                                    unified_releases          ◀── unified_release_sources
                                     unified_tracks
                                     track_sources   (keyed by instance_id)
 ```
 
 `track_sources` is the branching point for streaming: each row records which instance (local or peer) holds a copy of a unified track. `instance_id = 'local'` means the bundled Navidrome; a peer's instance ID means that peer's Navidrome. `selectBestSource()` scores sources by format quality → bitrate → local tie-break. Deduplication rules and encoding conventions are documented in [hub-internals.md#federation](hub-internals.md#federation).
+
+The `unified_artist_sources` / `unified_release_sources` join tables let the same unified row be backed by multiple instances at once (used for "which peers own this album" UI and the Subsonic MusicFolders mapping — each peer surfaces as its own folder; see #123).
+
+Supporting tables:
+
+| Table                                  | Purpose                                                                              |
+|----------------------------------------|--------------------------------------------------------------------------------------|
+| `users`                                | Local accounts. AES-256-GCM-encrypted password (reversible for Subsonic `u+t+s`)     |
+| `instances`                            | Peer registry — id, pubkey, proxy URL, version, last-seen, last-sync state           |
+| `invitations`                          | Nonce-tracked signed invitations (consumed once; backs handshake + gossip replay)    |
+| `settings`                             | Singleton-style key/value (instance metadata, JWT secret reference, etc.)            |
+| `playlists`, `playlist_tracks`         | User-owned playlists over unified track IDs                                          |
+| `user_stars`                           | Per-user stars/favorites for artist, album, or track unified IDs                     |
+| `art_cache`                            | LRU-capped on-disk cache for cover art + external (fanart.tv / Last.fm) artwork     |
+| `sync_operations`, `stream_operations` | Operational logs (last sync per peer; recent stream activity for the admin UI)       |
 
 ## Play flow (source selection)
 
