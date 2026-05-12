@@ -194,6 +194,44 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"].genres).toHaveProperty("genre");
   });
 
+  it("getUser → returns authenticated user with admin roles", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getUser?u=tester&p=secret&f=json",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    expect(body["subsonic-response"].user.username).toBe("tester");
+    expect(body["subsonic-response"].user.adminRole).toBe(true);
+    expect(body["subsonic-response"].user.streamRole).toBe(true);
+  });
+
+  it("getUser.view (Feishin style) → ok", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getUser.view?u=tester&p=secret&f=json&username=tester",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    expect(body["subsonic-response"].user.username).toBe("tester");
+  });
+
+  it("getUser as non-admin requesting other user → error 50", async () => {
+    const enc = setPassword("pw2", app.passwordKey);
+    app.db
+      .prepare("INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 0)")
+      .run("user-2", "alice", enc);
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getUser?u=alice&p=pw2&f=json&username=tester",
+    });
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("failed");
+    expect(body["subsonic-response"].error.code).toBe(50);
+  });
+
   it("getLicense → valid license", async () => {
     const res = await app.inject({
       method: "GET",

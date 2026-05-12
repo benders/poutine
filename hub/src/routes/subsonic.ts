@@ -325,6 +325,47 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
+  // ── getUser ─────────────────────────────────────────────────────────────────
+
+  route("/getUser", async (request, reply) => {
+    const q = request.query as Record<string, string>;
+    const auth = request.subsonicUser!;
+    const requested = (q.username || "").trim();
+    // Subsonic spec: non-admins may only fetch their own record.
+    if (requested && requested !== auth.username && !auth.isAdmin) {
+      sendSubsonicError(reply, 50, "User is not authorized for the given operation.", q);
+      return;
+    }
+    const targetName = requested || auth.username;
+    const row = app.db
+      .prepare("SELECT username, is_admin FROM users WHERE username = ?")
+      .get(targetName) as { username: string; is_admin: number } | undefined;
+    if (!row) {
+      sendSubsonicError(reply, 70, "User not found.", q);
+      return;
+    }
+    const isAdmin = row.is_admin === 1;
+    sendSubsonicOk(reply, q, {
+      user: {
+        username: row.username,
+        email: "",
+        scrobblingEnabled: true,
+        adminRole: isAdmin,
+        settingsRole: isAdmin,
+        downloadRole: true,
+        uploadRole: false,
+        playlistRole: true,
+        coverArtRole: true,
+        commentRole: false,
+        podcastRole: false,
+        streamRole: true,
+        jukeboxRole: false,
+        shareRole: false,
+        videoConversionRole: false,
+      },
+    });
+  });
+
   // ── getMusicFolders ─────────────────────────────────────────────────────────
 
   route("/getMusicFolders", async (request, reply) => {
