@@ -29,7 +29,8 @@ export const castRoutes: FastifyPluginAsync = async (app) => {
         reply.status(401).send({ error: "Missing token" });
         return;
       }
-      if (!verifyCastToken(app.castSecret, trackId, token)) {
+      const verified = verifyCastToken(app.castSecret, trackId, token);
+      if (!verified) {
         reply.status(403).send({ error: "Invalid or expired token" });
         return;
       }
@@ -74,7 +75,7 @@ export const castRoutes: FastifyPluginAsync = async (app) => {
 
       const streamOpId = app.streamTracking.start({
         kind: "cast",
-        username: "cast",
+        username: verified.username,
         trackId: trackRow.id,
         trackTitle: trackRow.title,
         artistName: trackRow.artist_name,
@@ -122,7 +123,7 @@ export const castRoutes: FastifyPluginAsync = async (app) => {
           const qs = streamParams.toString();
           const path = `/federation/stream/${encodeURIComponent(best.remote_id)}${qs ? `?${qs}` : ""}`;
           response = await app.federatedFetch(peer, path, {
-            asUser: "cast",
+            asUser: verified.username,
             headers:
               typeof request.headers.range === "string" && !transcoded
                 ? { range: request.headers.range }

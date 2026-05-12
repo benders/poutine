@@ -229,9 +229,9 @@ Optional feature — gated by `SONOS_ENABLED=true`. Lets the bottom-of-screen pl
 **Components:**
 - `services/sonos-discovery.ts` — SSDP M-SEARCH on UDP `239.255.255.250:1900` for `urn:schemas-upnp-org:device:ZonePlayer:1`. Fetches `/xml/device_description.xml` for UDN + roomName.
 - `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`) on each device's `:1400`.
-- `services/cast-tokens.ts` — HMAC-signed short-lived (1h) tokens for unauthenticated stream URLs. Secret derived from the instance Ed25519 key via `deriveCastSecret`.
-- `routes/cast.ts` — `GET /cast/stream/:trackId?token=...`. Token-verified; reuses the local/peer source selection + transcoding pipeline.
-- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`.
+- `services/cast-tokens.ts` — HMAC-signed short-lived (1h) tokens for unauthenticated stream URLs. Secret derived from the instance Ed25519 key via `deriveCastSecret`. Token wire format `<sig>.<exp>.<base64url(username)>`; the username travels in the token so `/cast/stream` can attribute the stream and route federated peer fetches under the originating user.
+- `routes/cast.ts` — `GET /cast/stream/:trackId?token=...`. Token-verified; reuses the local/peer source selection + transcoding pipeline. Recovered username is used for stream-tracking and federated `asUser`.
+- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public.
 - `GET /api/capabilities` — frontend probe; returns `{ sonos: boolean }`.
 
 **Networking gotcha — host mode required.** SSDP needs UDP multicast which Docker's bridge networking blocks. Run with the Sonos override:

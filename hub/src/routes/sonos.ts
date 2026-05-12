@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { SonosControl, type TrackMetadata } from "../services/sonos-control.js";
 import type { SonosDiscoveryService } from "../services/sonos-discovery.js";
 import { signCastToken } from "../services/cast-tokens.js";
+import { requireAuth } from "../auth/middleware.js";
 
 /**
  * REST control surface for Sonos devices. Mounted at /api/sonos when
@@ -41,6 +42,11 @@ interface VolumeBody {
 
 export const sonosRoutes: FastifyPluginAsync = async (app) => {
   if (!app.config.sonosEnabled) return;
+
+  // Every route under /api/sonos/* requires a logged-in user. The frontend
+  // already sends the JWT via `Authorization: Bearer ...`; without this
+  // gate, anyone on the LAN could enumerate Sonos rooms and blast audio.
+  app.addHook("preHandler", requireAuth);
 
   app.get("/devices", async () => {
     return {
@@ -99,7 +105,20 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         | undefined;
       if (!trackRow) return reply.status(404).send({ error: "Track not found" });
 
-      const token = signCastToken(app.castSecret, { trackId });
+      // Recover username from the JWT-authenticated user so we can encode
+      // it in the cast token. Stream-tracking and federated peer routing
+      // at /cast/stream time both want the originating user's identity.
+      const user = app.db
+        .prepare("SELECT username FROM users WHERE id = ?")
+        .get(req.userId) as { username: string } | undefined;
+      if (!user) {
+        return reply.status(401).send({ error: "User not found" });
+      }
+
+      const token = signCastToken(app.castSecret, {
+        trackId,
+        username: user.username,
+      });
       const base = app.config.poutineLanUrl.replace(/\/+$/, "");
       const streamUri = `${base}/cast/stream/${encodeURIComponent(trackId)}?token=${encodeURIComponent(token)}`;
 
