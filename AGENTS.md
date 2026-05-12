@@ -24,7 +24,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
    - Touching `/federation/*`: read `docs/federation-api.md` FIRST. Update it AND bump `FEDERATION_API_VERSION` in `hub/src/version.ts` on any contract change.
    - Touching hub internals, conventions, or anything with a known gotcha: check `docs/hub-internals.md`.
    - Architectural changes: read `docs/system-architecture.md`.
-3. Write tests alongside code. Run `pnpm test` + `pnpm typecheck` before declaring done.
+3. Write tests alongside code. Run `pnpm verify` (typecheck + test) before declaring done.
    - When querying the live database: check `hub/src/db/schema.sql` for the schema, then use `scripts/db-query.sh "SQL"`. Never exec into the container and try to import `better-sqlite3` manually.
 4. Update documentation and check for any outdated or inconsistent information.
 6. Commit work in phases, when all tests are passing
