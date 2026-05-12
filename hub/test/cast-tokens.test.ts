@@ -9,35 +9,37 @@ const SECRET = Buffer.from("a".repeat(32));
 
 describe("cast tokens", () => {
   it("round-trips a valid token", () => {
-    const token = signCastToken(SECRET, { trackId: "track-1", userId: "cast" });
-    expect(verifyCastToken(SECRET, "track-1", token)?.userId).toBe("cast");
+    const token = signCastToken(SECRET, { trackId: "track-1" });
+    expect(verifyCastToken(SECRET, "track-1", token)).toBe(true);
   });
 
   it("rejects token for a different track id", () => {
-    const token = signCastToken(SECRET, { trackId: "track-1", userId: "cast" });
-    expect(verifyCastToken(SECRET, "track-2", token)).toBeNull();
+    const token = signCastToken(SECRET, { trackId: "track-1" });
+    expect(verifyCastToken(SECRET, "track-2", token)).toBe(false);
   });
 
   it("rejects tampered signature", () => {
-    const token = signCastToken(SECRET, { trackId: "track-1", userId: "cast" });
+    const token = signCastToken(SECRET, { trackId: "track-1" });
     const tampered = "AAAA" + token.slice(4);
-    expect(verifyCastToken(SECRET, "track-1", tampered)).toBeNull();
+    expect(verifyCastToken(SECRET, "track-1", tampered)).toBe(false);
   });
 
   it("rejects expired token", () => {
-    const token = signCastToken(SECRET, {
-      trackId: "track-1",
-      userId: "cast",
-      ttlSec: -10,
-    });
-    expect(verifyCastToken(SECRET, "track-1", token)).toBeNull();
+    const token = signCastToken(SECRET, { trackId: "track-1", ttlSec: -10 });
+    expect(verifyCastToken(SECRET, "track-1", token)).toBe(false);
   });
 
   it("rejects token signed with a different secret", () => {
-    const token = signCastToken(SECRET, { trackId: "track-1", userId: "cast" });
-    expect(
-      verifyCastToken(Buffer.from("b".repeat(32)), "track-1", token),
-    ).toBeNull();
+    const token = signCastToken(SECRET, { trackId: "track-1" });
+    expect(verifyCastToken(Buffer.from("b".repeat(32)), "track-1", token)).toBe(
+      false,
+    );
+  });
+
+  it("rejects malformed tokens", () => {
+    expect(verifyCastToken(SECRET, "track-1", "")).toBe(false);
+    expect(verifyCastToken(SECRET, "track-1", "no-dot")).toBe(false);
+    expect(verifyCastToken(SECRET, "track-1", "sig.notanumber")).toBe(false);
   });
 
   it("deriveCastSecret returns a 32-byte buffer deterministically", () => {

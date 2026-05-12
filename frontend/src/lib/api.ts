@@ -436,12 +436,20 @@ export function getSonosState(deviceId: string) {
   );
 }
 
-export function sonosPlay(deviceId: string, trackId: string, position?: number) {
+export function sonosPlay(
+  deviceId: string,
+  trackId: string,
+  opts: { position?: number; autoplay?: boolean } = {},
+) {
   return apiFetch(
     `/api/sonos/devices/${encodeURIComponent(deviceId)}/play`,
     {
       method: "POST",
-      body: JSON.stringify({ trackId, position }),
+      body: JSON.stringify({
+        trackId,
+        position: opts.position,
+        autoplay: opts.autoplay ?? true,
+      }),
     },
   );
 }

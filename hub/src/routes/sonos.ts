@@ -22,6 +22,13 @@ interface PlayBody {
   trackId: string;
   /** Optional start position in seconds. */
   position?: number;
+  /**
+   * When false, set the AVTransport URI + seek (if requested) but do NOT
+   * issue Play. Lets the frontend load a track on a paused sink without
+   * surprise auto-play when the user switches devices.
+   * Default: true (backwards compatible).
+   */
+  autoplay?: boolean;
 }
 
 interface SeekBody {
@@ -62,7 +69,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     async (req, reply) => {
       const dev = app.sonosDiscovery.get(req.params.id);
       if (!dev) return reply.status(404).send({ error: "Device not found" });
-      const { trackId, position } = req.body ?? ({} as PlayBody);
+      const { trackId, position, autoplay = true } = req.body ?? ({} as PlayBody);
       if (!trackId) return reply.status(400).send({ error: "trackId required" });
       if (!app.config.poutineLanUrl) {
         return reply.status(500).send({
@@ -92,7 +99,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         | undefined;
       if (!trackRow) return reply.status(404).send({ error: "Track not found" });
 
-      const token = signCastToken(app.castSecret, { trackId, userId: "cast" });
+      const token = signCastToken(app.castSecret, { trackId });
       const base = app.config.poutineLanUrl.replace(/\/+$/, "");
       const streamUri = `${base}/cast/stream/${encodeURIComponent(trackId)}?token=${encodeURIComponent(token)}`;
 
@@ -111,7 +118,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         if (typeof position === "number" && position > 0) {
           await app.sonosControl.seek(dev, position);
         }
-        await app.sonosControl.play(dev);
+        if (autoplay) await app.sonosControl.play(dev);
         return { ok: true };
       } catch (err) {
         return reply.status(502).send({ error: String(err) });

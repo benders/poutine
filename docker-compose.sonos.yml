@@ -4,19 +4,34 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
 #
+# Why an override is needed:
+#   - Docker bridge networking blocks UDP multicast, so SSDP discovery
+#     of Sonos zones fails. Host mode exposes the multicast group.
+#   - Under host mode the hub leaves the user-defined bridge network, so
+#     it can no longer resolve `navidrome` via Docker's embedded DNS. This
+#     file therefore publishes Navidrome on localhost:4533 and points the
+#     hub at it via NAVIDROME_URL.
+#
 # Side effects:
-#   - The `ports:` mapping is ignored under host networking; the hub binds
-#     directly to the host's PORT (default 3000). Set POUTINE_HOST_PORT
-#     to the port your reverse proxy expects.
-#   - The hub joins the host's network instead of Compose's `public` /
-#     `internal` networks. Navidrome stays on the internal network, but
-#     the hub now reaches it via NAVIDROME_URL=http://127.0.0.1:4533 if
-#     navidrome is also on the host, or via the published port if not.
+#   - The hub binds directly to the host's PORT (default 3000). The
+#     `ports:` mapping from the base file is irrelevant under host mode.
+#   - Navidrome's admin UI is now reachable on the host at 127.0.0.1:4533
+#     (loopback only). If you don't want that surface area, switch to a
+#     different mitigation (e.g. socat sidecar) — but losing the bridge
+#     means *something* has to bridge the hub→navidrome hop.
 #   - On macOS / Windows Docker Desktop, host networking has limitations.
 #     SSDP discovery typically requires a Linux host.
 services:
   hub:
     network_mode: host
-    # Compose ignores `ports:` in host mode; documented for clarity.
-    ports: !reset []
-    networks: !reset null
+    environment:
+      # Override the base file's `http://navidrome:4533` — Docker DNS is
+      # unreachable from host networking. 127.0.0.1 lands on the published
+      # port from the navidrome service below.
+      - NAVIDROME_URL=http://127.0.0.1:4533
+
+  navidrome:
+    # Publish on loopback only so the bridge-less hub can reach it without
+    # exposing Navidrome's admin UI to the LAN.
+    ports:
+      - "127.0.0.1:4533:4533"

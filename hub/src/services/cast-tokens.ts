@@ -6,16 +6,14 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  * Subsonic credentials.
  *
  * Token format: `<base64url(hmac)>.<exp>` where exp is unix seconds. The
- * signed message is `trackId|userId|exp`, so a token issued for one track
- * can't be replayed against another.
+ * signed message is `trackId|exp`, so a token issued for one track can't
+ * be replayed against another.
+ *
+ * Audit: cast streams are recorded by stream-tracking with username="cast".
+ * If per-user attribution is needed later, extend the token to carry the
+ * userId and update verify to recover and return it (sign and verify must
+ * agree on the exact wire format).
  */
-
-export interface CastTokenPayload {
-  trackId: string;
-  userId: string;
-  /** Unix seconds when the token expires. */
-  exp: number;
-}
 
 const DEFAULT_TTL_SEC = 60 * 60; // 1h — covers a long track plus buffering
 
@@ -38,46 +36,43 @@ function sign(secret: Buffer, message: string): Buffer {
 
 export function signCastToken(
   secret: Buffer,
-  payload: { trackId: string; userId: string; ttlSec?: number },
+  payload: { trackId: string; ttlSec?: number },
 ): string {
   const exp = Math.floor(Date.now() / 1000) + (payload.ttlSec ?? DEFAULT_TTL_SEC);
-  const message = `${payload.trackId}|${payload.userId}|${exp}`;
+  const message = `${payload.trackId}|${exp}`;
   return `${b64url(sign(secret, message))}.${exp}`;
 }
 
 /**
- * Verifies the token against the trackId + secret. Returns the userId on
- * success, or null on signature mismatch / expiry / malformed token.
+ * Verifies the token against the trackId + secret. Returns true on success,
+ * or false on signature mismatch / expiry / malformed token.
  */
 export function verifyCastToken(
   secret: Buffer,
   trackId: string,
   token: string,
-): { userId: string } | null {
-  if (!token) return null;
+): boolean {
+  if (!token) return false;
   const dot = token.lastIndexOf(".");
-  if (dot < 0) return null;
+  if (dot < 0) return false;
   const sigB64 = token.slice(0, dot);
   const exp = parseInt(token.slice(dot + 1), 10);
-  if (!Number.isFinite(exp)) return null;
-  if (exp < Math.floor(Date.now() / 1000)) return null;
+  if (!Number.isFinite(exp)) return false;
+  if (exp < Math.floor(Date.now() / 1000)) return false;
 
-  // We don't transmit the userId in the token — the caller of signCastToken
-  // is expected to record (token -> userId) elsewhere. For Phase 1 we keep
-  // it simple: bind to a sentinel "cast" identity. Callers that want
-  // per-user audit can swap this for a stored map.
-  const userId = "cast";
-  const expected = sign(secret, `${trackId}|${userId}|${exp}`);
+  const expected = sign(secret, `${trackId}|${exp}`);
   const provided = fromB64url(sigB64);
-  if (provided.length !== expected.length) return null;
-  if (!timingSafeEqual(provided, expected)) return null;
-  return { userId };
+  if (provided.length !== expected.length) return false;
+  return timingSafeEqual(provided, expected);
 }
 
 /**
  * Derive a stable HMAC secret from the instance's Ed25519 private key.
  * Avoids introducing another env var while keeping the cast-token secret
  * independent of the federation signing key path.
+ *
+ * Note: compromise of the federation private key also compromises cast
+ * tokens (and vice versa).
  */
 export function deriveCastSecret(privateKeyDer: Buffer): Buffer {
   return createHmac("sha256", privateKeyDer).update("poutine/cast-token/v1").digest();

@@ -173,33 +173,43 @@ export function PlayerBar() {
   // ── Sonos sink: route playback through the hub's Sonos API ───────────────
   //
   // Track-change effect: when casting and the track changes, push it via
-  // sonosPlay() — the backend mints a signed cast URL and issues
-  // SetAVTransportURI + Play.
+  // sonosPlay(). The backend mints a signed cast URL and issues
+  // SetAVTransportURI; it issues Play only if autoplay=true. Without that
+  // gate, simply switching the sink to Sonos while the local player was
+  // paused would surprise the user with playback on the speaker.
+  //
+  // We pin to `deviceId` rather than the `sink` object so a no-op setSink
+  // call (new object literal, same value) doesn't re-trigger play.
+  const deviceId = isSonos ? sink.deviceId : null;
   useEffect(() => {
-    if (!isSonos || !currentTrack) return;
-    void sonosPlay(sink.deviceId, currentTrack.id).catch((err) => {
-      pushToast({
-        kind: "error",
-        title: "Sonos play failed",
-        detail: err instanceof Error ? err.message : String(err),
-      });
-      setPlaying(false);
-    });
-  }, [isSonos, sink, currentTrack?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!deviceId || !currentTrack) return;
+    void sonosPlay(deviceId, currentTrack.id, { autoplay: isPlaying }).catch(
+      (err) => {
+        pushToast({
+          kind: "error",
+          title: "Sonos play failed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        setPlaying(false);
+      },
+    );
+    // isPlaying intentionally excluded — pause/resume is handled by its
+    // own effect below. We only read its value at track-change time.
+  }, [deviceId, currentTrack?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Play/pause toggle while casting.
   useEffect(() => {
-    if (!isSonos || !currentTrack) return;
-    void sonosCommand(sink.deviceId, isPlaying ? "resume" : "pause").catch(() => {
+    if (!deviceId || !currentTrack) return;
+    void sonosCommand(deviceId, isPlaying ? "resume" : "pause").catch(() => {
       // Best effort — state poll will resync.
     });
-  }, [isPlaying, isSonos]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isPlaying, deviceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Volume on Sonos. 0..1 in the UI → 0..100 on the device.
   useEffect(() => {
-    if (!isSonos) return;
-    void sonosSetVolume(sink.deviceId, Math.round(volume * 100)).catch(() => {});
-  }, [volume, isSonos]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!deviceId) return;
+    void sonosSetVolume(deviceId, Math.round(volume * 100)).catch(() => {});
+  }, [volume, deviceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Stop local audio when switching to Sonos so it doesn't keep playing
   // in the background.
@@ -213,13 +223,18 @@ export function PlayerBar() {
   }, [isSonos]);
 
   // Poll Sonos transport state for position + end-of-track detection.
+  // Coalesces: if a tick is still in flight when the interval fires, skip
+  // — otherwise slow SOAP round-trips would pile up requests.
   useEffect(() => {
-    if (!isSonos || !currentTrack) return;
+    if (!deviceId || !currentTrack) return;
     let cancelled = false;
+    let inFlight = false;
     let lastState = "";
     const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const s = await getSonosState(sink.deviceId);
+        const s = await getSonosState(deviceId);
         if (cancelled) return;
         if (s.duration > 0) setDuration(s.duration);
         setCurrentTime(s.position);
@@ -230,6 +245,8 @@ export function PlayerBar() {
         lastState = s.state;
       } catch {
         // device probably went away — let the UI keep its last state
+      } finally {
+        inFlight = false;
       }
     };
     void tick();
@@ -238,7 +255,7 @@ export function PlayerBar() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [isSonos, sink, currentTrack?.id, next, setCurrentTime, setDuration]);
+  }, [deviceId, currentTrack?.id, next, setCurrentTime, setDuration]);
 
   const handleTimeUpdate = useCallback(() => {
     if (audioRef.current) {
@@ -289,9 +306,9 @@ export function PlayerBar() {
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
-    if (isSonos) {
+    if (deviceId) {
       setCurrentTime(time);
-      void sonosSeek(sink.deviceId, time).catch(() => {});
+      void sonosSeek(deviceId, time).catch(() => {});
       return;
     }
     const audio = audioRef.current;
@@ -317,8 +334,12 @@ export function PlayerBar() {
 
   if (!currentTrack) {
     return (
-      <div className="fixed bottom-0 left-0 right-0 h-20 bg-player border-t border-border flex items-center justify-center">
+      <div className="fixed bottom-0 left-0 right-0 h-20 bg-player border-t border-border flex items-center justify-between px-8">
+        <div className="flex-1" />
         <p className="text-text-muted text-sm">No track playing</p>
+        <div className="flex-1 flex justify-end">
+          {sonosAvailable && <DevicePicker />}
+        </div>
         <audio ref={audioRef} preload="auto" />
       </div>
     );
