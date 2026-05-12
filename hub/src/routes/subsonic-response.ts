@@ -7,8 +7,11 @@ export const SERVER_VERSION = APP_VERSION;
 
 export type Format = "json" | "xml";
 
+// Subsonic spec: default response format is XML when `f=` is omitted.
+// Clients that don't ask for JSON (e.g. Amperfy, Feishin probing /rest/ping)
+// fail to parse a JSON envelope and surface the failure as an auth error.
 export function getFormat(query: Record<string, string>): Format {
-  return query.f === "xml" ? "xml" : "json";
+  return query.f === "json" ? "json" : "xml";
 }
 
 // ── XML serializer ────────────────────────────────────────────────────────────

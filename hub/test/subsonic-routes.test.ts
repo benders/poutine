@@ -78,6 +78,17 @@ describe("Subsonic routes — auth", () => {
     expect(body["subsonic-response"].status).toBe("ok");
   });
 
+  it("ping with no f= param → defaults to XML (Subsonic spec)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/ping?u=tester&p=secret",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/application\/xml/);
+    expect(res.body).toMatch(/^<\?xml/);
+    expect(res.body).toContain('status="ok"');
+  });
+
   it("ping with f=xml → XML content-type and correct envelope", async () => {
     const res = await app.inject({
       method: "GET",
