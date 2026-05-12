@@ -8,74 +8,15 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import os from "node:os";
-import path from "node:path";
 import fs from "node:fs";
-import type { AddressInfo } from "node:net";
-import type { FastifyInstance } from "fastify";
-import { buildApp } from "../src/server.js";
-import { seedAdminUser } from "./helpers/admin-user.js";
 import { seedPeer } from "./helpers/seed-peer.js";
+import { admit, startHub, tmpPath, type Hub } from "./helpers/hub-setup.js";
 import { gossipFromPeer } from "../src/federation/gossip.js";
 import {
   createInvitation,
   encodeInvitation,
 } from "../src/federation/invitations.js";
 import { loadOrCreatePrivateKey } from "../src/federation/signing.js";
-import type { Config } from "../src/config.js";
-
-function tmpPath(suffix = "") {
-  return path.join(
-    os.tmpdir(),
-    `poutine-gossip-${Date.now()}-${Math.random().toString(36).slice(2)}-${suffix}`,
-  );
-}
-
-interface Hub {
-  app: FastifyInstance;
-  port: number;
-  url: string;
-  keyPath: string;
-  token: string;
-}
-
-async function startHub(id: string): Promise<Hub> {
-  const keyPath = tmpPath(`${id}-key.pem`);
-  const config: Partial<Config> = {
-    databasePath: ":memory:",
-    jwtSecret: `test-${id}`,
-    poutinePrivateKeyPath: keyPath,
-    poutineInstanceId: id,
-    navidromeUrl: "http://127.0.0.1:1",
-    navidromeUsername: "x",
-    navidromePassword: "x",
-  };
-  const app = await buildApp(config);
-  await app.ready();
-  await app.listen({ port: 0, host: "127.0.0.1" });
-  const port = (app.server.address() as AddressInfo).port;
-  const url = `http://127.0.0.1:${port}`;
-  const { token } = await seedAdminUser(app, `admin-${id}`);
-  return { app, port, url, keyPath, token };
-}
-
-async function admit(inviter: Hub, invitee: Hub) {
-  const issue = await inviter.app.inject({
-    method: "POST",
-    url: "/admin/peers/invite",
-    headers: { authorization: `Bearer ${inviter.token}` },
-    payload: { ourUrl: inviter.url, inviteeUrl: invitee.url, expiresInSec: 600 },
-  });
-  expect(issue.statusCode).toBe(200);
-  const { invitation } = issue.json() as { invitation: string };
-  const accept = await invitee.app.inject({
-    method: "POST",
-    url: "/admin/peers/accept",
-    headers: { authorization: `Bearer ${invitee.token}` },
-    payload: { invitation, ourUrl: invitee.url },
-  });
-  expect(accept.statusCode).toBe(200);
-}
 
 describe("federation gossip (v5, #147)", () => {
   let hubA: Hub;
@@ -136,7 +77,7 @@ describe("federation gossip (v5, #147)", () => {
 
     // Fabricate a malicious peer entry: a payload signed by a stranger key,
     // claiming to come from hub-a. Signature won't match hub-a's pubkey.
-    const strangerKey = tmpPath("stranger.pem");
+    const strangerKey = tmpPath("gossip", "stranger.pem");
     try {
       const { privateKey: strangerPriv, publicKeyBase64: strangerPub } =
         loadOrCreatePrivateKey(strangerKey);
@@ -226,7 +167,7 @@ describe("federation gossip (v5, #147)", () => {
     // but for inviters we already know we pin the key.
     await admit(hubA, hubB);
 
-    const strangerKey = tmpPath("stranger.pem");
+    const strangerKey = tmpPath("gossip", "stranger.pem");
     try {
       const { privateKey: strangerPriv, publicKeyBase64: strangerPub } =
         loadOrCreatePrivateKey(strangerKey);
