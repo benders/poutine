@@ -58,3 +58,5 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 | `docs/frontend-testing.md`           | Vitest + RTL setup, patterns, gotchas                            |
 | `docs/fanarttv-integration.md`       | fanart.tv artist image / album cover source (primary, MBID-keyed) |
 | `docs/lastfm-integration.md`         | Last.fm fallback for artists without an MBID                     |
+| `docs/sonos.md`                      | Sonos casting — protocol, components, libraries, testing         |
+| `docs/dlna.md`                       | DLNA MediaServer — protocol, object hierarchy, LAN gate, testing |
