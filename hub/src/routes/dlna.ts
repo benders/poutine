@@ -26,6 +26,7 @@ import {
   pickXmlTag,
   xmlEscape,
 } from "../services/soap.js";
+import { requireLan } from "../auth/lan-only.js";
 import { APP_VERSION } from "../version.js";
 
 declare module "fastify" {
@@ -52,6 +53,13 @@ export const dlnaRoutes: FastifyPluginAsync = async (app) => {
       done(null, body);
     },
   );
+
+  // LAN gate. DLNA has no notion of user identity; we deliberately leave
+  // every route here unauthenticated so off-the-shelf UPnP clients work
+  // without surgery. To prevent that openness from leaking through a
+  // public tunnel (Cloudflare/Caddy/nginx/Tailscale Funnel), reject any
+  // request that carries a proxy-forwarding header. See auth/lan-only.ts.
+  app.addHook("preHandler", requireLan);
 
   app.get("/device.xml", async (_req, reply) => {
     reply
