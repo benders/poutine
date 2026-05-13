@@ -249,6 +249,36 @@ The override puts **both** services on `network_mode: host`. Hub needs host net 
 
 **Device picker.** `frontend/src/components/player/DevicePicker.tsx`. Cast icon in `PlayerBar` next to the volume slider — only rendered if `/api/capabilities` reports `sonos: true`. Device selection is not persisted across sessions (always defaults to local browser playback).
 
+## DLNA MediaServer (issue #175)
+
+Optional feature — gated by `DLNA_ENABLED=true`. Advertises Poutine as a UPnP `MediaServer:1` on the LAN so Windows Media Player, Xbox, Kodi, VLC, BubbleUPnP, etc. can **browse + stream** the merged library. Reuses the host-networking compose override from Sonos casting and shares `POUTINE_LAN_URL`.
+
+**Shared primitives.** DIDL-Lite + SOAP helpers live in `services/didl.ts` and `services/soap.ts` — used by both Sonos casting and the DLNA MediaServer.
+
+**Components:**
+- `services/ssdp-advertiser.ts` — binds UDP `239.255.255.250:1900`, periodically multicasts NOTIFY `ssdp:alive`, responds to M-SEARCH for `upnp:rootdevice`, our `uuid:<udn>`, `MediaServer:1`, `ContentDirectory:1`, `ConnectionManager:1`. Sends NOTIFY `ssdp:byebye` on shutdown.
+- `services/dlna-objects.ts` — UPnP object-ID encoder/decoder + `Browse` implementation backed by `unified_artists` / `unified_release_groups` / `unified_tracks`. IDs are deterministic (`0/music/artist/<uuid>`, `0/music/album/<uuid>`) so WMP's aggressive client-side cache survives restarts.
+- `routes/dlna.ts` — `GET /dlna/device.xml`, SCPDs at `/dlna/scpd/*`, SOAP control at `/dlna/control/{content-directory,connection-manager}`, and `GET /dlna/stream/:trackId`. Stream endpoint sets `transferMode.dlna.org` and `contentFeatures.dlna.org` headers (WMP rejects responses missing these), passes `content-length` through from upstream, and reuses the local/peer source-selection + transcoding pipeline.
+- `/api/capabilities` adds `dlna: boolean` alongside `sonos`.
+
+**Object hierarchy (v1):**
+
+```
+0 (root)
+└─ 0/music
+   ├─ 0/music/artists          → 0/music/artist/<unified_artist_id>
+   ├─ 0/music/albums           → 0/music/album/<unified_release_group_id>
+   └─ 0/music/tracks
+```
+
+Release-level (edition) browsing is not exposed — `unified_release_groups` is the natural "album" object for DLNA clients.
+
+**UDN.** Derived deterministically from `POUTINE_INSTANCE_ID` (`sha1("poutine/dlna/<id>")` reshaped as a UUID). Reusing the same instance ID across restarts keeps the same UDN, so clients don't re-add the server every boot.
+
+**Auth.** DLNA has no notion of user identity. `GET /dlna/stream/:trackId` is unauthenticated when the feature is enabled — anyone on the LAN can browse and stream. Stream activity is attributed to `DLNA_PSEUDO_USER` (defaults to the owner). If LAN exposure isn't acceptable, leave `DLNA_ENABLED=false`.
+
+**Transcoding.** v1 ships pass-through only — the response MIME mirrors the source file (mp3 → `audio/mpeg`, flac → `audio/flac`, etc.). Windows Media Player Legacy only handles MP3/WMA cleanly; everything else may fail on that client. Document, don't fix — most modern DLNA clients (Kodi, VLC, BubbleUPnP) handle FLAC and friends natively.
+
 ## Testing notes
 
 - **`*.integration.test.ts` excluded from CI.** `vitest.config.ts` has the exclude glob. Integration tests that hit real external servers (e.g. `subsonic.integration.test.ts`) are manual-run only.
