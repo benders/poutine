@@ -71,6 +71,29 @@ next to the volume slider — only rendered if `/api/capabilities` reports
 `sonos: true`. Device selection is not persisted across sessions (always
 defaults to local browser playback).
 
+## Bonded / stereo pairs (known limitation — issue #177)
+
+`SonosDiscoveryService` treats every SSDP responder as an independent device.
+In a stereo pair (or any bonded zone) both RINCONs respond to M-SEARCH, so
+`/api/sonos/devices` lists them both — typically with identical `room` values.
+
+Only the **coordinator** of a bonded zone accepts `AVTransport:1` commands.
+Empirically, the satellite reports:
+
+- empty `CurrentZoneGroupName` / `CurrentZoneGroupID` /
+  `CurrentZonePlayerUUIDsInGroup` from `ZoneGroupTopology#GetZoneGroupAttributes`
+- `TrackURI=x-rincon:<coordinator-UDN>` from `AVTransport#GetPositionInfo`
+- empty `Actions` from `AVTransport#GetCurrentTransportActions`
+- UPnP 701 errors from `GroupRenderingControl#GetGroupVolume`/`GetGroupMute`
+
+Targeting the satellite makes commands silently no-op. The fix (issue #177)
+is to call `ZoneGroupTopology#GetZoneGroupState` on one device after discovery
+and collapse each `<ZoneGroup Coordinator="…">` into a single logical device.
+Note: `GetZoneGroupAttributes` on the coordinator only lists the coordinator
+UUID in `CurrentZonePlayerUUIDsInGroup` — satellite UUIDs are hidden at that
+layer and only appear in the full `GetZoneGroupState` XML as `<Satellite>`
+children. Don't rely on `GetZoneGroupAttributes` alone.
+
 ## Auth
 
 | Surface              | Auth                                                                  |
@@ -121,6 +144,21 @@ If you ever need to script a real-zone interaction (e.g. for an interactive
 probe), the same approach as the DLNA browse probe in `docs/dlna.md` works —
 substitute `ZonePlayer:1` for the SSDP ST and use the right control URL
 (`http://<ip>:1400/MediaRenderer/AVTransport/Control`).
+
+### Diagnostic helper — `scripts/sonos-dump.mjs`
+
+Read-only probe for a single Sonos device. Fetches `/xml/device_description.xml`,
+enumerates every SCPD action list, and runs ~30 curated `Get*` SOAP probes
+(transport state, position, group attrs, volume, alarms, music services,
+etc.). Useful for inspecting bonded-pair state, comparing firmware
+capabilities, and reverse-engineering new actions.
+
+```bash
+node scripts/sonos-dump.mjs 192.168.1.42        # human-readable
+node scripts/sonos-dump.mjs 192.168.1.42 --json # machine-readable
+```
+
+Issues no state-changing actions; safe to run against active zones.
 
 **Be careful when issuing probes on a network with active Sonos zones**:
 sending `SetAVTransportURI` + `Play` to a zone interrupts whatever's
