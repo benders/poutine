@@ -390,10 +390,11 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   });
 
   // Cleanup on close
-  app.addHook("onClose", () => {
+  app.addHook("onClose", async () => {
     autoSync.stop();
     if (sonosDiscovery) sonosDiscovery.stop();
-    if (ssdpAdvertiser) ssdpAdvertiser.stop();
+    // Await so byebye packets actually leave the socket before close().
+    if (ssdpAdvertiser) await ssdpAdvertiser.stop();
     process.off("SIGHUP", sighupHandler);
     db.close();
   });

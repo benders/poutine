@@ -91,6 +91,41 @@ describe("parseMSearch", () => {
     );
     expect(parseMSearch(buf)).toBeNull();
   });
+
+  it("coerces a non-numeric MX header to 0", () => {
+    // `parseInt("abc", 10)` is NaN — without the guard, the random-delay
+    // arithmetic in the advertiser propagates NaN into setTimeout, which
+    // is fine but defeats the spec's "answer-immediately" semantics.
+    const buf = Buffer.from(
+      [
+        "M-SEARCH * HTTP/1.1",
+        'MAN: "ssdp:discover"',
+        "MX: abc",
+        "ST: ssdp:all",
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    expect(parseMSearch(buf)).toEqual({
+      st: "ssdp:all",
+      mx: 0,
+      man: "ssdp:discover",
+    });
+  });
+
+  it("coerces a negative MX to 0", () => {
+    const buf = Buffer.from(
+      [
+        "M-SEARCH * HTTP/1.1",
+        'MAN: "ssdp:discover"',
+        "MX: -5",
+        "ST: ssdp:all",
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    expect(parseMSearch(buf)?.mx).toBe(0);
+  });
 });
 
 describe("matchTargets", () => {

@@ -71,8 +71,10 @@ describe("DLNA SSDP advertiser (integration)", () => {
     await new Promise((res) => setTimeout(res, 300));
   });
 
-  afterAll(() => {
-    advertiser.stop();
+  afterAll(async () => {
+    // `stop()` is exercised explicitly by the byebye test below; calling it
+    // a second time is a no-op (socket already cleared).
+    await advertiser.stop();
   });
 
   it("responds to M-SEARCH for MediaServer:1 with our LOCATION + USN", async () => {
@@ -112,6 +114,63 @@ describe("DLNA SSDP advertiser (integration)", () => {
     } finally {
       sock.close();
     }
+  });
+
+  it("multicasts ssdp:byebye for every advertised target on stop()", async () => {
+    // Spin up a dedicated advertiser so we can stop() it inside the test
+    // without affecting the suite-level instance. Listen on a separate
+    // multicast-bound socket for the byebye stream.
+    const advertiser2 = new SsdpAdvertiser({
+      uuid: "byebye-test-uuid-00000000-0000-0000-0000",
+      locationUrl: LOCATION_URL,
+      serverString: "PoutineTest/0.0 UPnP/1.0",
+      intervalMs: 60_000, // suppress alive churn during the test
+      maxAgeSec: 60,
+      log: { info: () => {}, error: () => {} },
+    });
+    advertiser2.start();
+    await new Promise((res) => setTimeout(res, 200));
+
+    const listener = dgram.createSocket({ type: "udp4", reuseAddr: true });
+    const seen = new Set<string>();
+    const collected = new Promise<void>((resolve) => {
+      listener.on("message", (msg) => {
+        const text = msg.toString("utf8");
+        if (
+          text.includes("NTS: ssdp:byebye") &&
+          text.includes("byebye-test-uuid")
+        ) {
+          // Capture the NT header (after `NT: `).
+          const m = /\r\nNT:\s*([^\r]+)\r\n/i.exec(text);
+          if (m) seen.add(m[1].trim());
+        }
+        if (seen.size >= 5) resolve();
+      });
+    });
+
+    await new Promise<void>((res) =>
+      listener.bind(SSDP_PORT, () => {
+        try {
+          listener.addMembership(SSDP_ADDR);
+        } catch {
+          /* host may already be joined */
+        }
+        res();
+      }),
+    );
+
+    await advertiser2.stop();
+    // Tight upper bound: byebye sends are awaited before the socket closes,
+    // so we should see all five within ~100 ms even on slow CI.
+    await Promise.race([
+      collected,
+      new Promise<void>((res) => setTimeout(res, 1500)),
+    ]);
+    listener.close();
+
+    expect(seen.size).toBe(5);
+    expect(seen.has("upnp:rootdevice")).toBe(true);
+    expect(seen.has(MEDIA_SERVER_ST)).toBe(true);
   });
 
   it("M-SEARCH with ssdp:all returns one reply per advertised target", async () => {

@@ -44,7 +44,7 @@ export function detectProxyHeader(
 export async function requireLan(
   request: FastifyRequest,
   reply: FastifyReply,
-): Promise<void> {
+): Promise<FastifyReply | void> {
   const found = detectProxyHeader(
     request.headers as Record<string, unknown>,
   );
@@ -53,6 +53,9 @@ export async function requireLan(
       { proxyHeader: found, url: request.url },
       "Rejected non-LAN request to LAN-only endpoint",
     );
-    reply.status(403).send({ error: "LAN-only endpoint" });
+    // Explicit `return reply` makes the halt unambiguous. Fastify also
+    // stops the lifecycle when a reply is sent in a preHandler, but our
+    // sibling preHandlers (e.g. requireAuth) use this form too — match.
+    return reply.status(403).send({ error: "LAN-only endpoint" });
   }
 }
