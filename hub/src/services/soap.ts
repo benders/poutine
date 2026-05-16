@@ -3,15 +3,18 @@
  * MediaServer. Both speak SOAP-over-HTTP with the same envelope shape, so
  * the envelope builder and a couple of XML primitives live here.
  */
+import { XMLParser } from "fast-xml-parser";
+
+const XML_ESCAPE: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&apos;",
+};
 
 export function xmlEscape(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    c === "&" ? "&amp;"
-      : c === "<" ? "&lt;"
-        : c === ">" ? "&gt;"
-          : c === '"' ? "&quot;"
-            : "&apos;",
-  );
+  return s.replace(/[&<>"']/g, (c) => XML_ESCAPE[c]);
 }
 
 /**
@@ -57,24 +60,70 @@ export function buildSoapResponse(
 }
 
 /**
- * Pick the first text content of `<tag>` in `xml`. Ignores namespace prefixes.
- * Returns null if not found. Decodes the common XML entities so callers
- * receive plain text.
+ * Single-pass parser tuned for SOAP-action argument extraction. Strips
+ * namespace prefixes so callers can name args by their local tag (`Browse`
+ * args travel as `<ObjectID>…` with no prefix, but `<u:Browse>` wraps them
+ * and `<s:Body>` wraps that — `removeNSPrefix` flattens both).
+ */
+const SOAP_ARG_PARSER = new XMLParser({
+  ignoreAttributes: true,
+  removeNSPrefix: true,
+  // Treat text as string; UPnP arg values are always strings on the wire.
+  parseTagValue: false,
+  trimValues: true,
+});
+
+/**
+ * Look up the first text value for a given UPnP action argument name in a
+ * SOAP request body. Returns null when not present. Namespace prefixes on
+ * the request envelope are ignored.
+ *
+ * Uses fast-xml-parser rather than a regex so nested same-named elements
+ * or CDATA can't trick us — important when ContentDirectory `Search` lands
+ * and starts carrying user-supplied criteria strings.
  */
 export function pickXmlTag(xml: string, tag: string): string | null {
-  const re = new RegExp(`<(?:[\\w-]+:)?${tag}[^>]*>([\\s\\S]*?)</(?:[\\w-]+:)?${tag}>`, "i");
-  const m = xml.match(re);
-  if (!m) return null;
-  return decodeEntities(m[1]);
+  let parsed: unknown;
+  try {
+    parsed = SOAP_ARG_PARSER.parse(xml);
+  } catch {
+    return null;
+  }
+  const found = findFirstNamed(parsed, tag);
+  if (found === null || found === undefined) return null;
+  if (typeof found === "string") return found;
+  if (typeof found === "number" || typeof found === "boolean") {
+    return String(found);
+  }
+  if (typeof found === "object") {
+    // Self-closing tag (`<ObjectID/>`) parses to {} — treat as empty string,
+    // matching the `<ObjectID></ObjectID>` case the old regex returned "".
+    return "";
+  }
+  return null;
 }
 
-function decodeEntities(s: string): string {
-  return s
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&");
+function findFirstNamed(node: unknown, tag: string): unknown {
+  if (node === null || typeof node !== "object") return undefined;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = findFirstNamed(item, tag);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+  const obj = node as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(obj, tag)) {
+    const v = obj[tag];
+    // If multiple same-named children at this level, prefer the first.
+    if (Array.isArray(v)) return v[0];
+    return v;
+  }
+  for (const key of Object.keys(obj)) {
+    const hit = findFirstNamed(obj[key], tag);
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
 }
 
 /**

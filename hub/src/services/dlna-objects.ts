@@ -61,11 +61,11 @@ export function parseObjectId(s: string): ParsedObjectId | null {
 }
 
 export function artistObjectId(unifiedArtistId: string): string {
-  return `${ARTISTS_ID.replace("/artists", "/artist")}/${unifiedArtistId}`;
+  return `0/music/artist/${unifiedArtistId}`;
 }
 
 export function albumObjectId(unifiedReleaseGroupId: string): string {
-  return `${ALBUMS_ID.replace("/albums", "/album")}/${unifiedReleaseGroupId}`;
+  return `0/music/album/${unifiedReleaseGroupId}`;
 }
 
 export interface BrowseOptions {
