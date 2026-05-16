@@ -40,6 +40,10 @@ Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static file
 | `pnpm test:federation`      | Three-hub federation integration test           |
 | `pnpm lint`                 | Lint both packages                              |
 | `pnpm typecheck`            | Typecheck both packages                         |
+| `pnpm verify`               | Typecheck + test (pre-commit gate)              |
+| `pnpm hub:up`               | `docker compose up -d --build`                  |
+| `pnpm hub:up:fresh`         | Same, with `--force-recreate`                   |
+| `pnpm hub:logs`             | Follow hub container logs                       |
 | `docker compose up --build` | Full stack via Docker                           |
 
 ## Testing

@@ -13,7 +13,7 @@ Poutine implements the [OpenSubsonic API](https://opensubsonic.netlify.app/) —
 
 ## Response formats
 
-Both JSON (`f=json`, default) and XML (`f=xml`) supported. Default is JSON.
+Both JSON (`f=json`) and XML (`f=xml`) supported. Default is XML when `f=` is omitted, per Subsonic spec — clients like Amperfy and Feishin probe without `f=` and fail to parse a JSON envelope (surfaces as an auth error).
 
 ## Auth
 
@@ -192,7 +192,7 @@ clients behave correctly without per-client workarounds.
 
 | Endpoint         | Status          | Notes |
 |------------------|-----------------|-------|
-| `getUser`        | NOT IMPLEMENTED |       |
+| `getUser`        | IMPLEMENTED     | Returns auth'd user's roles (admin from `users.is_admin`); non-admin requesting another username → error 50. Required by Feishin login. |
 | `getUsers`       | NOT IMPLEMENTED |       |
 | `createUser`     | NOT IMPLEMENTED |       |
 | `updateUser`     | NOT IMPLEMENTED |       |

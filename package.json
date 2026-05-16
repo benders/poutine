@@ -1,7 +1,7 @@
 {
   "name": "poutine",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Federated music player - merges personal music collections into a unified library",
   "scripts": {
     "dev": "pnpm --filter hub dev",
@@ -9,6 +9,10 @@
     "test": "pnpm --filter hub test && pnpm --filter frontend test",
     "lint": "pnpm --filter hub lint && pnpm --filter frontend lint",
     "typecheck": "pnpm --filter hub typecheck && pnpm --filter frontend typecheck",
+    "verify": "pnpm typecheck && pnpm test",
+    "hub:up": "docker compose up -d --build",
+    "hub:up:fresh": "docker compose up -d --build --force-recreate",
+    "hub:logs": "docker compose logs -f hub",
     "test:federation": "bash test/federation/run.sh",
     "sync-version": "node scripts/sync-version.mjs",
     "hub:start": "bash scripts/hub-native-macos.sh start",
