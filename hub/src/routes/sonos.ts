@@ -84,6 +84,22 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      // The SPA passes its currently-playing track's Subsonic ID — the
+      // `remote_id` exposed by Navidrome/peer Subsonic APIs. Resolve it to
+      // the unified_track UUID that cast.ts + cast tokens expect. Fall back
+      // to treating the input as already-unified if no Subsonic mapping
+      // exists, so direct API callers using the canonical UUID still work.
+      const sourceRow = app.db
+        .prepare(
+          `SELECT ts.unified_track_id AS uid
+           FROM instance_tracks it
+           JOIN track_sources ts ON ts.instance_track_id = it.id
+           WHERE it.remote_id = ?
+           LIMIT 1`,
+        )
+        .get(trackId) as { uid: string } | undefined;
+      const unifiedTrackId = sourceRow?.uid ?? trackId;
+
       const trackRow = app.db
         .prepare(
           `SELECT ut.id, ut.title, ut.duration_ms, ua.name AS artist_name,
@@ -94,7 +110,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
            LEFT JOIN unified_release_groups urg ON urg.id = ur.release_group_id
            WHERE ut.id = ?`,
         )
-        .get(trackId) as
+        .get(unifiedTrackId) as
         | {
             id: string;
             title: string;
@@ -117,7 +133,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const token = signCastToken(app.castSecret, {
-        trackId,
+        trackId: unifiedTrackId,
         username: user.username,
       });
       const base = app.config.poutineLanUrl.replace(/\/+$/, "");
@@ -126,11 +142,11 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       // a stream whose content-type doesn't match what its AVTransport URI
       // metadata declared.
       const streamUri =
-        `${base}/cast/stream/${encodeURIComponent(trackId)}` +
+        `${base}/cast/stream/${encodeURIComponent(unifiedTrackId)}` +
         `?token=${encodeURIComponent(token)}&format=mp3`;
 
       const meta: TrackMetadata = {
-        trackId,
+        trackId: unifiedTrackId,
         title: trackRow.title,
         artist: trackRow.artist_name,
         album: trackRow.album_name ?? "",

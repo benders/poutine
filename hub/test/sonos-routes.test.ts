@@ -44,6 +44,32 @@ function seedTrack(app: FastifyInstance) {
     .run("trk-1", "Dancing Queen", "dancing queen", "ur-1", "ua-1", 232000);
 }
 
+function seedSubsonicMapping(app: FastifyInstance, remoteId: string) {
+  // The SPA passes Subsonic remote_ids, not unified UUIDs. Seed the
+  // instances → instance_tracks → track_sources chain so the play route
+  // can resolve the Subsonic id back to the unified track.
+  app.db
+    .prepare(
+      `INSERT OR IGNORE INTO instances (id, name, url, encrypted_credentials, owner_id)
+       VALUES ('local', 'Local', 'http://local', '', 'user-1')`,
+    )
+    .run();
+  // instance_albums.album_id is a soft reference (no FK enforcement),
+  // so we can skip seeding instance_albums entirely for this test.
+  app.db
+    .prepare(
+      `INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(`local:${remoteId}`, "local", remoteId, "local:alb-1", "Dancing Queen", "ABBA");
+  app.db
+    .prepare(
+      `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, preferred)
+       VALUES (?, ?, ?, ?, 1)`,
+    )
+    .run("ts-1", "trk-1", "local", `local:${remoteId}`);
+}
+
 describe("Sonos play route", () => {
   let app: FastifyInstance;
   let setUriCalls: Array<{ device: SonosDevice; uri: string; meta: TrackMetadata }>;
@@ -127,6 +153,28 @@ describe("Sonos play route", () => {
     expect(call.meta.mimeType).toBe("audio/mpeg");
 
     expect(playCalls).toHaveLength(1);
+  });
+
+  it("resolves Subsonic remote_id from the SPA to the unified track", async () => {
+    // This is what the frontend actually sends — SubsonicSong.id is the
+    // Subsonic remote_id, not the unified UUID. The play route must
+    // resolve via track_sources before looking up DIDL fields.
+    const subsonicId = "7jwQomahCwKbSjrAxtelmw";
+    seedSubsonicMapping(app, subsonicId);
+
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: subsonicId,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(setUriCalls).toHaveLength(1);
+
+    const call = setUriCalls[0]!;
+    // Cast URL and token must use the unified UUID, not the Subsonic id —
+    // cast.ts /stream verifies the token against unified_tracks.
+    expect(call.uri).toContain("/cast/stream/trk-1?");
+    expect(call.uri).not.toContain(subsonicId);
+    expect(call.meta.trackId).toBe("trk-1");
+    expect(call.meta.title).toBe("Dancing Queen");
   });
 
   it("returns 404 for unknown track id", async () => {
