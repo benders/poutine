@@ -231,7 +231,7 @@ Optional feature — gated by `SONOS_ENABLED=true`. Lets the bottom-of-screen pl
 - `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`) on each device's `:1400`.
 - `services/cast-tokens.ts` — HMAC-signed short-lived (1h) tokens for unauthenticated stream URLs. Secret derived from the instance Ed25519 key via `deriveCastSecret`. Token wire format `<sig>.<exp>.<base64url(username)>`; the username travels in the token so `/cast/stream` can attribute the stream and route federated peer fetches under the originating user.
 - `routes/cast.ts` — `GET /cast/stream/:trackId?token=...`. Token-verified; reuses the local/peer source selection + transcoding pipeline. Recovered username is used for stream-tracking and federated `asUser`.
-- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public.
+- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public. Play handler appends `?format=mp3` to the cast URL so the stream byte content-type matches the hardcoded `audio/mpeg` DIDL metadata; without this, FLAC/OGG sources are rejected by Sonos and silently land in STOPPED. Lossless pass-through is a follow-up (#180).
 - `GET /api/capabilities` — frontend probe; returns `{ sonos: boolean }`.
 
 **Networking gotcha — host mode required.** SSDP needs UDP multicast which Docker's bridge networking blocks. Run with the Sonos override:
@@ -240,7 +240,9 @@ Optional feature — gated by `SONOS_ENABLED=true`. Lets the bottom-of-screen pl
 docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
 ```
 
-Under host networking the container binds directly to the host's NICs. `POUTINE_LAN_URL` must be the address Sonos can reach the hub at (e.g. `http://192.168.1.10:3000`).
+The override puts **both** services on `network_mode: host`. Hub needs host net for multicast. Navidrome also needs host net because Docker Desktop host-net containers cannot reach the host's bridge-published loopback ports — without it the hub can't reach Navidrome at all. Navidrome binds to `ND_ADDRESS=127.0.0.1` so the admin UI is not exposed on the LAN. `POUTINE_LAN_URL` must be the address Sonos can reach the hub at (e.g. `http://192.168.1.10:3000`).
+
+**macOS limitation — Sonos discovery does not work in Docker Desktop.** Docker Desktop's "host networking" on macOS is implemented as a userspace VPN, not a true network-namespace share. UDP multicast does not traverse it (empirically verified: M-SEARCH from inside the container returns 0 Sonos replies even on a LAN where the Mac host sees 4). On Linux hosts the override works as designed. For Mac dev, run the hub natively (`pnpm --filter hub build && node hub/dist/server.js`) against Dockerized Navidrome instead. Production targets Linux where host networking behaves correctly.
 
 **Queue model.** App-managed, one track at a time. The frontend pushes the current track via `sonosPlay`, polls `/state` every 1.5s for position/duration, and calls `next()` from the store when the device transitions `PLAYING → STOPPED`. Shuffle/repeat live in the store, not on the device.
 

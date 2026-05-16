@@ -90,7 +90,8 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
                   urg.name AS album_name, urg.image_url AS album_art
            FROM unified_tracks ut
            JOIN unified_artists ua ON ua.id = ut.artist_id
-           LEFT JOIN unified_release_groups urg ON urg.id = ut.rg_id
+           LEFT JOIN unified_releases ur ON ur.id = ut.release_id
+           LEFT JOIN unified_release_groups urg ON urg.id = ur.release_group_id
            WHERE ut.id = ?`,
         )
         .get(trackId) as
@@ -120,7 +121,13 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         username: user.username,
       });
       const base = app.config.poutineLanUrl.replace(/\/+$/, "");
-      const streamUri = `${base}/cast/stream/${encodeURIComponent(trackId)}?token=${encodeURIComponent(token)}`;
+      // Force MP3 transcode so the byte stream matches the audio/mpeg DIDL
+      // mime type below. Source library may be FLAC/OGG/etc.; Sonos rejects
+      // a stream whose content-type doesn't match what its AVTransport URI
+      // metadata declared.
+      const streamUri =
+        `${base}/cast/stream/${encodeURIComponent(trackId)}` +
+        `?token=${encodeURIComponent(token)}&format=mp3`;
 
       const meta: TrackMetadata = {
         trackId,
