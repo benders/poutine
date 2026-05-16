@@ -58,6 +58,10 @@ interface ReleaseGroupRow {
   genre: string | null;
   image_url: string | null;
   songCount: number;
+  // `urg.created_at` — when this release group was first added to the
+  // local hub DB (via Navidrome sync or peer federation). Drives the
+  // OpenSubsonic `created` field and the "Recently Added" sort (#148).
+  created_at?: string | null;
 }
 
 interface TrackRow {
@@ -218,6 +222,9 @@ function buildAlbum(row: ReleaseGroupRow) {
     songCount: row.songCount,
     year: row.year ?? undefined,
     genre: row.genre ?? undefined,
+    // OpenSubsonic `created` (ISO 8601) — when the album first appeared
+    // on this hub. Required for client "Recently Added" sorting (#148).
+    created: row.created_at ? sqliteToIso(row.created_at) : undefined,
   };
 }
 
@@ -259,7 +266,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
   );
   const starredAlbumsStmt = app.db.prepare(
     `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-      urg.year, urg.genre, urg.image_url,
+      urg.year, urg.genre, urg.image_url, urg.created_at,
       (SELECT COUNT(*) FROM unified_tracks ut
        JOIN unified_releases ur ON ur.id = ut.release_id
        WHERE ur.release_group_id = urg.id) AS songCount,
@@ -530,7 +537,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const albums = app.db
       .prepare(
         `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-          urg.year, urg.genre, urg.image_url,
+          urg.year, urg.genre, urg.image_url, urg.created_at,
           COUNT(ut.id) AS songCount
         FROM unified_release_groups urg
         JOIN unified_artists ua ON ua.id = urg.artist_id
@@ -732,7 +739,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const albums = app.db
       .prepare(
         `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-          urg.year, urg.genre, urg.image_url,
+          urg.year, urg.genre, urg.image_url, urg.created_at,
           COUNT(ut.id) AS songCount
         FROM unified_release_groups urg
         JOIN unified_artists ua ON ua.id = urg.artist_id
@@ -766,7 +773,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const rg = app.db
       .prepare(
         `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-          urg.year, urg.genre, urg.image_url
+          urg.year, urg.genre, urg.image_url, urg.created_at
         FROM unified_release_groups urg
         JOIN unified_artists ua ON ua.id = urg.artist_id
         WHERE urg.id = ?`,
@@ -780,6 +787,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           year: number | null;
           genre: string | null;
           image_url: string | null;
+          created_at: string | null;
         }
       | undefined;
 
@@ -848,6 +856,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       shareId?: string;
       song: ReturnType<typeof buildSong>[];
       starred?: string;
+      created?: string;
     } = {
       id: encodeId("al", rg.id),
       name: rg.name,
@@ -860,6 +869,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       genre: rg.genre ?? undefined,
       shareId: shareId ?? undefined,
       song: builtSongs,
+      created: rg.created_at ? sqliteToIso(rg.created_at) : undefined,
     };
     annotateStarred(app.db, request.subsonicUser?.id, "album", "al", [albumObj]);
     sendSubsonicOk(reply, q, {
@@ -967,7 +977,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const albums = app.db
       .prepare(
         `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-          urg.year, urg.genre, urg.image_url,
+          urg.year, urg.genre, urg.image_url, urg.created_at,
           COUNT(ut.id) AS songCount
         FROM unified_release_groups urg
         JOIN unified_artists ua ON ua.id = urg.artist_id

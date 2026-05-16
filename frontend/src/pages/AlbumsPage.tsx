@@ -123,8 +123,15 @@ export function AlbumsPage() {
             return a.name.localeCompare(b.name);
           case "year":
             return (b.year ?? 0) - (a.year ?? 0);
-          case "recent":
+          case "recent": {
+            // OpenSubsonic `created` — ISO 8601 timestamps sort
+            // lexicographically. Fall back to id only when the server
+            // didn't return a created field (older hubs).
+            const aC = a.created ?? "";
+            const bC = b.created ?? "";
+            if (aC || bC) return bC.localeCompare(aC);
             return b.id.localeCompare(a.id);
+          }
         }
       });
     }

@@ -135,6 +135,14 @@ Album / artist / song objects returned by `getAlbum`, `getArtist`,
 field when the requesting user has starred that target. Stars are local
 to the hub the user logs into and are not federated.
 
+### Album `created` (#148)
+
+Album objects returned by `getAlbum`, `getAlbumList2`, `getArtist`, and
+`search3` carry an ISO 8601 `created` field — the `unified_release_groups.created_at`
+timestamp of when the album first appeared on this hub (via Navidrome
+sync or federation). `getAlbumList2?type=newest` orders by this value
+DESC; the SPA "Recently Added" sort uses it client-side as well.
+
 ### Song `albumArtist` / `albumArtistId` (#138)
 
 Every Song emitted by `getAlbum`, `getSong`, `search3`, and the starred
