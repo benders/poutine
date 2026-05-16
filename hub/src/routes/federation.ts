@@ -17,6 +17,10 @@ import {
 } from "../federation/invitations.js";
 import { parsePeerPublicKey } from "../federation/signing.js";
 import { checkPeerUrlSafe } from "../federation/url-safety.js";
+import {
+  ingestGossipEntry,
+  type GossipPeerEntry,
+} from "../federation/gossip.js";
 import { USER_AGENT, FEDERATION_API_VERSION } from "../version.js";
 import { buildStreamParams } from "./stream-params.js";
 
@@ -41,6 +45,15 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
     registry: app.peerRegistry,
     db: app.db,
   });
+
+  // createFederationFetcher sends signed bodies as application/octet-stream.
+  // Capture them as raw Buffers so requirePeerAuth can sha256(body) and the
+  // handler can JSON.parse the bytes. Scoped to this plugin only.
+  app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer" },
+    (_req, body, done) => done(null, body),
+  );
 
   // POST /federation/handshake — invitee→inviter peer admission (federation v5).
   // Unauthenticated by federation request signing because the invitee is not
@@ -238,6 +251,58 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(409).send({ error: `Could not insert peer: ${String(err)}` });
     }
     app.peerRegistry.reload();
+
+    // Fan-out: tell every existing peer about the new admission so they don't
+    // have to wait for the next gossip cycle to learn about it (#163). The
+    // announce is best-effort: failures fall back to gossip; old (<v6) peers
+    // return 404 and we swallow it. Run detached so the handshake response
+    // returns immediately — a slow or dead peer must not delay the invitee.
+    const newPeerEntry: GossipPeerEntry = {
+      id: invitee.id,
+      url: inviteeUrl,
+      public_key: invitee.public_key,
+      invitation_payload: signed.payload,
+      invitation_signature: signed.signature,
+      inviter_id: signed.payload.inviter_id,
+      inviter_url: signed.payload.inviter_url,
+      inviter_public_key: signed.payload.inviter_public_key,
+    };
+    const announceBody = Buffer.from(
+      JSON.stringify({ peer: newPeerEntry }),
+      "utf-8",
+    );
+    const asUser = app.config.poutineOwnerUsername || "auto-sync";
+    const targets = Array.from(app.peerRegistry.peers.values()).filter(
+      (p) => p.id !== invitee.id,
+    );
+    void Promise.allSettled(
+      targets.map(async (p) => {
+        try {
+          const res = await app.federatedFetch(p, "/federation/peers/announce", {
+            method: "POST",
+            body: announceBody,
+            asUser,
+          });
+          if (res.ok) {
+            app.log.info(
+              { peer: p.id, newPeer: invitee.id },
+              "announce: delivered",
+            );
+          } else {
+            app.log.warn(
+              { peer: p.id, newPeer: invitee.id, status: res.status },
+              "announce: peer rejected (likely older version)",
+            );
+          }
+        } catch (err) {
+          app.log.warn(
+            { peer: p.id, newPeer: invitee.id, err: String(err) },
+            "announce: peer unreachable",
+          );
+        }
+      }),
+    ).catch(() => {});
+
     return reply.send({ ok: true, peerId: invitee.id });
   });
 
@@ -281,6 +346,62 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
     }));
 
     return { peers };
+  });
+
+  // POST /federation/peers/announce — immediate-discovery push (issue #163).
+  // When a hub admits a new peer C via handshake, it fans this out to every
+  // existing peer B so B doesn't have to wait for the next gossip cycle to
+  // learn about C. Body is one GossipPeerEntry, sent as application/octet-stream
+  // (raw JSON bytes) so the federation request signature covers the payload.
+  //
+  // Trust model: the announcer (request.peer) is just a transport. C is
+  // accepted iff its embedded signed invitation verifies — identical to
+  // gossip ingestion. v5 peers will return 404; callers swallow that.
+  app.post("/peers/announce", { preHandler: requirePeerAuth }, async (request, reply) => {
+    if (!Buffer.isBuffer(request.body)) {
+      return reply.code(400).send({ error: "Expected application/octet-stream body" });
+    }
+    let parsed: { peer?: GossipPeerEntry };
+    try {
+      parsed = JSON.parse(request.body.toString("utf-8"));
+    } catch {
+      return reply.code(400).send({ error: "Invalid JSON body" });
+    }
+    const entry = parsed?.peer;
+    if (!entry || typeof entry !== "object") {
+      return reply.code(400).send({ error: "Missing peer entry" });
+    }
+
+    const owner = app.db.prepare("SELECT id FROM users LIMIT 1").get() as
+      | { id: string }
+      | undefined;
+    if (!owner) {
+      return reply.code(500).send({ error: "No user row for instance ownership" });
+    }
+    const knownIds = new Set<string>([
+      "local",
+      app.peerRegistry.instanceId,
+      ...app.peerRegistry.peers.keys(),
+    ]);
+    const sourceLabel = `announce from ${request.peer.id}`;
+    const outcome = ingestGossipEntry(
+      app.db,
+      app.peerRegistry,
+      entry,
+      { sourceLabel, ownerId: owner.id, knownIds },
+      {
+        info: (m) => app.log.info(m),
+        warn: (m) => app.log.warn(m),
+      },
+    );
+    if (outcome === "added") {
+      app.peerRegistry.reload();
+      return reply.send({ ok: true, added: true });
+    }
+    if (outcome === "alreadyKnown") {
+      return reply.send({ ok: true, added: false });
+    }
+    return reply.code(400).send({ error: "Entry rejected" });
   });
 
   // Stream audio from local Navidrome to peer

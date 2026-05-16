@@ -24,8 +24,8 @@ Peers report both versions through `/api/health`, which `GET /admin/peers` reads
 
 | Field                              | Value            |
 |------------------------------------|------------------|
-| Protocol (`Poutine-Api-Version`)   | `5`              |
-| Application (`User-Agent`)         | `Poutine/0.5.0`  |
+| Protocol (`Poutine-Api-Version`)   | `6`              |
+| Application (`User-Agent`)         | `Poutine/0.5.1`  |
 
 The minimum accepted protocol version is **5**. Peers below the floor are
 rejected with `403`. v0.4.x peers (api version 3) cannot join a v5 cluster
@@ -77,6 +77,7 @@ All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header i
 |--------|----------------------------|---------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `POST` | `/federation/handshake`    | invitation    | Invitee→inviter peer admission. Body: `{ invitation: <base64>, invitee: { id, url, public_key, proof_signature } }`. Inserts the invitee into the inviter's `instances` and marks the invitation consumed. See **Invitations & handshake** below.                                                                                |
 | `GET`  | `/federation/peers`        | peer-signed   | Gossip endpoint. Returns the receiver's known peers (minus `local`, the caller, and any peer without invitation provenance). Each entry carries the original signed invitation that admitted that peer to the cluster, so receivers can verify provenance against the named inviter's public key without prior trust (issue #147). |
+| `POST` | `/federation/peers/announce` | peer-signed | Immediate-discovery push (issue #163). Body: `application/octet-stream` containing UTF-8 JSON `{ "peer": <GossipPeerEntry> }`. Fired by an inviter right after `POST /handshake` admits a new peer, so the rest of the cluster doesn't wait for the next gossip cycle. The announcer is just a transport; the embedded signed invitation is the only basis for accepting the new peer (same trust model as `GET /peers`). Responses: `200 {ok:true,added:true}` on insert, `200 {ok:true,added:false}` if already known, `400` on rejected entry. v5 peers return `404`; callers swallow that and fall back to gossip. |
 | `GET`  | `/federation/stream/:id`   | peer-signed   | Stream audio from the receiver's local Navidrome to a peer (`:id` is the receiver's Navidrome track ID). Forwards Subsonic transcode params (`format`, `maxBitRate`, `timeOffset`, `estimateContentLength`) and `Range`. The receiver records each successful stream in its own activity log as `kind='proxy'` (issue #121).      |
 
 Library metadata and cover art travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
@@ -126,11 +127,22 @@ Wire format: `base64(JSON({ payload, signature }))`.
 
 After each library sync, hubs call peers' `GET /federation/peers` and ingest entries they don't yet know. Each gossiped entry carries its full invitation provenance — receivers verify the embedded signature against the named inviter's public key (no expiry check at gossip time; expiry only applies at redemption). This makes cluster membership transitive: once any single hub admits a new peer, the rest discover it on their next sync.
 
+### Immediate announce (v6)
+
+Cycle-based gossip can leave a freshly admitted peer C unable to reach an existing peer B for up to one sync interval (~5 min): C learns of B from A immediately, but B doesn't learn of C until B next polls A (#163). To close the gap, A fans out `POST /federation/peers/announce` to every existing peer right after the handshake completes. The fan-out is detached from the handshake response (so a slow B can't delay C) and best-effort: any failure — network error, `400`, or `404` from a pre-v6 peer — leaves recovery to the next gossip cycle. The announce ingest path reuses the gossip validation function and the same transitive-trust rules; the announcer is just a transport.
+
+Why only on handshake, not on gossip-driven discovery? Transitive announce would re-introduce gossip storms. The handshake path is the one with a measurable timing gap; the gossip path already converges.
+
 ---
 
 ## Changelog
 
-### Version 5 (current)
+### Version 6 (current)
+
+- **Added** `POST /federation/peers/announce` — immediate post-handshake fan-out so existing peers learn about a new admission without waiting for the next gossip cycle (issue #163). Additive; v5 peers reject with `404` and the inviter falls back to gossip.
+- **Floor unchanged:** `MIN_FEDERATION_API_VERSION = 5`. v5 and v6 peers interoperate; only the timing of new-peer propagation differs.
+
+### Version 5
 
 - **Added** `POST /federation/handshake` — signed-invitation admission protocol (issue #147). Replaces filesystem-based peer admission (`peers.yaml`).
 - **Added** `GET /federation/peers` — gossip endpoint. Each entry carries the signed invitation that admitted that peer; receivers verify against the named inviter's pubkey.
