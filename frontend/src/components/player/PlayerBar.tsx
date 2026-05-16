@@ -238,6 +238,14 @@ export function PlayerBar() {
         if (cancelled) return;
         if (s.duration > 0) setDuration(s.duration);
         setCurrentTime(s.position);
+        // Reflect device transport state back into the store so the
+        // play/pause icon (driven by isPlaying) tracks the speaker. Without
+        // this, any divergence — device-side pause, hub-side pause that
+        // happened outside this tab, autoplay after SetAVTransportURI —
+        // leaves the UI desynced. setPlaying with an unchanged value is a
+        // no-op in zustand, so this doesn't fight the toggle effect.
+        if (s.state === "PLAYING") setPlaying(true);
+        else if (s.state === "PAUSED_PLAYBACK") setPlaying(false);
         // STOPPED after we observed PLAYING means the track ended.
         if (s.state === "STOPPED" && lastState === "PLAYING") {
           next();
@@ -255,7 +263,7 @@ export function PlayerBar() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [deviceId, currentTrack?.id, next, setCurrentTime, setDuration]);
+  }, [deviceId, currentTrack?.id, next, setCurrentTime, setDuration, setPlaying]);
 
   const handleTimeUpdate = useCallback(() => {
     if (audioRef.current) {

@@ -155,6 +155,21 @@ describe("Sonos play route", () => {
     expect(playCalls).toHaveLength(1);
   });
 
+  it("resolves t-prefixed Subsonic song id from the SPA", async () => {
+    // The SPA stores SubsonicSong.id as returned by /rest/getAlbum, which
+    // is `encodeId("t", unified_tracks.id)` — a "t" followed by the UUID.
+    // This is the actual production path that PR #162 originally missed.
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "ttrk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(setUriCalls).toHaveLength(1);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("/cast/stream/trk-1?");
+    expect(call.meta.trackId).toBe("trk-1");
+    expect(call.meta.title).toBe("Dancing Queen");
+  });
+
   it("resolves Subsonic remote_id from the SPA to the unified track", async () => {
     // This is what the frontend actually sends — SubsonicSong.id is the
     // Subsonic remote_id, not the unified UUID. The play route must

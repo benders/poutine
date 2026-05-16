@@ -84,21 +84,55 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      // The SPA passes its currently-playing track's Subsonic ID — the
-      // `remote_id` exposed by Navidrome/peer Subsonic APIs. Resolve it to
-      // the unified_track UUID that cast.ts + cast tokens expect. Fall back
-      // to treating the input as already-unified if no Subsonic mapping
-      // exists, so direct API callers using the canonical UUID still work.
-      const sourceRow = app.db
-        .prepare(
+      // Resolve the incoming trackId to a unified_tracks UUID. cast.ts
+      // /stream + the cast token both verify against unified_tracks.
+      //
+      // Accepted inputs:
+      //   1. Subsonic song id from the SPA: "t<unified-uuid>" — the hub's
+      //      /rest/* endpoints encode unified_tracks.id with a "t" prefix
+      //      (see encodeId in subsonic-response.ts).
+      //   2. Raw unified_tracks UUID — direct API callers / tests.
+      //   3. Instance remote_id (e.g. Navidrome's 22-char hash) — older
+      //      flows / debugging.
+      // Real-world unified_tracks IDs are UUIDs (hex + dashes) and never
+      // start with "t", so stripping the prefix is unambiguous in
+      // production. Still, try both the raw value and the stripped form
+      // so a test fixture or future ID scheme doesn't break the route.
+      const candidates =
+        trackId.startsWith("t") && trackId.length > 1
+          ? [trackId, trackId.slice(1)]
+          : [trackId];
+
+      let unifiedTrackId: string | undefined;
+      const unifiedQ = app.db.prepare(
+        "SELECT id FROM unified_tracks WHERE id = ?",
+      );
+      for (const c of candidates) {
+        const row = unifiedQ.get(c) as { id: string } | undefined;
+        if (row) {
+          unifiedTrackId = row.id;
+          break;
+        }
+      }
+      if (!unifiedTrackId) {
+        const sourceQ = app.db.prepare(
           `SELECT ts.unified_track_id AS uid
            FROM instance_tracks it
            JOIN track_sources ts ON ts.instance_track_id = it.id
            WHERE it.remote_id = ?
            LIMIT 1`,
-        )
-        .get(trackId) as { uid: string } | undefined;
-      const unifiedTrackId = sourceRow?.uid ?? trackId;
+        );
+        for (const c of candidates) {
+          const row = sourceQ.get(c) as { uid: string } | undefined;
+          if (row) {
+            unifiedTrackId = row.uid;
+            break;
+          }
+        }
+      }
+      if (!unifiedTrackId) {
+        return reply.status(404).send({ error: "Track not found" });
+      }
 
       const trackRow = app.db
         .prepare(
