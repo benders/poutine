@@ -1,6 +1,16 @@
 import { create } from "zustand";
 import type { SubsonicSong } from "@/lib/subsonic";
 
+/**
+ * Playback sink. `"local"` plays through the HTML5 <audio> element in the
+ * browser tab; `{ type: "sonos", ... }` routes playback through the hub's
+ * Sonos control API (see /api/sonos/devices/:id/*). Not persisted across
+ * sessions — always defaults to local on a fresh load.
+ */
+export type PlayerSink =
+  | "local"
+  | { type: "sonos"; deviceId: string; deviceName: string };
+
 interface PlayerState {
   queue: SubsonicSong[];
   currentIndex: number;
@@ -10,6 +20,7 @@ interface PlayerState {
   duration: number;
   shuffle: boolean;
   repeat: "none" | "one" | "all";
+  sink: PlayerSink;
 
   // Computed
   currentTrack: SubsonicSong | null;
@@ -29,6 +40,7 @@ interface PlayerState {
   setDuration: (duration: number) => void;
   toggleShuffle: () => void;
   cycleRepeat: () => void;
+  setSink: (sink: PlayerSink) => void;
 }
 
 export const usePlayer = create<PlayerState>((set, get) => ({
@@ -40,6 +52,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   duration: 0,
   shuffle: false,
   repeat: "none",
+  sink: "local",
 
   get currentTrack() {
     const { queue, currentIndex } = get();
@@ -127,4 +140,5 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       const idx = modes.indexOf(state.repeat);
       return { repeat: modes[(idx + 1) % modes.length] };
     }),
+  setSink: (sink) => set({ sink, currentTime: 0 }),
 }));

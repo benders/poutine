@@ -403,4 +403,79 @@ export function updateActivitySettings(settings: { maxEvents: number }) {
   });
 }
 
+// ── Capabilities + Sonos ────────────────────────────────────────────────────
+
+export interface Capabilities {
+  sonos: boolean;
+}
+
+export function getCapabilities() {
+  return apiFetch<Capabilities>(`/api/capabilities`);
+}
+
+export interface SonosDevice {
+  id: string;
+  room: string;
+  model: string;
+}
+
+export interface SonosState {
+  state: string;
+  position: number;
+  duration: number;
+  volume: number;
+}
+
+export function getSonosDevices() {
+  return apiFetch<{ devices: SonosDevice[] }>(`/api/sonos/devices`);
+}
+
+export function getSonosState(deviceId: string) {
+  return apiFetch<SonosState>(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/state`,
+  );
+}
+
+export function sonosPlay(
+  deviceId: string,
+  trackId: string,
+  opts: { position?: number; autoplay?: boolean } = {},
+) {
+  return apiFetch(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/play`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        trackId,
+        position: opts.position,
+        autoplay: opts.autoplay ?? true,
+      }),
+    },
+  );
+}
+
+export function sonosCommand(
+  deviceId: string,
+  action: "pause" | "resume" | "stop",
+) {
+  return apiFetch(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/${action}`,
+    { method: "POST" },
+  );
+}
+
+export function sonosSeek(deviceId: string, position: number) {
+  return apiFetch(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/seek`,
+    { method: "POST", body: JSON.stringify({ position }) },
+  );
+}
+
+export function sonosSetVolume(deviceId: string, level: number) {
+  return apiFetch(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/volume`,
+    { method: "POST", body: JSON.stringify({ level }) },
+  );
+}
+
 

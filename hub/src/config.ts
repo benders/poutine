@@ -33,6 +33,12 @@ export interface Config {
   // boot. Useful for test clusters where you want a tiny cap regardless of
   // what's stored in the DB.
   artCacheMaxBytes: number | undefined;
+  // Sonos casting (issue #108). Opt-in. Requires network_mode: host so SSDP
+  // multicast works. POUTINE_LAN_URL is the absolute base URL that Sonos
+  // devices use to fetch streams — must be reachable from the LAN.
+  sonosEnabled: boolean;
+  poutineLanUrl: string | undefined;
+  sonosDiscoveryIntervalMs: number;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -97,5 +103,11 @@ export function loadConfig(): Config {
     artCacheMaxBytes: process.env.ART_CACHE_MAX_BYTES
       ? parseInt(process.env.ART_CACHE_MAX_BYTES, 10)
       : undefined,
+    sonosEnabled: process.env.SONOS_ENABLED === "true",
+    poutineLanUrl: process.env.POUTINE_LAN_URL || undefined,
+    sonosDiscoveryIntervalMs: parseInt(
+      process.env.SONOS_DISCOVERY_INTERVAL_MS || "30000",
+      10,
+    ),
   };
 }

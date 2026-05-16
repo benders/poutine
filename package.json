@@ -15,6 +15,11 @@
     "hub:logs": "docker compose logs -f hub",
     "test:federation": "bash test/federation/run.sh",
     "sync-version": "node scripts/sync-version.mjs",
+    "hub:start": "bash scripts/hub-native-macos.sh start",
+    "hub:stop": "bash scripts/hub-native-macos.sh stop",
+    "hub:restart": "bash scripts/hub-native-macos.sh restart",
+    "hub:status": "bash scripts/hub-native-macos.sh status",
+    "hub:logs": "bash scripts/hub-native-macos.sh logs",
     "preversion": "branch=$(git rev-parse --abbrev-ref HEAD); if [ \"$branch\" != \"main\" ]; then echo \"pnpm version must run on main (current: $branch)\" >&2; exit 1; fi",
     "version": "node scripts/sync-version.mjs && git add hub/package.json frontend/package.json hub/src/version.ts"
   },

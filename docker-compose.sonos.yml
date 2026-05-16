@@ -1,0 +1,57 @@
+# Compose override that switches the hub to host networking so SSDP
+# multicast (UDP 1900) and Sonos SOAP control (TCP 1400) work.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
+#
+# Why an override is needed:
+#   - Docker bridge networking blocks UDP multicast, so SSDP discovery
+#     of Sonos zones fails. Host mode exposes the multicast group.
+#   - Under host mode the hub leaves the user-defined bridge network, so
+#     it can no longer resolve `navidrome` via Docker's embedded DNS. This
+#     file therefore publishes Navidrome on localhost:4533 and points the
+#     hub at it via NAVIDROME_URL.
+#
+# Side effects:
+#   - The hub binds directly to the host's PORT (default 3000). The
+#     `ports:` mapping from the base file is irrelevant under host mode.
+#   - Navidrome's admin UI is now reachable on the host at 127.0.0.1:4533
+#     (loopback only). If you don't want that surface area, switch to a
+#     different mitigation (e.g. socat sidecar) — but losing the bridge
+#     means *something* has to bridge the hub→navidrome hop.
+#   - On macOS / Windows Docker Desktop, host networking has limitations.
+#     SSDP discovery typically requires a Linux host.
+services:
+  hub:
+    network_mode: host
+    # Drop the base file's `networks:` list — mutually exclusive with
+    # network_mode. `!reset` is a Compose spec override directive that
+    # removes the inherited key rather than merging into it.
+    networks: !reset null
+    # Docker Desktop (macOS/Windows) injects host.docker.internal
+    # automatically. On Linux it isn't, so map it explicitly to the host
+    # gateway. Harmless on Desktop (overrides the auto-injection with the
+    # same target).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Override the base file's `http://navidrome:4533` — Docker DNS is
+      # unreachable from host networking. Both services share host net
+      # (see navidrome below), so 127.0.0.1:4533 reaches Navidrome's
+      # loopback-bound listener directly.
+      - NAVIDROME_URL=http://127.0.0.1:4533
+
+  navidrome:
+    # Join host networking too. Reasons:
+    #   - Docker Desktop's host-net containers can't reach the Mac's
+    #     loopback-published ports (no userland forwarder in that path),
+    #     so the prior "publish on 127.0.0.1:4533" approach fails on Mac.
+    #   - With both on host net, they share the namespace and the hub
+    #     reaches Navidrome at 127.0.0.1:4533 directly.
+    # ND_ADDRESS binds Navidrome to loopback only so the admin UI is not
+    # exposed on the LAN.
+    network_mode: host
+    networks: !reset null
+    environment:
+      - ND_ADDRESS=127.0.0.1
+    ports: !reset []

@@ -99,6 +99,40 @@ git push --follow-tags
 
 The `.github/workflows/release.yml` workflow verifies the tag matches `package.json`, builds `linux/amd64` + `linux/arm64`, and tags the image `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` (non-prerelease only). Pre-release tags (e.g. `v0.3.1-rc.0`) publish without `:latest` and are marked pre-release on GitHub.
 
+### Casting to Sonos (optional, issue #108)
+
+Lets the bottom-of-screen player stream to Sonos devices on the LAN. Requires host networking for SSDP multicast.
+
+```bash
+# in .env:
+#   SONOS_ENABLED=true
+#   POUTINE_LAN_URL=http://<your-lan-ip>:3000
+docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
+```
+
+Then pick a device from the cast icon next to the volume slider. Selection resets to local browser on each session. Full details in [docs/hub-internals.md](docs/hub-internals.md#sonos-integration-issue-108).
+
+#### macOS hosts: run the hub natively
+
+Docker Desktop on macOS does not forward UDP multicast into containers, so Sonos discovery silently finds zero devices when the hub runs in Docker — even with the experimental host-networking toggle enabled. On Mac, run the hub directly on the Mac while keeping Navidrome in Docker (host network, bound to loopback):
+
+```bash
+# First-time only: seed data-native/ from your existing hub container
+mkdir -p data-native
+docker cp poutine-hub-1:/app/data/poutine.db data-native/
+docker cp poutine-hub-1:/app/data/poutine_ed25519.pem data-native/
+docker cp poutine-hub-1:/app/data/poutine_password_key data-native/
+
+# Then:
+pnpm hub:start         # start Navidrome container + hub native process
+pnpm hub:status        # PID, /api/health, Navidrome reachability
+pnpm hub:restart       # rebuild hub+frontend and bounce
+pnpm hub:logs          # last 200 lines of the hub log
+pnpm hub:stop          # stop hub (Navidrome stays up)
+```
+
+State lives in `data-native/`; logs at `.hub-native.log`; PID at `.hub-native.pid` (all gitignored). This script is a stopgap — proper macOS packaging with launchd is tracked in #183. Linux hosts should keep using the Docker compose override.
+
 ### Wiping the Navidrome volume
 
 Navidrome's admin-bootstrap env vars only run on a fresh volume. To force a reset, use:

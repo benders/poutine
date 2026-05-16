@@ -26,6 +26,12 @@ services:
       # Set to 1 only for federation test / local-cluster setups where peers
       # reach each other via RFC1918 / Docker DNS. Leave empty in prod.
       - POUTINE_ALLOW_PRIVATE_PEER_URLS=${POUTINE_ALLOW_PRIVATE_PEER_URLS:-}
+      # Sonos casting (issue #108). Off by default. To enable:
+      #   1. SONOS_ENABLED=true in .env
+      #   2. POUTINE_LAN_URL=http://<lan-ip-or-host>:3000 in .env
+      #   3. Switch the hub to host networking (see compose override below)
+      - SONOS_ENABLED=${SONOS_ENABLED:-}
+      - POUTINE_LAN_URL=${POUTINE_LAN_URL:-}
       # PUBLIC_DIR is baked into the image (hub/Dockerfile sets it to /app/hub/public).
       # Override here only if you want to mount a custom frontend build.
     volumes:

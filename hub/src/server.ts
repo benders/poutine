@@ -22,6 +22,11 @@ import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
 import { LastFmClient } from "./services/lastfm.js";
 import { FanartTvClient } from "./services/fanarttv.js";
+import { SonosDiscoveryService } from "./services/sonos-discovery.js";
+import { SonosControl } from "./services/sonos-control.js";
+import { deriveCastSecret } from "./services/cast-tokens.js";
+import { sonosRoutes } from "./routes/sonos.js";
+import { castRoutes } from "./routes/cast.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -45,6 +50,10 @@ declare module "fastify" {
   fanartTvClient: FanartTvClient | null;
 }
 }
+
+// Sonos / cast decorators are declared on FastifyInstance in their own
+// route modules (services/cast-tokens.ts, routes/sonos.ts, routes/cast.ts)
+// via `declare module "fastify"`.
 
 /**
  * Seed the owner user on first boot.
@@ -271,6 +280,34 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     registry: peerRegistry,
   });
 
+  // Sonos casting (issue #108) — opt-in, requires network_mode: host.
+  let sonosDiscovery: SonosDiscoveryService | null = null;
+  if (config.sonosEnabled) {
+    if (!config.poutineLanUrl) {
+      app.log.error(
+        "SONOS_ENABLED=true but POUTINE_LAN_URL is not set — Sonos devices cannot fetch streams",
+      );
+    }
+    sonosDiscovery = new SonosDiscoveryService({
+      intervalMs: config.sonosDiscoveryIntervalMs,
+      log: { info: (m) => app.log.info(m), error: (m) => app.log.error(m) },
+    });
+    app.decorate("sonosDiscovery", sonosDiscovery);
+    app.decorate("sonosControl", new SonosControl());
+    // HMAC secret for cast tokens, derived from the federation key.
+    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    app.decorate("castSecret", deriveCastSecret(privDer));
+    await app.register(sonosRoutes, { prefix: "/api/sonos" });
+    await app.register(castRoutes, { prefix: "/cast" });
+    app.log.info("Sonos casting enabled");
+  }
+
+  // Capabilities probe used by the frontend to decide which UI affordances
+  // to render (e.g. the device picker in PlayerBar).
+  app.get("/api/capabilities", async () => ({
+    sonos: config.sonosEnabled,
+  }));
+
   // Health check
   app.get("/api/health", async () => ({
     status: "ok",
@@ -304,11 +341,13 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // Start auto-sync after routes are registered
   app.addHook("onReady", () => {
     autoSync.start();
+    if (sonosDiscovery) sonosDiscovery.start();
   });
 
   // Cleanup on close
   app.addHook("onClose", () => {
     autoSync.stop();
+    if (sonosDiscovery) sonosDiscovery.stop();
     process.off("SIGHUP", sighupHandler);
     db.close();
   });

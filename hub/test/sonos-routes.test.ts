@@ -1,0 +1,218 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { buildApp } from "../src/server.js";
+import { setPassword } from "../src/auth/passwords.js";
+import { createAccessToken } from "../src/auth/jwt.js";
+import type { FastifyInstance } from "fastify";
+import type { Config } from "../src/config.js";
+import type { SonosDevice } from "../src/services/sonos-discovery.js";
+import type { TrackMetadata } from "../src/services/sonos-control.js";
+
+const testConfig: Partial<Config> = {
+  databasePath: ":memory:",
+  jwtSecret: "test-secret-key-for-testing-purposes",
+  sonosEnabled: true,
+  poutineLanUrl: "http://hub.lan:3000",
+};
+
+const FAKE_DEVICE: SonosDevice = {
+  id: "RINCON_TEST",
+  room: "Test Room",
+  model: "Sonos Test",
+  ip: "192.0.2.10",
+  port: 1400,
+  lastSeen: new Date(),
+};
+
+function seedTrack(app: FastifyInstance) {
+  app.db
+    .prepare("INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)")
+    .run("ua-1", "ABBA", "abba");
+  app.db
+    .prepare(
+      "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, image_url) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run("urg-1", "Arrival", "arrival", "ua-1", "http://art/arrival.jpg");
+  app.db
+    .prepare(
+      "INSERT INTO unified_releases (id, release_group_id, name) VALUES (?, ?, ?)",
+    )
+    .run("ur-1", "urg-1", "Arrival");
+  app.db
+    .prepare(
+      "INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .run("trk-1", "Dancing Queen", "dancing queen", "ur-1", "ua-1", 232000);
+}
+
+function seedSubsonicMapping(app: FastifyInstance, remoteId: string) {
+  // The SPA passes Subsonic remote_ids, not unified UUIDs. Seed the
+  // instances → instance_tracks → track_sources chain so the play route
+  // can resolve the Subsonic id back to the unified track.
+  app.db
+    .prepare(
+      `INSERT OR IGNORE INTO instances (id, name, url, encrypted_credentials, owner_id)
+       VALUES ('local', 'Local', 'http://local', '', 'user-1')`,
+    )
+    .run();
+  // instance_albums.album_id is a soft reference (no FK enforcement),
+  // so we can skip seeding instance_albums entirely for this test.
+  app.db
+    .prepare(
+      `INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(`local:${remoteId}`, "local", remoteId, "local:alb-1", "Dancing Queen", "ABBA");
+  app.db
+    .prepare(
+      `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, preferred)
+       VALUES (?, ?, ?, ?, 1)`,
+    )
+    .run("ts-1", "trk-1", "local", `local:${remoteId}`);
+}
+
+describe("Sonos play route", () => {
+  let app: FastifyInstance;
+  let setUriCalls: Array<{ device: SonosDevice; uri: string; meta: TrackMetadata }>;
+  let playCalls: SonosDevice[];
+
+  beforeEach(async () => {
+    app = await buildApp(testConfig);
+    await app.ready();
+
+    const enc = setPassword("secret", app.passwordKey);
+    app.db
+      .prepare(
+        "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 1)",
+      )
+      .run("user-1", "tester", enc);
+    seedTrack(app);
+
+    // Stub discovery + control so the route exercises real DB + URL logic
+    // without touching the network.
+    setUriCalls = [];
+    playCalls = [];
+    (app as unknown as { sonosDiscovery: { get: (id: string) => SonosDevice | undefined } }).sonosDiscovery = {
+      get: (id: string) => (id === FAKE_DEVICE.id ? FAKE_DEVICE : undefined),
+    };
+    (app as unknown as {
+      sonosControl: {
+        setAvTransportUri: (d: SonosDevice, u: string, m: TrackMetadata) => Promise<void>;
+        play: (d: SonosDevice) => Promise<void>;
+        seek: (d: SonosDevice, p: number) => Promise<void>;
+      };
+    }).sonosControl = {
+      setAvTransportUri: async (device, uri, meta) => {
+        setUriCalls.push({ device, uri, meta });
+      },
+      play: async (device) => {
+        playCalls.push(device);
+      },
+      seek: async () => {},
+    };
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  async function authedPost(url: string, body: unknown) {
+    const token = await createAccessToken("user-1", app.config);
+    return app.inject({
+      method: "POST",
+      url,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      payload: body,
+    });
+  }
+
+  it("looks up track via release → release_group join and casts MP3", async () => {
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    expect(setUriCalls).toHaveLength(1);
+
+    const call = setUriCalls[0]!;
+    // Stream URL must force format=mp3 so the byte stream matches the
+    // audio/mpeg DIDL mime type (regression: PR #162 mismatch broke FLAC).
+    expect(call.uri).toContain("format=mp3");
+    expect(call.uri).toContain("/cast/stream/trk-1");
+    expect(call.uri).toMatch(/^http:\/\/hub\.lan:3000\//);
+
+    // DIDL metadata must reflect data resolved via the two-hop join
+    // (regression: PR #162 used non-existent unified_tracks.rg_id).
+    expect(call.meta.title).toBe("Dancing Queen");
+    expect(call.meta.artist).toBe("ABBA");
+    expect(call.meta.album).toBe("Arrival");
+    expect(call.meta.albumArtUri).toBe("http://art/arrival.jpg");
+    expect(call.meta.durationSec).toBe(232);
+    expect(call.meta.mimeType).toBe("audio/mpeg");
+
+    expect(playCalls).toHaveLength(1);
+  });
+
+  it("resolves t-prefixed Subsonic song id from the SPA", async () => {
+    // The SPA stores SubsonicSong.id as returned by /rest/getAlbum, which
+    // is `encodeId("t", unified_tracks.id)` — a "t" followed by the UUID.
+    // This is the actual production path that PR #162 originally missed.
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "ttrk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(setUriCalls).toHaveLength(1);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("/cast/stream/trk-1?");
+    expect(call.meta.trackId).toBe("trk-1");
+    expect(call.meta.title).toBe("Dancing Queen");
+  });
+
+  it("resolves Subsonic remote_id from the SPA to the unified track", async () => {
+    // This is what the frontend actually sends — SubsonicSong.id is the
+    // Subsonic remote_id, not the unified UUID. The play route must
+    // resolve via track_sources before looking up DIDL fields.
+    const subsonicId = "7jwQomahCwKbSjrAxtelmw";
+    seedSubsonicMapping(app, subsonicId);
+
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: subsonicId,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(setUriCalls).toHaveLength(1);
+
+    const call = setUriCalls[0]!;
+    // Cast URL and token must use the unified UUID, not the Subsonic id —
+    // cast.ts /stream verifies the token against unified_tracks.
+    expect(call.uri).toContain("/cast/stream/trk-1?");
+    expect(call.uri).not.toContain(subsonicId);
+    expect(call.meta.trackId).toBe("trk-1");
+    expect(call.meta.title).toBe("Dancing Queen");
+  });
+
+  it("returns 404 for unknown track id", async () => {
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "does-not-exist",
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("returns 404 for unknown device id", async () => {
+    const res = await authedPost(`/api/sonos/devices/UNKNOWN/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("rejects unauthenticated requests", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sonos/devices/${FAKE_DEVICE.id}/play`,
+      headers: { "content-type": "application/json" },
+      payload: { trackId: "trk-1" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+});

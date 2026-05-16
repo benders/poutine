@@ -21,3 +21,7 @@ coverage/
 .pnpm-store
 test/local-cluster/
 scripts/fix-old-ideas-dates.sh
+data-native/
+.hub-native.pid
+.hub-native.log
+hub-native.env
