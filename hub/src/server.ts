@@ -27,6 +27,7 @@ import { SonosControl } from "./services/sonos-control.js";
 import { deriveCastSecret } from "./services/cast-tokens.js";
 import { sonosRoutes } from "./routes/sonos.js";
 import { castRoutes } from "./routes/cast.js";
+import { SubsonicClient } from "./adapters/subsonic.js";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -308,12 +309,52 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     sonos: config.sonosEnabled,
   }));
 
-  // Health check
-  app.get("/api/health", async () => ({
-    status: "ok",
-    appVersion: APP_VERSION,
-    apiVersion: FEDERATION_API_VERSION,
-  }));
+  // Health check (issue #178).
+  //
+  // Probes the local Navidrome via Subsonic `/rest/ping` on each request and
+  // reflects reachability in the response body. We always return HTTP 200 so
+  // that the federation handshake (which reads `apiVersion` / `appVersion`
+  // from a peer's `/api/health`) keeps working when a peer's Navidrome is
+  // briefly down — peers only validate `apiVersion`. Operators/load-balancers
+  // should key on `status === "ok"` instead of the HTTP status.
+  app.get("/api/health", async () => {
+    const naviClient = new SubsonicClient({
+      url: app.config.navidromeUrl,
+      username: app.config.navidromeUsername,
+      password: app.config.navidromePassword,
+    });
+
+    let navidrome: "ok" | "unreachable" = "unreachable";
+    try {
+      // ~1s budget: Navidrome on the internal Docker network normally
+      // responds in tens of ms. Anything slower is effectively a failure
+      // for the `/proxy/rest/*` path this endpoint vouches for.
+      const TIMEOUT_MS = 1000;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`navidrome ping timed out after ${TIMEOUT_MS}ms`)),
+          TIMEOUT_MS,
+        );
+        timer.unref?.();
+      });
+      try {
+        await Promise.race([naviClient.ping(), timeout]);
+        navidrome = "ok";
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    } catch (err) {
+      app.log.warn({ err: String(err) }, "Local Navidrome ping failed");
+    }
+
+    return {
+      status: navidrome === "ok" ? "ok" : "degraded",
+      appVersion: APP_VERSION,
+      apiVersion: FEDERATION_API_VERSION,
+      navidrome,
+    };
+  });
 
   // Static file serving + SPA fallback (production only; skipped in dev)
   if (config.staticDir) {
