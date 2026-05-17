@@ -5,7 +5,10 @@ import { createAccessToken } from "../src/auth/jwt.js";
 import type { FastifyInstance } from "fastify";
 import type { Config } from "../src/config.js";
 import type { SonosDevice } from "../src/services/sonos-discovery.js";
-import type { TrackMetadata } from "../src/services/sonos-control.js";
+import {
+  SONOS_VOLUME_CAP,
+  type TrackMetadata,
+} from "../src/services/sonos-control.js";
 
 const testConfig: Partial<Config> = {
   databasePath: ":memory:",
@@ -74,6 +77,8 @@ describe("Sonos play route", () => {
   let app: FastifyInstance;
   let setUriCalls: Array<{ device: SonosDevice; uri: string; meta: TrackMetadata }>;
   let playCalls: SonosDevice[];
+  let setVolumeCalls: Array<{ device: SonosDevice; level: number }>;
+  let currentVolume = 30;
 
   beforeEach(async () => {
     app = await buildApp(testConfig);
@@ -91,6 +96,8 @@ describe("Sonos play route", () => {
     // without touching the network.
     setUriCalls = [];
     playCalls = [];
+    setVolumeCalls = [];
+    currentVolume = 30;
     (app as unknown as { sonosDiscovery: { get: (id: string) => SonosDevice | undefined } }).sonosDiscovery = {
       get: (id: string) => (id === FAKE_DEVICE.id ? FAKE_DEVICE : undefined),
     };
@@ -99,6 +106,9 @@ describe("Sonos play route", () => {
         setAvTransportUri: (d: SonosDevice, u: string, m: TrackMetadata) => Promise<void>;
         play: (d: SonosDevice) => Promise<void>;
         seek: (d: SonosDevice, p: number) => Promise<void>;
+        getVolume: (d: SonosDevice) => Promise<number>;
+        setVolume: (d: SonosDevice, l: number) => Promise<void>;
+        getState: (d: SonosDevice) => Promise<{ state: string; position: number; duration: number }>;
       };
     }).sonosControl = {
       setAvTransportUri: async (device, uri, meta) => {
@@ -108,6 +118,11 @@ describe("Sonos play route", () => {
         playCalls.push(device);
       },
       seek: async () => {},
+      getVolume: async () => currentVolume,
+      setVolume: async (device, level) => {
+        setVolumeCalls.push({ device, level });
+      },
+      getState: async () => ({ state: "STOPPED", position: 0, duration: 0 }),
     };
   });
 
@@ -204,6 +219,54 @@ describe("Sonos play route", () => {
       trackId: "trk-1",
     });
     expect(res.statusCode).toBe(404);
+  });
+
+  it("clamps device volume to the cap on cast start when above the cap", async () => {
+    currentVolume = 80;
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(setVolumeCalls).toHaveLength(1);
+    expect(setVolumeCalls[0]!.level).toBe(SONOS_VOLUME_CAP);
+    expect(playCalls).toHaveLength(1);
+  });
+
+  it("leaves device volume alone on cast start when at or below the cap", async () => {
+    currentVolume = 20;
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(setVolumeCalls).toHaveLength(0);
+  });
+
+  it("/state response includes volumeCap", async () => {
+    const token = await createAccessToken("user-1", app.config);
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sonos/devices/${FAKE_DEVICE.id}/state`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ volume: 30, volumeCap: SONOS_VOLUME_CAP });
+  });
+
+  it("POST /volume accepts values above the cap (service-layer clamps)", async () => {
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/volume`, {
+      level: 80,
+    });
+    expect(res.statusCode).toBe(200);
+    // Route forwards the raw value; setVolume itself does the cap clamp.
+    expect(setVolumeCalls).toHaveLength(1);
+    expect(setVolumeCalls[0]!.level).toBe(80);
+  });
+
+  it("POST /volume still rejects out-of-protocol values (>100)", async () => {
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/volume`, {
+      level: 150,
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it("rejects unauthenticated requests", async () => {

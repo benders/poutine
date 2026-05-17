@@ -1,6 +1,20 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { buildSoapEnvelope } from "../src/services/soap.js";
 import { buildDidlLiteTrack } from "../src/services/didl.js";
+import {
+  SonosControl,
+  SONOS_VOLUME_CAP,
+} from "../src/services/sonos-control.js";
+import type { SonosDevice } from "../src/services/sonos-discovery.js";
+
+const FAKE_DEVICE: SonosDevice = {
+  id: "RINCON_TEST",
+  room: "Test Room",
+  model: "Sonos Test",
+  ip: "192.0.2.10",
+  port: 1400,
+  lastSeen: new Date(),
+};
 
 const AVT = "urn:schemas-upnp-org:service:AVTransport:1";
 
@@ -61,5 +75,47 @@ describe("buildDidlLiteTrack", () => {
       "http://lan/x",
     );
     expect(didl).not.toContain("albumArtURI");
+  });
+});
+
+describe("SonosControl.setVolume cap", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(): Array<{ url: string; body: string }> {
+    const calls: Array<{ url: string; body: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, body: String(init.body ?? "") });
+        return new Response("<ok/>", { status: 200 });
+      }),
+    );
+    return calls;
+  }
+
+  it("clamps DesiredVolume to SONOS_VOLUME_CAP when level exceeds the cap", async () => {
+    const calls = stubFetch();
+    const sc = new SonosControl();
+    await sc.setVolume(FAKE_DEVICE, 75);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toContain(
+      `<DesiredVolume>${SONOS_VOLUME_CAP}</DesiredVolume>`,
+    );
+  });
+
+  it("passes through values at or below the cap unchanged", async () => {
+    const calls = stubFetch();
+    const sc = new SonosControl();
+    await sc.setVolume(FAKE_DEVICE, 20);
+    expect(calls[0]!.body).toContain("<DesiredVolume>20</DesiredVolume>");
+  });
+
+  it("clamps negatives to 0", async () => {
+    const calls = stubFetch();
+    const sc = new SonosControl();
+    await sc.setVolume(FAKE_DEVICE, -5);
+    expect(calls[0]!.body).toContain("<DesiredVolume>0</DesiredVolume>");
   });
 });

@@ -9,6 +9,17 @@ import { buildDidlLiteTrack, type TrackMetadata } from "./didl.js";
 
 export type { TrackMetadata } from "./didl.js";
 
+/**
+ * Hard ceiling for any SetVolume we issue. Sonos can reach physically
+ * unsafe loudness at higher values, and the SPA's `volume` slider is
+ * often pinned near max because the user's computer volume is the real
+ * gain control. Re-clamping at the service layer makes every code path
+ * — routes, future schedulers, retries — uniformly safe.
+ *
+ * Tracking #184 for surfacing this as a user-configurable setting.
+ */
+export const SONOS_VOLUME_CAP = 50;
+
 type Service = "AVTransport" | "RenderingControl" | "ZoneGroupTopology";
 
 const SERVICE_PATHS: Record<Service, { control: string; serviceType: string }> = {
@@ -75,7 +86,10 @@ export class SonosControl {
   }
 
   async setVolume(device: SonosDevice, level: number): Promise<void> {
-    const clamped = Math.max(0, Math.min(100, Math.round(level)));
+    const clamped = Math.max(
+      0,
+      Math.min(SONOS_VOLUME_CAP, Math.round(level)),
+    );
     await this.soap(device, "RenderingControl", "SetVolume", {
       InstanceID: 0,
       Channel: "Master",

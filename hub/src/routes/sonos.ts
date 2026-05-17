@@ -1,5 +1,9 @@
 import type { FastifyPluginAsync } from "fastify";
-import { SonosControl, type TrackMetadata } from "../services/sonos-control.js";
+import {
+  SonosControl,
+  SONOS_VOLUME_CAP,
+  type TrackMetadata,
+} from "../services/sonos-control.js";
 import type { SonosDiscoveryService } from "../services/sonos-discovery.js";
 import { signCastToken } from "../services/cast-tokens.js";
 import { requireAuth } from "../auth/middleware.js";
@@ -64,7 +68,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     try {
       const state = await app.sonosControl.getState(dev);
       const volume = await app.sonosControl.getVolume(dev);
-      return { ...state, volume };
+      return { ...state, volume, volumeCap: SONOS_VOLUME_CAP };
     } catch (err) {
       return reply.status(502).send({ error: String(err) });
     }
@@ -190,6 +194,23 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
+        // Safety clamp on cast start. If the device is currently above the
+        // cap (e.g. left blasting from the Sonos app), drop it to the cap
+        // BEFORE audio hits. Below-cap settings are preserved — the user
+        // may have deliberately set the device quieter.
+        // Tolerate getVolume failures: better to play at an unknown level
+        // than fail the cast outright.
+        try {
+          const current = await app.sonosControl.getVolume(dev);
+          if (current > SONOS_VOLUME_CAP) {
+            await app.sonosControl.setVolume(dev, SONOS_VOLUME_CAP);
+          }
+        } catch (err) {
+          app.log.warn(
+            { err, deviceId: dev.id },
+            "Sonos: getVolume preflight failed; proceeding without cap check",
+          );
+        }
         await app.sonosControl.setAvTransportUri(dev, streamUri, meta);
         if (typeof position === "number" && position > 0) {
           await app.sonosControl.seek(dev, position);
@@ -247,6 +268,10 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       const dev = app.sonosDiscovery.get(req.params.id);
       if (!dev) return reply.status(404).send({ error: "Device not found" });
       const { level } = req.body ?? ({} as VolumeBody);
+      // Request-shape check only. The real ceiling is `SONOS_VOLUME_CAP`,
+      // enforced inside `setVolume`. A POST of e.g. 80 succeeds and is
+      // silently clamped to the cap — do NOT re-add a 400 here, the SPA's
+      // notion of the cap can lag a server-side change.
       if (typeof level !== "number" || level < 0 || level > 100) {
         return reply.status(400).send({ error: "level must be 0..100" });
       }
