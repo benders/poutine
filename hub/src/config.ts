@@ -39,6 +39,14 @@ export interface Config {
   sonosEnabled: boolean;
   poutineLanUrl: string | undefined;
   sonosDiscoveryIntervalMs: number;
+  // DLNA MediaServer (issue #175). Off by default. Shares POUTINE_LAN_URL
+  // with Sonos casting and requires the same host networking override.
+  // Stream endpoint is open on the LAN — gate by network reachability, not
+  // by user identity (DLNA has no notion of one).
+  dlnaEnabled: boolean;
+  dlnaFriendlyName: string;
+  /** Username streams get attributed to. Defaults to the owner. */
+  dlnaPseudoUser: string | undefined;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -109,5 +117,8 @@ export function loadConfig(): Config {
       process.env.SONOS_DISCOVERY_INTERVAL_MS || "30000",
       10,
     ),
+    dlnaEnabled: process.env.DLNA_ENABLED === "true",
+    dlnaFriendlyName: process.env.DLNA_FRIENDLY_NAME || "Poutine",
+    dlnaPseudoUser: process.env.DLNA_PSEUDO_USER || undefined,
   };
 }

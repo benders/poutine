@@ -27,6 +27,10 @@ import { SonosControl } from "./services/sonos-control.js";
 import { deriveCastSecret } from "./services/cast-tokens.js";
 import { sonosRoutes } from "./routes/sonos.js";
 import { castRoutes } from "./routes/cast.js";
+import { SsdpAdvertiser } from "./services/ssdp-advertiser.js";
+import { DlnaObjectService } from "./services/dlna-objects.js";
+import { dlnaRoutes } from "./routes/dlna.js";
+import { createHash } from "node:crypto";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -106,6 +110,16 @@ function seedOwner(
   db.prepare(
     "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 1)",
   ).run(id, config.poutineOwnerUsername, enc);
+}
+
+/**
+ * Derive a stable UUID for the DLNA UDN from a string seed (typically
+ * `POUTINE_INSTANCE_ID`). Deterministic across restarts so DLNA control
+ * points (notably Windows Media Player) don't re-add the server.
+ */
+function uuidFromInstanceId(seed: string): string {
+  const h = createHash("sha1").update(`poutine/dlna/${seed}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
 export async function buildApp(configOverrides?: Partial<Config>) {
@@ -302,10 +316,40 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     app.log.info("Sonos casting enabled");
   }
 
+  // DLNA MediaServer (issue #175) — opt-in, requires network_mode: host
+  // (same as Sonos) so SSDP multicast works.
+  let ssdpAdvertiser: SsdpAdvertiser | null = null;
+  if (config.dlnaEnabled) {
+    if (!config.poutineLanUrl) {
+      app.log.error(
+        "DLNA_ENABLED=true but POUTINE_LAN_URL is not set — clients cannot fetch the device description or streams",
+      );
+    }
+    // Stable per-instance UUID v5-ish — deterministic across restarts so
+    // WMP doesn't re-add the server every boot.
+    const uuid = uuidFromInstanceId(config.poutineInstanceId || "poutine");
+    app.decorate("dlnaUuid", uuid);
+    app.decorate("dlnaObjects", new DlnaObjectService(db));
+
+    await app.register(dlnaRoutes, { prefix: "/dlna" });
+
+    if (config.poutineLanUrl) {
+      const lan = config.poutineLanUrl.replace(/\/$/, "");
+      ssdpAdvertiser = new SsdpAdvertiser({
+        uuid,
+        locationUrl: `${lan}/dlna/device.xml`,
+        serverString: `Node/${process.versions.node} UPnP/1.0 Poutine/${APP_VERSION}`,
+        log: { info: (m) => app.log.info(m), error: (m) => app.log.error(m) },
+      });
+    }
+    app.log.info(`DLNA MediaServer enabled (friendly name: ${config.dlnaFriendlyName})`);
+  }
+
   // Capabilities probe used by the frontend to decide which UI affordances
   // to render (e.g. the device picker in PlayerBar).
   app.get("/api/capabilities", async () => ({
     sonos: config.sonosEnabled,
+    dlna: config.dlnaEnabled,
   }));
 
   // Health check
@@ -342,12 +386,15 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   app.addHook("onReady", () => {
     autoSync.start();
     if (sonosDiscovery) sonosDiscovery.start();
+    if (ssdpAdvertiser) ssdpAdvertiser.start();
   });
 
   // Cleanup on close
-  app.addHook("onClose", () => {
+  app.addHook("onClose", async () => {
     autoSync.stop();
     if (sonosDiscovery) sonosDiscovery.stop();
+    // Await so byebye packets actually leave the socket before close().
+    if (ssdpAdvertiser) await ssdpAdvertiser.stop();
     process.off("SIGHUP", sighupHandler);
     db.close();
   });
