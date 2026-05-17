@@ -419,12 +419,17 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
   route("/getArtists", async (request, reply) => {
     const q = request.query as Record<string, string>;
 
+    // INNER JOIN drops artists with no release group of their own.
+    // Featured-only / track-credit-only artists otherwise appear in client
+    // lists with zero albums and no playable content, because the artist
+    // detail view filters albums by `urg.artist_id`. Their tracks remain
+    // reachable via the album they appear on.
     const artists = app.db
       .prepare(
         `SELECT ua.id, ua.name, ua.image_url,
           COUNT(urg.id) AS albumCount
         FROM unified_artists ua
-        LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
+        JOIN unified_release_groups urg ON urg.artist_id = ua.id
         GROUP BY ua.id, ua.name
         ORDER BY ua.name_normalized`,
       )
@@ -460,12 +465,13 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
   route("/getIndexes", async (request, reply) => {
     const q = request.query as Record<string, string>;
 
+    // INNER JOIN: see /getArtists above for the rationale.
     const artists = app.db
       .prepare(
         `SELECT ua.id, ua.name,
           COUNT(urg.id) AS albumCount
         FROM unified_artists ua
-        LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
+        JOIN unified_release_groups urg ON urg.artist_id = ua.id
         GROUP BY ua.id, ua.name
         ORDER BY ua.name_normalized`,
       )

@@ -225,31 +225,21 @@ docker network connect --alias hub-a poutine-local-cluster cd-rips-hub-1
 # ...etc
 ```
 
-## Sonos integration (issue #108)
+## Sonos casting (issue #108)
 
-Optional feature — gated by `SONOS_ENABLED=true`. Lets the bottom-of-screen player cast to Sonos devices on the LAN instead of playing in the browser.
+Optional sink for the player. Gated by `SONOS_ENABLED=true`. SSDP discovery
+of `ZonePlayer:1` on UDP 1900; SOAP control (AVTransport + RenderingControl)
+on each device's `:1400`. Sonos fetches `/cast/stream/:trackId` via short-lived
+HMAC tokens — no Subsonic credential leak. Full reference: [sonos.md](sonos.md).
 
-**Components:**
-- `services/sonos-discovery.ts` — SSDP M-SEARCH on UDP `239.255.255.250:1900` for `urn:schemas-upnp-org:device:ZonePlayer:1`. Fetches `/xml/device_description.xml` for UDN + roomName.
-- `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`) on each device's `:1400`.
-- `services/cast-tokens.ts` — HMAC-signed short-lived (1h) tokens for unauthenticated stream URLs. Secret derived from the instance Ed25519 key via `deriveCastSecret`. Token wire format `<sig>.<exp>.<base64url(username)>`; the username travels in the token so `/cast/stream` can attribute the stream and route federated peer fetches under the originating user.
-- `routes/cast.ts` — `GET /cast/stream/:trackId?token=...`. Token-verified; reuses the local/peer source selection + transcoding pipeline. Recovered username is used for stream-tracking and federated `asUser`.
-- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public. Play handler appends `?format=mp3` to the cast URL so the stream byte content-type matches the hardcoded `audio/mpeg` DIDL metadata; without this, FLAC/OGG sources are rejected by Sonos and silently land in STOPPED. Lossless pass-through is a follow-up (#180).
-- `GET /api/capabilities` — frontend probe; returns `{ sonos: boolean }`.
+## DLNA MediaServer (issue #175)
 
-**Networking gotcha — host mode required.** SSDP needs UDP multicast which Docker's bridge networking blocks. Run with the Sonos override:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
-```
-
-The override puts **both** services on `network_mode: host`. Hub needs host net for multicast. Navidrome also needs host net because Docker Desktop host-net containers cannot reach the host's bridge-published loopback ports — without it the hub can't reach Navidrome at all. Navidrome binds to `ND_ADDRESS=127.0.0.1` so the admin UI is not exposed on the LAN. `POUTINE_LAN_URL` must be the address Sonos can reach the hub at (e.g. `http://192.168.1.10:3000`).
-
-**macOS limitation — Sonos discovery does not work in Docker Desktop.** Docker Desktop's "host networking" on macOS is implemented as a userspace VPN, not a true network-namespace share. UDP multicast does not traverse it (empirically verified: M-SEARCH from inside the container returns 0 Sonos replies even on a LAN where the Mac host sees 4). On Linux hosts the override works as designed. For Mac dev, run the hub natively (`pnpm --filter hub build && node hub/dist/server.js`) against Dockerized Navidrome instead. Production targets Linux where host networking behaves correctly.
-
-**Queue model.** App-managed, one track at a time. The frontend pushes the current track via `sonosPlay`, polls `/state` every 1.5s for position/duration, and calls `next()` from the store when the device transitions `PLAYING → STOPPED`. Shuffle/repeat live in the store, not on the device.
-
-**Device picker.** `frontend/src/components/player/DevicePicker.tsx`. Cast icon in `PlayerBar` next to the volume slider — only rendered if `/api/capabilities` reports `sonos: true`. Device selection is not persisted across sessions (always defaults to local browser playback).
+Optional UPnP `MediaServer:1` advertisement on the LAN. Gated by `DLNA_ENABLED=true`.
+Reuses the host-networking compose override and `POUTINE_LAN_URL`. Shares
+`services/didl.ts` + `services/soap.ts` with Sonos. DLNA has no user identity —
+every route under `/dlna/*` is unauthenticated when enabled; a `requireLan`
+preHandler keeps that openness off any public tunnel. Full reference:
+[dlna.md](dlna.md).
 
 ## Testing notes
 

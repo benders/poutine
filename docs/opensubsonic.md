@@ -61,10 +61,10 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | Endpoint            | Status          | Notes                                                              |
 |---------------------|-----------------|--------------------------------------------------------------------|
 | `getMusicFolders`   | Implemented     | One folder per known instance (local + active peers); `id` is the stable `instances.musicfolder_id` (issue #123) |
-| `getIndexes`        | Implemented     | Returns artist index from unified library; ignores `musicFolderId` |
+| `getIndexes`        | Implemented     | Artist index from unified library; ignores `musicFolderId`. Excludes track-only-credit artists (no release group of their own) so the list matches the artist detail view |
 | `getMusicDirectory` | NOT IMPLEMENTED |                                                                    |
 | `getGenres`         | Implemented     | Aggregated from `unified_release_groups` + `unified_tracks`        |
-| `getArtists`        | Implemented     | Alphabetical index from unified library; ignores `musicFolderId`   |
+| `getArtists`        | Implemented     | Alphabetical index from unified library; ignores `musicFolderId`. Excludes track-only-credit artists (no release group of their own) — same filter as `getIndexes` |
 | `getArtist`         | Implemented     | Returns artist + album list                                        |
 | `getAlbum`          | Implemented     | Returns album + track list; album ID prefix `al<uuid>`             |
 | `getSong`           | Implemented     | Track ID prefix `t<uuid>`                                          |

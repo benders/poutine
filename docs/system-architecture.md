@@ -104,6 +104,8 @@ Transcoding happens on the Navidrome that owns the bytes.
 
 **Sonos casting sink (issue #108):** optional alternative to local browser playback. When `SONOS_ENABLED=true`, the player can route playback through a discovered Sonos device on the LAN. The hub signs a short-lived HMAC token, builds `${POUTINE_LAN_URL}/cast/stream/:trackId?token=…`, and issues SOAP `SetAVTransportURI + Play` on the device. The Sonos device fetches the stream from the hub directly, reusing the same source-selection + transcoding pipeline. See [hub-internals.md](hub-internals.md#sonos-integration-issue-108).
 
+**DLNA MediaServer (issue #175):** optional. When `DLNA_ENABLED=true`, Poutine advertises itself as a UPnP `MediaServer:1` on the LAN (SSDP + SOAP/ContentDirectory). Clients like Windows Media Player, Xbox, Kodi, VLC, and BubbleUPnP can browse the merged library and stream from `/dlna/stream/:trackId`, reusing the same source-selection pipeline. DLNA has no user identity, so the stream endpoint is open on the LAN and attributed to a pseudo-user — see [hub-internals.md](hub-internals.md#dlna-mediaserver-issue-175).
+
 ## Auth model
 
 | Concern        | Approach                                                          |

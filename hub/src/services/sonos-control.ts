@@ -1,4 +1,13 @@
 import type { SonosDevice } from "./sonos-discovery.js";
+import {
+  buildSoapEnvelope,
+  pickXmlTag,
+  formatUpnpDuration,
+  parseUpnpDuration,
+} from "./soap.js";
+import { buildDidlLiteTrack, type TrackMetadata } from "./didl.js";
+
+export type { TrackMetadata } from "./didl.js";
 
 type Service = "AVTransport" | "RenderingControl";
 
@@ -13,104 +22,11 @@ const SERVICE_PATHS: Record<Service, { control: string; serviceType: string }> =
   },
 };
 
-export interface TrackMetadata {
-  trackId: string;
-  title: string;
-  artist: string;
-  album: string;
-  /** Absolute URL to cover art reachable from the Sonos device, or null. */
-  albumArtUri?: string | null;
-  /** Track duration in seconds. */
-  durationSec: number;
-  /** Stream content-type hint (e.g. "audio/mpeg"). */
-  mimeType?: string;
-}
-
 export interface TransportState {
   /** PLAYING | PAUSED_PLAYBACK | STOPPED | TRANSITIONING | NO_MEDIA_PRESENT */
   state: string;
-  /** Current track position in seconds. */
   position: number;
-  /** Current track duration in seconds (per device). */
   duration: number;
-}
-
-const xmlEscape = (s: string): string =>
-  s.replace(/[&<>"']/g, (c) =>
-    c === "&" ? "&amp;"
-      : c === "<" ? "&lt;"
-        : c === ">" ? "&gt;"
-          : c === '"' ? "&quot;"
-            : "&apos;",
-  );
-
-/**
- * Build the DIDL-Lite metadata blob that Sonos expects in the
- * CurrentURIMetaData argument of SetAVTransportURI.
- */
-export function buildDidlLite(meta: TrackMetadata, streamUri: string): string {
-  const mime = meta.mimeType ?? "audio/mpeg";
-  const protocolInfo = `http-get:*:${mime}:*`;
-  const art = meta.albumArtUri
-    ? `<upnp:albumArtURI>${xmlEscape(meta.albumArtUri)}</upnp:albumArtURI>`
-    : "";
-  return [
-    `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"`,
-    ` xmlns:dc="http://purl.org/dc/elements/1.1/"`,
-    ` xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"`,
-    ` xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">`,
-    `<item id="poutine-${xmlEscape(meta.trackId)}" parentID="-1" restricted="1">`,
-    `<dc:title>${xmlEscape(meta.title)}</dc:title>`,
-    `<dc:creator>${xmlEscape(meta.artist)}</dc:creator>`,
-    `<upnp:album>${xmlEscape(meta.album)}</upnp:album>`,
-    `<upnp:class>object.item.audioItem.musicTrack</upnp:class>`,
-    art,
-    `<res protocolInfo="${protocolInfo}" duration="${formatHmsForRes(meta.durationSec)}">${xmlEscape(streamUri)}</res>`,
-    `</item>`,
-    `</DIDL-Lite>`,
-  ].join("");
-}
-
-const pad2 = (n: number): string => String(n).padStart(2, "0");
-
-function formatHmsForRes(seconds: number): string {
-  const s = Math.max(0, Math.floor(seconds));
-  return `${pad2(Math.floor(s / 3600))}:${pad2(Math.floor((s / 60) % 60))}:${pad2(s % 60)}.000`;
-}
-
-function parseHms(s: string): number {
-  if (!s || s === "NOT_IMPLEMENTED") return 0;
-  const parts = s.split(":").map((p) => parseInt(p, 10));
-  if (parts.some(Number.isNaN)) return 0;
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return parts[0] ?? 0;
-}
-
-function pickXmlTag(xml: string, tag: string): string | null {
-  const re = new RegExp(`<${tag}>([^<]*)</${tag}>`, "i");
-  const m = xml.match(re);
-  return m ? m[1] : null;
-}
-
-/**
- * Wrap arguments in a SOAP envelope for the given UPnP action.
- */
-export function buildSoapEnvelope(
-  service: Service,
-  action: string,
-  args: Record<string, string | number>,
-): string {
-  const serviceType = SERVICE_PATHS[service].serviceType;
-  const argXml = Object.entries(args)
-    .map(([k, v]) => `<${k}>${xmlEscape(String(v))}</${k}>`)
-    .join("");
-  return `<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-<s:Body>
-<u:${action} xmlns:u="${serviceType}">${argXml}</u:${action}>
-</s:Body>
-</s:Envelope>`;
 }
 
 /**
@@ -123,7 +39,7 @@ export class SonosControl {
     streamUri: string,
     meta: TrackMetadata,
   ): Promise<void> {
-    const didl = buildDidlLite(meta, streamUri);
+    const didl = buildDidlLiteTrack(meta, streamUri);
     await this.soap(device, "AVTransport", "SetAVTransportURI", {
       InstanceID: 0,
       CurrentURI: streamUri,
@@ -150,7 +66,7 @@ export class SonosControl {
     await this.soap(device, "AVTransport", "Seek", {
       InstanceID: 0,
       Unit: "REL_TIME",
-      Target: formatHmsForRes(positionSec).slice(0, 8),
+      Target: formatUpnpDuration(positionSec).slice(0, 8),
     });
   }
 
@@ -182,8 +98,8 @@ export class SonosControl {
     });
     return {
       state,
-      position: parseHms(pickXmlTag(pos, "RelTime") ?? "00:00:00"),
-      duration: parseHms(pickXmlTag(pos, "TrackDuration") ?? "00:00:00"),
+      position: parseUpnpDuration(pickXmlTag(pos, "RelTime") ?? "00:00:00"),
+      duration: parseUpnpDuration(pickXmlTag(pos, "TrackDuration") ?? "00:00:00"),
     };
   }
 
@@ -194,7 +110,7 @@ export class SonosControl {
     args: Record<string, string | number>,
   ): Promise<string> {
     const { control, serviceType } = SERVICE_PATHS[service];
-    const body = buildSoapEnvelope(service, action, args);
+    const body = buildSoapEnvelope(serviceType, action, args);
     const url = `http://${device.ip}:${device.port}${control}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);

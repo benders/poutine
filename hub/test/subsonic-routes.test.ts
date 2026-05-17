@@ -279,6 +279,59 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"]).toHaveProperty("indexes");
   });
 
+  it("getArtists / getIndexes exclude artists with no release group of their own", async () => {
+    // Album-artist 'a1' (one release group), track-only-credit 'a3' (no
+    // release group of their own — featured on a1's release).
+    app.db
+      .prepare(
+        `INSERT INTO unified_artists (id, name, name_normalized) VALUES
+           ('a1', 'Album Artist', 'album artist'),
+           ('a3', 'Featured Only', 'featured only')`,
+      )
+      .run();
+    app.db
+      .prepare(
+        `INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, year)
+         VALUES ('rg1', 'The Album', 'the album', 'a1', 2020)`,
+      )
+      .run();
+    app.db
+      .prepare(
+        `INSERT INTO unified_releases (id, release_group_id, name)
+         VALUES ('r1', 'rg1', 'The Album')`,
+      )
+      .run();
+    app.db
+      .prepare(
+        `INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, track_number)
+         VALUES ('t1', 'Solo Track', 'solo track', 'r1', 'a1', 1),
+                ('t2', 'Guest Spot', 'guest spot', 'r1', 'a3', 2)`,
+      )
+      .run();
+
+    const flatten = (indexes: Array<{ artist?: unknown }>) =>
+      indexes.flatMap((i) => {
+        const a = i.artist;
+        return Array.isArray(a) ? a : a ? [a] : [];
+      }) as Array<{ name: string }>;
+
+    const a = await app.inject({
+      method: "GET",
+      url: "/rest/getArtists?u=tester&p=secret&f=json",
+    });
+    const aNames = flatten(a.json()["subsonic-response"].artists.index ?? []).map((x) => x.name);
+    expect(aNames).toContain("Album Artist");
+    expect(aNames).not.toContain("Featured Only");
+
+    const i = await app.inject({
+      method: "GET",
+      url: "/rest/getIndexes?u=tester&p=secret&f=json",
+    });
+    const iNames = flatten(i.json()["subsonic-response"].indexes.index ?? []).map((x) => x.name);
+    expect(iNames).toContain("Album Artist");
+    expect(iNames).not.toContain("Featured Only");
+  });
+
   it("getArtist with unknown id → error 70", async () => {
     const res = await app.inject({
       method: "GET",
