@@ -35,21 +35,27 @@ function seedDb(): Database.Database {
   db.prepare(
     `INSERT INTO unified_artists (id, name, name_normalized, image_url)
      VALUES ('a1', 'Artist One', 'artist one', NULL),
-            ('a2', 'Artist Two', 'artist two', NULL)`,
+            ('a2', 'Artist Two', 'artist two', NULL),
+            ('a3', 'Featured Only', 'featured only', NULL)`,
   ).run();
   db.prepare(
     `INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, year)
      VALUES ('rg1', 'Album One', 'album one', 'a1', 2001),
-            ('rg2', 'Album Two', 'album two', 'a1', 2002)`,
+            ('rg2', 'Album Two', 'album two', 'a1', 2002),
+            ('rg3', 'Other Album', 'other album', 'a2', 2003)`,
   ).run();
   db.prepare(
     `INSERT INTO unified_releases (id, release_group_id, name)
-     VALUES ('r1', 'rg1', 'Album One')`,
+     VALUES ('r1', 'rg1', 'Album One'),
+            ('r2', 'rg2', 'Album Two')`,
   ).run();
+  // t3 credits 'a3' (the orphan) on 'a1'-owned rg2, simulating a featured-
+  // artist credit. 'a3' should NOT appear in the artist list.
   db.prepare(
     `INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, track_number, duration_ms)
      VALUES ('t1', 'Track One', 'track one', 'r1', 'a1', 1, 180000),
-            ('t2', 'Track Two', 'track two', 'r1', 'a1', 2, 200000)`,
+            ('t2', 'Track Two', 'track two', 'r1', 'a1', 2, 200000),
+            ('t3', 'Guest Spot', 'guest spot', 'r2', 'a3', 1, 150000)`,
   ).run();
   // Make t1 streamable via a preferred local source.
   db.prepare(
@@ -123,6 +129,12 @@ describe("DlnaObjectService.browse", () => {
     expect(idx1).toBeGreaterThan(-1);
     expect(idx2).toBeGreaterThan(idx1);
     expect(out.result).toContain(`id="${artistObjectId("a1")}"`);
+  });
+
+  it("artists → excludes track-only credits with no release group of their own", () => {
+    const out = svc.browse(ARTISTS_ID, "BrowseDirectChildren", opts);
+    expect(out.totalMatches).toBe(2);
+    expect(out.result).not.toContain("Featured Only");
   });
 
   it("artist/<id> → lists release groups for that artist", () => {

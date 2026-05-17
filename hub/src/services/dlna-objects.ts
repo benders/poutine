@@ -315,8 +315,17 @@ export class DlnaObjectService {
   // ---------- DB queries ----------
 
   private countArtists(): number {
+    // Hide artists with no release group of their own. They show up as
+    // empty containers in DLNA browsers (VLC, etc.) because the artist→
+    // album path filters by `urg.artist_id` and a track-only credit owns
+    // no release group. Their tracks remain reachable via the album they
+    // appear on.
     const row = this.db
-      .prepare("SELECT COUNT(*) AS n FROM unified_artists")
+      .prepare(
+        `SELECT COUNT(*) AS n FROM unified_artists ua
+          WHERE EXISTS (SELECT 1 FROM unified_release_groups urg
+                         WHERE urg.artist_id = ua.id)`,
+      )
       .get() as { n: number };
     return row.n;
   }
@@ -372,6 +381,8 @@ export class DlnaObjectService {
         `SELECT ua.id, ua.name, ua.image_url,
                 (SELECT COUNT(*) FROM unified_release_groups urg WHERE urg.artist_id = ua.id) AS album_count
            FROM unified_artists ua
+          WHERE EXISTS (SELECT 1 FROM unified_release_groups urg
+                         WHERE urg.artist_id = ua.id)
           ORDER BY ua.name COLLATE NOCASE
           LIMIT ? OFFSET ?`,
       )

@@ -58,6 +58,22 @@ can cache them across hub restarts.
 Release-level (edition) browsing is not exposed — `unified_release_groups`
 is the natural "album" object for DLNA clients.
 
+### Artist list filtering
+
+`0/music/artists` lists only artists that own at least one release group
+(`EXISTS unified_release_groups urg WHERE urg.artist_id = ua.id`). Track-
+only credits (featured artists, compilation contributors) are excluded
+because the artist→album path filters by `urg.artist_id` — they would
+otherwise appear in the browser with no playable content. Their tracks
+remain reachable via the album they appear on. The Subsonic
+`/getArtists` / `/getIndexes` endpoints apply the same filter so SPA and
+DLNA browsers agree on the artist roster.
+
+Compilations currently surface under whichever single `unified_artists`
+row the ingest assigned to the release group (often a single contributor,
+not "Various Artists"). Grouping compilations under a synthetic VA
+artist is an ingest concern, not a DLNA concern.
+
 ### UDN
 
 `sha1("poutine/dlna/<POUTINE_INSTANCE_ID>")` reshaped as a UUID. Stable
