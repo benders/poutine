@@ -49,6 +49,7 @@ declare module "fastify" {
   streamTracking: StreamTrackingService;
   lastFmClient: LastFmClient | null;
   fanartTvClient: FanartTvClient | null;
+  navidromeClient: SubsonicClient;
 }
 }
 
@@ -168,6 +169,18 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     app.log.info("fanart.tv integration disabled — no project key configured");
   }
   app.decorate("fanartTvClient", fanartTvClient);
+
+  // Shared Subsonic client for the local Navidrome (admin creds). Used by
+  // the `/api/health` probe; route handlers that need user-scoped Subsonic
+  // calls construct their own per-request client.
+  app.decorate(
+    "navidromeClient",
+    new SubsonicClient({
+      url: config.navidromeUrl,
+      username: config.navidromeUsername,
+      password: config.navidromePassword,
+    }),
+  );
 
   // Password encryption key (AES-256-GCM, on disk beside the federation key)
   const passwordKey = loadOrCreatePasswordKey(config.poutinePasswordKeyPath);
@@ -309,43 +322,19 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     sonos: config.sonosEnabled,
   }));
 
-  // Health check (issue #178).
-  //
-  // Probes the local Navidrome via Subsonic `/rest/ping` on each request and
-  // reflects reachability in the response body. We always return HTTP 200 so
-  // that the federation handshake (which reads `apiVersion` / `appVersion`
-  // from a peer's `/api/health`) keeps working when a peer's Navidrome is
-  // briefly down — peers only validate `apiVersion`. Operators/load-balancers
-  // should key on `status === "ok"` instead of the HTTP status.
+  // Health check (issue #178). Always HTTP 200 so the federation handshake
+  // can read peer versions even when Navidrome is briefly down; consumers
+  // key on `body.status`. See docs/hub-internals.md route table.
   app.get("/api/health", async () => {
-    const naviClient = new SubsonicClient({
-      url: app.config.navidromeUrl,
-      username: app.config.navidromeUsername,
-      password: app.config.navidromePassword,
-    });
-
     let navidrome: "ok" | "unreachable" = "unreachable";
     try {
       // ~1s budget: Navidrome on the internal Docker network normally
-      // responds in tens of ms. Anything slower is effectively a failure
-      // for the `/proxy/rest/*` path this endpoint vouches for.
-      const TIMEOUT_MS = 1000;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`navidrome ping timed out after ${TIMEOUT_MS}ms`)),
-          TIMEOUT_MS,
-        );
-        timer.unref?.();
-      });
-      try {
-        await Promise.race([naviClient.ping(), timeout]);
-        navidrome = "ok";
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
+      // responds in tens of ms. AbortSignal.timeout cancels the underlying
+      // fetch so the request doesn't dangle past the response.
+      await app.navidromeClient.ping({ signal: AbortSignal.timeout(1000) });
+      navidrome = "ok";
     } catch (err) {
-      app.log.warn({ err: String(err) }, "Local Navidrome ping failed");
+      app.log.warn({ err }, "Local Navidrome ping failed");
     }
 
     return {

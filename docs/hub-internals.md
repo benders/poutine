@@ -51,7 +51,9 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | Proxy             | `/proxy/*`      | Ed25519, JWT, or Subsonic `u+p`/`u+t+s` (unified — see below)    | Authenticated transparent proxy to Navidrome |
 | Federation        | `/federation/*` | Ed25519-signed (see [federation-api.md](federation-api.md))      | Peer-to-peer only                         |
 | Admin             | `/admin/*`      | JWT (see [authentication.md](authentication.md))                 | Users CRUD, peers, sync, cache, instance  |
-| Health            | `/api/health`   | None                                                             | `{ status: "ok" \| "degraded", appVersion, apiVersion, navidrome: "ok" \| "unreachable" }` — probes local Navidrome via Subsonic `/rest/ping` (~1 s timeout); always HTTP 200 so the federation handshake can read peer versions even when their Navidrome is briefly down (issue #178) |
+| Health            | `/api/health`   | None                                                             | `{ status, appVersion, apiVersion, navidrome }` — see note below             |
+
+`/api/health` probes the local Navidrome via Subsonic `/rest/ping` (~1 s budget, `AbortSignal.timeout`) and reports `navidrome: "ok" | "unreachable"` plus a rolled-up `status: "ok" | "degraded"`. Always returns HTTP 200 so the federation handshake (which only reads `apiVersion` / `appVersion` from a peer's `/api/health`) keeps working when a peer's Navidrome is briefly down. Operators and LB / k8s probes must key on `body.status`, not the HTTP status (issue #178).
 
 ## Auth
 

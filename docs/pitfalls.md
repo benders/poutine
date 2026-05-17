@@ -79,6 +79,7 @@ Full flow: [authentication.md](authentication.md).
 | Transient FS unmount → Navidrome marks rows `missing=1` → federated index shrinks permanently       | #159      | `ND_SCANNER_PURGEMISSING=always` so the next scan re-discovers files; trade-off documented in `docker-compose.yml`                |
 | Using `ND_INITIALADMINPASSWORD` to seed the admin user                                              | memory    | No-op in Navidrome 0.52+. Use `ND_DEVAUTOCREATEADMINPASSWORD`                                                                     |
 | Forgetting to log a warning when local `instance_tracks` count drops materially between syncs       | #159      | Early signal that the music volume disappeared — keep the warning if you touch sync metrics                                       |
+| Wiring k8s / LB probes to `/api/health` HTTP status                                                  | #178      | Always returns 200 (so federation handshake survives a Navidrome blip). Key probes on `body.status === "ok"` instead              |
 
 ## Frontend
 
