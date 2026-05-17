@@ -56,3 +56,35 @@ describe("player store play/pause toggle", () => {
     expect(usePlayer.getState().isPlaying).toBe(true);
   });
 });
+
+describe("player store castVolume", () => {
+  it("setCastVolume clamps to the current cap", () => {
+    usePlayer.setState({ castVolumeCap: 50 });
+    usePlayer.getState().setCastVolume(75);
+    expect(usePlayer.getState().castVolume).toBe(50);
+  });
+
+  it("setCastVolume clamps negatives to 0", () => {
+    usePlayer.getState().setCastVolume(-5);
+    expect(usePlayer.getState().castVolume).toBe(0);
+  });
+
+  it("setCastVolume rounds fractional values", () => {
+    usePlayer.setState({ castVolumeCap: 50 });
+    usePlayer.getState().setCastVolume(23.6);
+    expect(usePlayer.getState().castVolume).toBe(24);
+  });
+
+  it("setCastVolumeCap re-clamps the current value if it would exceed the new cap", () => {
+    usePlayer.setState({ castVolume: 45, castVolumeCap: 50 });
+    usePlayer.getState().setCastVolumeCap(30);
+    expect(usePlayer.getState().castVolumeCap).toBe(30);
+    expect(usePlayer.getState().castVolume).toBe(30);
+  });
+
+  it("setCastVolumeCap leaves a value below the new cap untouched", () => {
+    usePlayer.setState({ castVolume: 20, castVolumeCap: 50 });
+    usePlayer.getState().setCastVolumeCap(40);
+    expect(usePlayer.getState().castVolume).toBe(20);
+  });
+});

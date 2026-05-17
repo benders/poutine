@@ -11,11 +11,27 @@ export type PlayerSink =
   | "local"
   | { type: "sonos"; deviceId: string; deviceName: string };
 
+/**
+ * Default cap fallback used until the hub's /state response supplies the
+ * authoritative value (currently 50 server-side, see SONOS_VOLUME_CAP).
+ * Hard-coded mirror — #184 will turn this into a settable user pref.
+ */
+export const DEFAULT_SONOS_VOLUME_CAP = 50;
+
 interface PlayerState {
   queue: SubsonicSong[];
   currentIndex: number;
   isPlaying: boolean;
   volume: number;
+  /**
+   * Sonos device volume (0..100, integer, capped). Tracked separately
+   * from `volume` because the local `<audio>` slider is commonly pinned
+   * near max while the user controls real loudness via their computer's
+   * volume — that value must not flow to a Sonos device.
+   */
+  castVolume: number;
+  /** Authoritative cap from the hub; mirrored to bound the cast slider. */
+  castVolumeCap: number;
   currentTime: number;
   duration: number;
   shuffle: boolean;
@@ -36,6 +52,8 @@ interface PlayerState {
   togglePlay: () => void;
   setPlaying: (playing: boolean) => void;
   setVolume: (volume: number) => void;
+  setCastVolume: (level: number) => void;
+  setCastVolumeCap: (cap: number) => void;
   setCurrentTime: (time: number) => void;
   setDuration: (duration: number) => void;
   toggleShuffle: () => void;
@@ -48,6 +66,8 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   currentIndex: -1,
   isPlaying: false,
   volume: parseFloat(localStorage.getItem("volume") || "0.8"),
+  castVolume: DEFAULT_SONOS_VOLUME_CAP,
+  castVolumeCap: DEFAULT_SONOS_VOLUME_CAP,
   currentTime: 0,
   duration: 0,
   shuffle: false,
@@ -131,6 +151,20 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     localStorage.setItem("volume", String(volume));
     set({ volume });
   },
+  setCastVolume: (castVolume) =>
+    set((state) => ({
+      castVolume: Math.max(
+        0,
+        Math.min(state.castVolumeCap, Math.round(castVolume)),
+      ),
+    })),
+  setCastVolumeCap: (castVolumeCap) =>
+    set((state) => ({
+      castVolumeCap,
+      // Re-clamp the current value to the new cap so we never present a
+      // slider position above its own max.
+      castVolume: Math.min(state.castVolume, castVolumeCap),
+    })),
   setCurrentTime: (currentTime) => set({ currentTime }),
   setDuration: (duration) => set({ duration }),
   toggleShuffle: () => set((state) => ({ shuffle: !state.shuffle })),

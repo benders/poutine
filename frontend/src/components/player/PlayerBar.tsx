@@ -36,6 +36,8 @@ export function PlayerBar() {
     currentIndex,
     isPlaying,
     volume,
+    castVolume,
+    castVolumeCap,
     currentTime,
     duration,
     shuffle,
@@ -45,6 +47,8 @@ export function PlayerBar() {
     togglePlay,
     setPlaying,
     setVolume,
+    setCastVolume,
+    setCastVolumeCap,
     setCurrentTime,
     setDuration,
     toggleShuffle,
@@ -205,11 +209,41 @@ export function PlayerBar() {
     });
   }, [isPlaying, deviceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Volume on Sonos. 0..1 in the UI → 0..100 on the device.
+  // Sonos volume is its own slider on its own scale (0..castVolumeCap), so
+  // the local `volume` value MUST NOT mirror to the device — the local
+  // slider is the gain on the <audio> element and is often pinned near max
+  // because the user controls real loudness via their computer. Mirroring
+  // it once produced #181's "device played at 80" surprise. Cast volume
+  // changes flow through the slider's onChange (debounced) below.
+
+  // Timestamp (ms) of the last user-driven slider input. Poll-driven
+  // updates within this window are ignored so a slow /state response can't
+  // snap the slider back while the user is still dragging.
+  const lastCastVolumeDragRef = useRef(0);
+  const CAST_VOLUME_DRAG_GUARD_MS = 1500;
+
+  // Debounce timer for SetVolume POSTs while dragging. 150ms keeps the
+  // device responsive without flooding RenderingControl with SOAP calls.
+  const castVolumeDebounceRef = useRef<number | null>(null);
+
+  // Seed castVolume from the device the first time we point at it (and
+  // on every device change). The 1.5s poll only runs when there's a
+  // current track; without this, switching sinks while idle would leave
+  // the slider at its default until the first track plays.
   useEffect(() => {
     if (!deviceId) return;
-    void sonosSetVolume(deviceId, Math.round(volume * 100)).catch(() => {});
-  }, [volume, deviceId]); // eslint-disable-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    void getSonosState(deviceId)
+      .then((s) => {
+        if (cancelled) return;
+        setCastVolumeCap(s.volumeCap);
+        setCastVolume(s.volume);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceId, setCastVolume, setCastVolumeCap]);
 
   // Stop local audio when switching to Sonos so it doesn't keep playing
   // in the background.
@@ -238,6 +272,14 @@ export function PlayerBar() {
         if (cancelled) return;
         if (s.duration > 0) setDuration(s.duration);
         setCurrentTime(s.position);
+        // Mirror device volume into the slider so external changes
+        // (Sonos app, hardware buttons) reflect within ~1.5s. Skip if
+        // the user just touched the slider — otherwise an in-flight
+        // poll response could clobber their drag.
+        setCastVolumeCap(s.volumeCap);
+        if (Date.now() - lastCastVolumeDragRef.current > CAST_VOLUME_DRAG_GUARD_MS) {
+          setCastVolume(s.volume);
+        }
         // Reflect device transport state back into the store so the
         // play/pause icon (driven by isPlaying) tracks the speaker. Without
         // this, any divergence — device-side pause, hub-side pause that
@@ -263,7 +305,16 @@ export function PlayerBar() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [deviceId, currentTrack?.id, next, setCurrentTime, setDuration, setPlaying]);
+  }, [
+    deviceId,
+    currentTrack?.id,
+    next,
+    setCurrentTime,
+    setDuration,
+    setPlaying,
+    setCastVolume,
+    setCastVolumeCap,
+  ]);
 
   const handleTimeUpdate = useCallback(() => {
     if (audioRef.current) {
@@ -491,28 +542,76 @@ export function PlayerBar() {
       {/* Volume */}
       <div className="shrink-0 flex items-center gap-2">
         {sonosAvailable && <DevicePicker />}
-        <button
-          onClick={() => setVolume(volume > 0 ? 0 : 0.8)}
-          className="p-1 text-text-muted hover:text-text-primary transition-colors"
-        >
-          {volume === 0 ? (
-            <VolumeX className="w-4 h-4" />
-          ) : (
-            <Volume2 className="w-4 h-4" />
-          )}
-        </button>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={Math.sqrt(volume)}
-          onChange={(e) => {
-            const pos = parseFloat(e.target.value);
-            setVolume(pos * pos);
-          }}
-          className="flex-1 h-1 appearance-none bg-border rounded-full cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-text-primary [&::-webkit-slider-thumb]:rounded-full"
-        />
+        {isSonos ? (
+          <>
+            <button
+              aria-label={castVolume === 0 ? "Unmute" : "Mute"}
+              onClick={() => {
+                if (!deviceId) return;
+                const target = castVolume > 0 ? 0 : Math.min(20, castVolumeCap);
+                lastCastVolumeDragRef.current = Date.now();
+                setCastVolume(target);
+                void sonosSetVolume(deviceId, target).catch(() => {});
+              }}
+              className="p-1 text-text-muted hover:text-text-primary transition-colors"
+            >
+              {castVolume === 0 ? (
+                <VolumeX className="w-4 h-4" />
+              ) : (
+                <Volume2 className="w-4 h-4" />
+              )}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={castVolumeCap}
+              step={1}
+              value={castVolume}
+              onChange={(e) => {
+                const level = parseInt(e.target.value, 10);
+                setCastVolume(level);
+                lastCastVolumeDragRef.current = Date.now();
+                if (!deviceId) return;
+                if (castVolumeDebounceRef.current !== null) {
+                  window.clearTimeout(castVolumeDebounceRef.current);
+                }
+                castVolumeDebounceRef.current = window.setTimeout(() => {
+                  void sonosSetVolume(deviceId, level).catch(() => {});
+                  castVolumeDebounceRef.current = null;
+                }, 150);
+              }}
+              aria-label="Cast volume"
+              className="flex-1 h-1 appearance-none bg-border rounded-full cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-text-primary [&::-webkit-slider-thumb]:rounded-full"
+            />
+          </>
+        ) : (
+          <>
+            <button
+              aria-label={volume === 0 ? "Unmute" : "Mute"}
+              onClick={() => setVolume(volume > 0 ? 0 : 0.8)}
+              className="p-1 text-text-muted hover:text-text-primary transition-colors"
+            >
+              {volume === 0 ? (
+                <VolumeX className="w-4 h-4" />
+              ) : (
+                <Volume2 className="w-4 h-4" />
+              )}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={Math.sqrt(volume)}
+              onChange={(e) => {
+                const pos = parseFloat(e.target.value);
+                setVolume(pos * pos);
+              }}
+              aria-label="Volume"
+              className="flex-1 h-1 appearance-none bg-border rounded-full cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-text-primary [&::-webkit-slider-thumb]:rounded-full"
+            />
+          </>
+        )}
       </div>
     </div>
   );

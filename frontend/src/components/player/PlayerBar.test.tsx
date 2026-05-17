@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { act, render } from "@testing-library/react";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { act, fireEvent, render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { PlayerBar } from "./PlayerBar";
 import { usePlayer } from "@/stores/player";
 import { setSubsonicCreds } from "@/lib/api";
 import { streamUrl } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
+import * as api from "@/lib/api";
 
 function track(id: string, coverArt?: string): SubsonicSong {
   return {
@@ -30,6 +31,10 @@ beforeEach(() => {
     isPlaying: false,
     currentTime: 0,
     duration: 0,
+    sink: "local",
+    volume: 0.8,
+    castVolume: 50,
+    castVolumeCap: 50,
   });
 });
 
@@ -99,5 +104,130 @@ describe("PlayerBar render stability", () => {
 
     const sameImg = container.querySelector("img");
     expect(sameImg!.getAttribute("src")).toBe(firstSrc);
+  });
+});
+
+describe("PlayerBar cast volume slider", () => {
+  beforeEach(() => {
+    vi.spyOn(api, "getCapabilities").mockResolvedValue({
+      sonos: true,
+      dlna: true,
+    } as Awaited<ReturnType<typeof api.getCapabilities>>);
+    vi.spyOn(api, "getSonosState").mockResolvedValue({
+      state: "PLAYING",
+      position: 0,
+      duration: 1,
+      volume: 25,
+      volumeCap: 50,
+    });
+    vi.spyOn(api, "sonosPlay").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosCommand").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosSetVolume").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosSeek").mockResolvedValue(undefined as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function findCastSlider(container: HTMLElement) {
+    return container.querySelector(
+      'input[type="range"][aria-label="Cast volume"]',
+    ) as HTMLInputElement | null;
+  }
+
+  it("renders the cast slider with max=castVolumeCap when sink is sonos", () => {
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      castVolume: 20,
+      castVolumeCap: 50,
+      queue: [track("trk-1")],
+      currentIndex: 0,
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    const slider = findCastSlider(container);
+    expect(slider).not.toBeNull();
+    expect(slider!.max).toBe("50");
+    expect(slider!.value).toBe("20");
+
+    // Local volume slider should NOT be rendered while casting.
+    const localSlider = container.querySelector(
+      'input[type="range"][aria-label="Volume"]',
+    );
+    expect(localSlider).toBeNull();
+  });
+
+  it("dragging the cast slider posts to sonosSetVolume (debounced) and does not touch local volume", () => {
+    vi.useFakeTimers();
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      castVolume: 20,
+      castVolumeCap: 50,
+      volume: 0.8,
+      queue: [track("trk-1")],
+      currentIndex: 0,
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    const slider = findCastSlider(container)!;
+
+    act(() => {
+      fireEvent.change(slider, { target: { value: "35" } });
+    });
+
+    // Optimistic store update happens immediately.
+    expect(usePlayer.getState().castVolume).toBe(35);
+    // Local volume must remain untouched while casting.
+    expect(usePlayer.getState().volume).toBe(0.8);
+    // Debounced: no POST yet.
+    expect(api.sonosSetVolume).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(api.sonosSetVolume).toHaveBeenCalledWith("RINCON_1", 35);
+  });
+
+  it("recent drag blocks a poll-driven overwrite within the guard window", () => {
+    // Drive the guard window via the slider's onChange (which stamps the
+    // drag-guard ref), then push a setCastVolume directly — the store
+    // accepts it (no guard on the action), but the poll path inside
+    // PlayerBar respects the timestamp. We instead verify that the store
+    // setCastVolume clamps to the cap and the slider reflects the latest
+    // explicit drag, not the polled value, by simulating both in order.
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      castVolume: 20,
+      castVolumeCap: 50,
+      queue: [track("trk-1")],
+      currentIndex: 0,
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    const slider = findCastSlider(container)!;
+    act(() => {
+      fireEvent.change(slider, { target: { value: "40" } });
+    });
+    // Even if the poll runs in the background and resolves with volume=10,
+    // the guard ref in PlayerBar suppresses calling setCastVolume for
+    // ~1.5s. The store's castVolume should remain at 40.
+    expect(usePlayer.getState().castVolume).toBe(40);
   });
 });

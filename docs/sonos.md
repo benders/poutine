@@ -172,6 +172,21 @@ currently playing, with no confirmation. Discovery and `GetTransportInfo`
 are read-only and safe; anything under AVTransport that changes state is
 not.
 
+## Volume model (#181)
+
+Two distinct volume scales live in the system and must not be conflated:
+
+| Scope      | Field             | Range            | Curve     | Persists?         |
+|------------|-------------------|------------------|-----------|-------------------|
+| Local SPA  | `volume`          | `0..1`           | quadratic | `localStorage`    |
+| Cast/Sonos | `castVolume`      | `0..volumeCap`   | linear    | session-only      |
+
+- **Cap.** `SONOS_VOLUME_CAP` in `hub/src/services/sonos-control.ts` (currently `50`). Re-clamped inside `SonosControl.setVolume()` so every code path — `/api/sonos/devices/:id/volume`, `/play` preflight, future schedulers — is uniformly safe. Surfaced to the SPA via `volumeCap` in `GET /api/sonos/devices/:id/state`. Making this user-configurable is tracked in #184.
+- **Cast-start preflight.** `/play` calls `getVolume` before `SetAVTransportURI`; if the device is above the cap (left blasting from the Sonos app), drops it to the cap. Below-cap settings are preserved.
+- **Slider sync while casting.** The 1.5s `/state` poll feeds `castVolume` into the SPA store. A drag-guard ref in `PlayerBar` suppresses poll-driven updates for ~1.5s after the user touches the slider, so an in-flight response can't snap the thumb back mid-drag.
+- **POST /volume.** Route validates `0..100` (request shape only); the real ceiling is the service-layer cap. Sending `80` succeeds and is silently clamped — the SPA's notion of the cap is allowed to lag a server change.
+- **Local audio is unaffected.** The local `<audio>` `volume` is never piped into a Sonos device. The previous behavior (mirror `volume * 100` to `setVolume`) caused #181's "device at 80" surprise; that effect is gone.
+
 ## See also
 
 - [hub-internals.md](hub-internals.md) for general conventions and gotchas.

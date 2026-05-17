@@ -424,6 +424,8 @@ export interface SonosState {
   position: number;
   duration: number;
   volume: number;
+  /** Hard ceiling enforced server-side on every SetVolume. */
+  volumeCap: number;
 }
 
 export function getSonosDevices() {
