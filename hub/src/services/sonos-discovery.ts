@@ -195,6 +195,13 @@ export class SonosDiscoveryService {
   private readonly log: { info: (msg: string) => void; error: (msg: string) => void };
   private readonly control: SonosTopologyClient | null;
   private collapsedOnce = false;
+  /**
+   * Known bonded-satellite UUIDs from the most recent topology fetch.
+   * SSDP rediscovers them every interval, so we filter at insertion rather
+   * than re-deleting on every tick. Rebuilt on each `collapseZoneGroups`
+   * run, so unpaired speakers reappear naturally.
+   */
+  private knownSatellites = new Set<string>();
 
   constructor(opts: SonosDiscoveryOptions = {}) {
     this.intervalMs = opts.intervalMs ?? 30_000;
@@ -286,6 +293,10 @@ export class SonosDiscoveryService {
     const ip = address || url.hostname;
     const desc = await this.fetchDescription(parsed.location);
     if (!desc) return;
+    // Bonded satellite — don't surface it. Topology says only the coordinator
+    // accepts AVTransport SOAP, so an entry here would be a duplicate that
+    // silently no-ops when cast to.
+    if (this.knownSatellites.has(desc.id)) return;
     this.devices.set(desc.id, {
       id: desc.id,
       room: desc.room,
@@ -323,16 +334,22 @@ export class SonosDiscoveryService {
     }
     const groups = parseZoneGroupState(xml);
     if (groups.length === 0) return;
+    // Rebuild known-satellites from fresh topology so an unpaired speaker
+    // reappears on the next SSDP response.
+    const fresh = new Set<string>();
     for (const group of groups) {
       for (const member of group.members) {
-        if (member === group.coordinator) continue;
-        const sat = this.devices.get(member);
-        if (sat) {
-          this.devices.delete(member);
-          this.log.info(
-            `Sonos: collapsed bonded satellite ${sat.room} (${member}) under coordinator ${group.coordinator}`,
-          );
-        }
+        if (member !== group.coordinator) fresh.add(member);
+      }
+    }
+    this.knownSatellites = fresh;
+    for (const member of fresh) {
+      const sat = this.devices.get(member);
+      if (sat) {
+        this.devices.delete(member);
+        this.log.info(
+          `Sonos: collapsed bonded satellite ${sat.room} (${member})`,
+        );
       }
     }
   }
