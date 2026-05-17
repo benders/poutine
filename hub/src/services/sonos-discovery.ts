@@ -1,4 +1,5 @@
 import dgram from "node:dgram";
+import { XMLParser } from "fast-xml-parser";
 
 export interface SonosDevice {
   /** UPnP UUID (RINCON_xxx...) from the device description. */
@@ -86,12 +87,97 @@ export function parseDeviceDescription(xml: string): {
   return { id, room, model };
 }
 
+export interface ZoneGroup {
+  /** Coordinator UUID, "uuid:" prefix stripped. Matches SonosDevice.id. */
+  coordinator: string;
+  /** All RINCONs in the group, coordinator + satellites, "uuid:"-stripped. */
+  members: string[];
+}
+
+const ZONE_GROUP_PARSER = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  removeNSPrefix: true,
+  parseTagValue: false,
+  trimValues: true,
+  isArray: (name) => name === "ZoneGroup" || name === "ZoneGroupMember" || name === "Satellite",
+});
+
+const stripUuid = (s: string): string => s.replace(/^uuid:/i, "");
+
+/**
+ * Parse a `<ZoneGroupState>` XML payload (from
+ * `ZoneGroupTopology:1#GetZoneGroupState`) into one entry per zone group.
+ * Members include both `<ZoneGroupMember>` and nested `<Satellite>` UUIDs
+ * — bonded-pair satellites are children of the coordinator member, not
+ * siblings.
+ */
+export function parseZoneGroupState(xml: string): ZoneGroup[] {
+  if (!xml) return [];
+  let parsed: unknown;
+  try {
+    parsed = ZONE_GROUP_PARSER.parse(xml);
+  } catch {
+    return [];
+  }
+  // Shape: { ZoneGroupState: { ZoneGroups: { ZoneGroup: [...] } } }
+  // or sometimes the outer ZoneGroupState wrapper is absent.
+  const root = parsed as Record<string, unknown> | null;
+  if (!root || typeof root !== "object") return [];
+  const wrapper =
+    (root.ZoneGroupState as Record<string, unknown> | undefined) ?? root;
+  const groupsContainer = wrapper.ZoneGroups as Record<string, unknown> | undefined;
+  if (!groupsContainer) return [];
+  const groups = groupsContainer.ZoneGroup as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(groups)) return [];
+
+  const out: ZoneGroup[] = [];
+  for (const g of groups) {
+    const coord = g["@_Coordinator"];
+    if (typeof coord !== "string" || !coord) continue;
+    const members = new Set<string>();
+    members.add(stripUuid(coord));
+    const memberList = g.ZoneGroupMember as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(memberList)) {
+      for (const m of memberList) {
+        const uuid = m["@_UUID"];
+        if (typeof uuid === "string" && uuid) members.add(stripUuid(uuid));
+        const sats = m.Satellite as Array<Record<string, unknown>> | undefined;
+        if (Array.isArray(sats)) {
+          for (const s of sats) {
+            const sUuid = s["@_UUID"];
+            if (typeof sUuid === "string" && sUuid) members.add(stripUuid(sUuid));
+          }
+        }
+      }
+    }
+    out.push({ coordinator: stripUuid(coord), members: Array.from(members) });
+  }
+  return out;
+}
+
+/**
+ * Minimal contract SonosDiscoveryService needs from a control client.
+ * Kept as a structural type so tests can stub it without instantiating
+ * the real SOAP client.
+ */
+export interface SonosTopologyClient {
+  getZoneGroupState(device: SonosDevice): Promise<string>;
+}
+
 export interface SonosDiscoveryOptions {
   /** Re-scan interval in ms. */
   intervalMs?: number;
   /** Drop devices we haven't heard from in this many ms. */
   staleAfterMs?: number;
   log?: { info: (msg: string) => void; error: (msg: string) => void };
+  /**
+   * Optional ZoneGroupTopology client. When provided, discovery collapses
+   * stereo pairs / bonded zones — only the coordinator of each group
+   * remains in `list()`. Without it, every SSDP responder appears
+   * separately (pre-#177 behavior).
+   */
+  control?: SonosTopologyClient;
 }
 
 /**
@@ -107,11 +193,14 @@ export class SonosDiscoveryService {
   private readonly intervalMs: number;
   private readonly staleAfterMs: number;
   private readonly log: { info: (msg: string) => void; error: (msg: string) => void };
+  private readonly control: SonosTopologyClient | null;
+  private collapsedOnce = false;
 
   constructor(opts: SonosDiscoveryOptions = {}) {
     this.intervalMs = opts.intervalMs ?? 30_000;
     this.staleAfterMs = opts.staleAfterMs ?? 3 * 60_000;
     this.log = opts.log ?? { info: () => {}, error: () => {} };
+    this.control = opts.control ?? null;
   }
 
   start(): void {
@@ -140,6 +229,7 @@ export class SonosDiscoveryService {
       this.timer = setInterval(() => {
         this.search();
         this.evictStale();
+        void this.collapseZoneGroups();
       }, this.intervalMs);
       this.timer.unref();
       this.log.info(`Sonos discovery started (interval ${this.intervalMs}ms)`);
@@ -204,6 +294,47 @@ export class SonosDiscoveryService {
       port: SONOS_PORT,
       lastSeen: new Date(),
     });
+    // Collapse stereo pairs the first time a device lands so /api/sonos/devices
+    // is clean before the 30s timer tick. Subsequent ticks re-collapse to
+    // catch newly-joined satellites.
+    if (!this.collapsedOnce && this.control) {
+      this.collapsedOnce = true;
+      void this.collapseZoneGroups();
+    }
+  }
+
+  /**
+   * Query topology from any one device, then drop bonded satellites so each
+   * zone group surfaces as a single logical device (the coordinator).
+   * Issue #177. No-op if no control port was injected, no devices known,
+   * or the topology fetch fails — we keep the un-collapsed view rather
+   * than hiding everything.
+   */
+  async collapseZoneGroups(): Promise<void> {
+    if (!this.control) return;
+    const picked = this.devices.values().next().value as SonosDevice | undefined;
+    if (!picked) return;
+    let xml: string;
+    try {
+      xml = await this.control.getZoneGroupState(picked);
+    } catch (err) {
+      this.log.error(`Sonos: GetZoneGroupState failed: ${String(err)}`);
+      return;
+    }
+    const groups = parseZoneGroupState(xml);
+    if (groups.length === 0) return;
+    for (const group of groups) {
+      for (const member of group.members) {
+        if (member === group.coordinator) continue;
+        const sat = this.devices.get(member);
+        if (sat) {
+          this.devices.delete(member);
+          this.log.info(
+            `Sonos: collapsed bonded satellite ${sat.room} (${member}) under coordinator ${group.coordinator}`,
+          );
+        }
+      }
+    }
   }
 
   private async fetchDescription(

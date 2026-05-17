@@ -23,7 +23,7 @@ RenderingControl. The control client hardcodes both.
 
 ## Components
 
-- `services/sonos-discovery.ts` — SSDP M-SEARCH on UDP `239.255.255.250:1900` for `urn:schemas-upnp-org:device:ZonePlayer:1`. Stale-evicts devices not seen recently.
+- `services/sonos-discovery.ts` — SSDP M-SEARCH on UDP `239.255.255.250:1900` for `urn:schemas-upnp-org:device:ZonePlayer:1`. Stale-evicts devices not seen recently. After discovery, calls `ZoneGroupTopology:1#GetZoneGroupState` and drops bonded satellites so each zone group surfaces as a single logical device (the coordinator). See "Bonded / stereo pairs" below.
 - `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`).
 - `services/didl.ts` — `buildDidlLiteTrack()` produces the inline single-item metadata Sonos expects in `CurrentURIMetaData`.
 - `services/soap.ts` — shared SOAP envelope + XML helpers (used by both Sonos and DLNA).
@@ -71,14 +71,24 @@ next to the volume slider — only rendered if `/api/capabilities` reports
 `sonos: true`. Device selection is not persisted across sessions (always
 defaults to local browser playback).
 
-## Bonded / stereo pairs (known limitation — issue #177)
+## Bonded / stereo pairs (resolved — issue #177)
 
-`SonosDiscoveryService` treats every SSDP responder as an independent device.
-In a stereo pair (or any bonded zone) both RINCONs respond to M-SEARCH, so
-`/api/sonos/devices` lists them both — typically with identical `room` values.
+Sonos stereo pairs and home-theater bonded zones advertise each RINCON
+separately via SSDP. Only the **coordinator** of a bonded zone accepts
+`AVTransport:1` commands — targeting a satellite silently no-ops.
 
-Only the **coordinator** of a bonded zone accepts `AVTransport:1` commands.
-Empirically, the satellite reports:
+After at least one device lands, discovery calls
+`ZoneGroupTopology:1#GetZoneGroupState` on any one device and parses the
+returned `<ZoneGroupState>` payload. For each `<ZoneGroup Coordinator="…">`
+it drops every non-coordinator UUID (including nested `<Satellite>`
+entries) from the in-memory device map. The collapse runs once shortly
+after the first discovery and again on every periodic re-scan tick, so
+late-joining satellites get pruned within one interval.
+
+Satellite UUIDs only appear in the full `GetZoneGroupState` XML as
+`<Satellite>` children of the bonded coordinator's `<ZoneGroupMember>` —
+`GetZoneGroupAttributes` hides them and is not sufficient. Empirical
+satellite symptoms (kept here for posterity / debugging):
 
 - empty `CurrentZoneGroupName` / `CurrentZoneGroupID` /
   `CurrentZonePlayerUUIDsInGroup` from `ZoneGroupTopology#GetZoneGroupAttributes`
@@ -86,13 +96,9 @@ Empirically, the satellite reports:
 - empty `Actions` from `AVTransport#GetCurrentTransportActions`
 - UPnP 701 errors from `GroupRenderingControl#GetGroupVolume`/`GetGroupMute`
 
-Targeting the satellite makes commands silently no-op. The fix (issue #177)
-is to call `ZoneGroupTopology#GetZoneGroupState` on one device after discovery
-and collapse each `<ZoneGroup Coordinator="…">` into a single logical device.
-Note: `GetZoneGroupAttributes` on the coordinator only lists the coordinator
-UUID in `CurrentZonePlayerUUIDsInGroup` — satellite UUIDs are hidden at that
-layer and only appear in the full `GetZoneGroupState` XML as `<Satellite>`
-children. Don't rely on `GetZoneGroupAttributes` alone.
+If the topology fetch fails, discovery keeps the un-collapsed view rather
+than hiding everything — a transient SOAP error must not blank out the
+device list.
 
 ## Auth
 
@@ -111,7 +117,7 @@ compromises cast tokens.
 
 | File                              | Covers                                                   |
 |-----------------------------------|----------------------------------------------------------|
-| `test/sonos-discovery.test.ts`    | SSDP response parsing, device-description XML parsing    |
+| `test/sonos-discovery.test.ts`    | SSDP response parsing, device-description XML parsing, `ZoneGroupState` parsing + bonded-zone collapse |
 | `test/sonos-control.test.ts`      | SOAP envelope + DIDL-Lite shape (now thin — most of the helpers moved to `test/soap.test.ts` and the new DLNA suites) |
 | `test/cast-tokens.test.ts`        | HMAC token sign/verify, expiry, cross-track rejection, username unicode |
 

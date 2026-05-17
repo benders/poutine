@@ -316,12 +316,14 @@ export async function buildApp(configOverrides?: Partial<Config>) {
         "SONOS_ENABLED=true but POUTINE_LAN_URL is not set — Sonos devices cannot fetch streams",
       );
     }
+    const sonosControl = new SonosControl();
     sonosDiscovery = new SonosDiscoveryService({
       intervalMs: config.sonosDiscoveryIntervalMs,
       log: { info: (m) => app.log.info(m), error: (m) => app.log.error(m) },
+      control: sonosControl,
     });
     app.decorate("sonosDiscovery", sonosDiscovery);
-    app.decorate("sonosControl", new SonosControl());
+    app.decorate("sonosControl", sonosControl);
     // HMAC secret for cast tokens, derived from the federation key.
     const privDer = privateKey.export({ format: "der", type: "pkcs8" });
     app.decorate("castSecret", deriveCastSecret(privDer));

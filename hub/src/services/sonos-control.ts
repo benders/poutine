@@ -9,7 +9,7 @@ import { buildDidlLiteTrack, type TrackMetadata } from "./didl.js";
 
 export type { TrackMetadata } from "./didl.js";
 
-type Service = "AVTransport" | "RenderingControl";
+type Service = "AVTransport" | "RenderingControl" | "ZoneGroupTopology";
 
 const SERVICE_PATHS: Record<Service, { control: string; serviceType: string }> = {
   AVTransport: {
@@ -19,6 +19,10 @@ const SERVICE_PATHS: Record<Service, { control: string; serviceType: string }> =
   RenderingControl: {
     control: "/MediaRenderer/RenderingControl/Control",
     serviceType: "urn:schemas-upnp-org:service:RenderingControl:1",
+  },
+  ZoneGroupTopology: {
+    control: "/ZoneGroupTopology/Control",
+    serviceType: "urn:schemas-upnp-org:service:ZoneGroupTopology:1",
   },
 };
 
@@ -86,6 +90,17 @@ export class SonosControl {
     });
     const v = pickXmlTag(xml, "CurrentVolume");
     return v ? parseInt(v, 10) : 0;
+  }
+
+  /**
+   * Returns the inner `<ZoneGroupState>` XML payload — the full household
+   * topology in one shot. Used by discovery to collapse stereo pairs /
+   * bonded zones (issue #177). Satellite UUIDs only appear here, not in
+   * the lighter `GetZoneGroupAttributes` action.
+   */
+  async getZoneGroupState(device: SonosDevice): Promise<string> {
+    const xml = await this.soap(device, "ZoneGroupTopology", "GetZoneGroupState", {});
+    return pickXmlTag(xml, "ZoneGroupState") ?? "";
   }
 
   async getState(device: SonosDevice): Promise<TransportState> {
