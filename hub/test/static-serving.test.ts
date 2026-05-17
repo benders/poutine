@@ -53,7 +53,12 @@ describe("static serving — disabled (no staticDir)", () => {
   it("health check still works", async () => {
     const res = await app.inject({ method: "GET", url: "/api/health" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ status: "ok" });
+    // No Navidrome reachable in this test setup, but the route must still
+    // respond. Response body now reflects Navidrome reachability (#178).
+    const body = res.json();
+    expect(body).toHaveProperty("appVersion");
+    expect(body).toHaveProperty("apiVersion");
+    expect(body).toHaveProperty("navidrome");
   });
 });
 
@@ -109,7 +114,12 @@ describe("static serving — enabled (staticDir set)", () => {
   it("API route /api/health still works", async () => {
     const res = await app.inject({ method: "GET", url: "/api/health" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ status: "ok" });
+    // No Navidrome reachable in this test setup; we only assert the route
+    // is registered and returns the documented fields (#178).
+    const body = res.json();
+    expect(body).toHaveProperty("appVersion");
+    expect(body).toHaveProperty("apiVersion");
+    expect(body).toHaveProperty("navidrome");
   });
 
   it("unmatched /admin/* returns JSON 404, not index.html", async () => {

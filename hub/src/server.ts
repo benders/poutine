@@ -27,6 +27,7 @@ import { SonosControl } from "./services/sonos-control.js";
 import { deriveCastSecret } from "./services/cast-tokens.js";
 import { sonosRoutes } from "./routes/sonos.js";
 import { castRoutes } from "./routes/cast.js";
+import { SubsonicClient } from "./adapters/subsonic.js";
 import { SsdpAdvertiser } from "./services/ssdp-advertiser.js";
 import { DlnaObjectService } from "./services/dlna-objects.js";
 import { dlnaRoutes } from "./routes/dlna.js";
@@ -52,6 +53,7 @@ declare module "fastify" {
   streamTracking: StreamTrackingService;
   lastFmClient: LastFmClient | null;
   fanartTvClient: FanartTvClient | null;
+  navidromeClient: SubsonicClient;
 }
 }
 
@@ -181,6 +183,18 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     app.log.info("fanart.tv integration disabled — no project key configured");
   }
   app.decorate("fanartTvClient", fanartTvClient);
+
+  // Shared Subsonic client for the local Navidrome (admin creds). Used by
+  // the `/api/health` probe; route handlers that need user-scoped Subsonic
+  // calls construct their own per-request client.
+  app.decorate(
+    "navidromeClient",
+    new SubsonicClient({
+      url: config.navidromeUrl,
+      username: config.navidromeUsername,
+      password: config.navidromePassword,
+    }),
+  );
 
   // Password encryption key (AES-256-GCM, on disk beside the federation key)
   const passwordKey = loadOrCreatePasswordKey(config.poutinePasswordKeyPath);
@@ -352,12 +366,28 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     dlna: config.dlnaEnabled,
   }));
 
-  // Health check
-  app.get("/api/health", async () => ({
-    status: "ok",
-    appVersion: APP_VERSION,
-    apiVersion: FEDERATION_API_VERSION,
-  }));
+  // Health check (issue #178). Always HTTP 200 so the federation handshake
+  // can read peer versions even when Navidrome is briefly down; consumers
+  // key on `body.status`. See docs/hub-internals.md route table.
+  app.get("/api/health", async () => {
+    let navidrome: "ok" | "unreachable" = "unreachable";
+    try {
+      // ~1s budget: Navidrome on the internal Docker network normally
+      // responds in tens of ms. AbortSignal.timeout cancels the underlying
+      // fetch so the request doesn't dangle past the response.
+      await app.navidromeClient.ping({ signal: AbortSignal.timeout(1000) });
+      navidrome = "ok";
+    } catch (err) {
+      app.log.warn({ err }, "Local Navidrome ping failed");
+    }
+
+    return {
+      status: navidrome === "ok" ? "ok" : "degraded",
+      appVersion: APP_VERSION,
+      apiVersion: FEDERATION_API_VERSION,
+      navidrome,
+    };
+  });
 
   // Static file serving + SPA fallback (production only; skipped in dev)
   if (config.staticDir) {
