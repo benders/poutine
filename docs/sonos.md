@@ -64,6 +64,12 @@ App-managed, one track at a time. The frontend pushes the current track via
 `next()` from the store when the device transitions `PLAYING → STOPPED`.
 Shuffle/repeat live in the store, not on the device.
 
+**Destination switch.** When the active `deviceId` changes (Sonos → local,
+Sonos → DLNA, Sonos A → Sonos B), `PlayerBar` fires `Stop` on the previous
+device. Without it the old zone keeps playing through to end-of-track and
+auto-advances on its own queue — see #198. Stop, not pause, so the next
+cast to that room starts clean.
+
 ## Device picker
 
 `frontend/src/components/player/DevicePicker.tsx`. Cast icon in `PlayerBar`

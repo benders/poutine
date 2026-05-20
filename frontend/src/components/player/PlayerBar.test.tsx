@@ -200,6 +200,66 @@ describe("PlayerBar cast volume slider", () => {
     expect(api.sonosSetVolume).toHaveBeenCalledWith("RINCON_1", 35);
   });
 
+  it("stops the previous Sonos device when sink switches to local (#198)", async () => {
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      queue: [track("trk-1")],
+      currentIndex: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      usePlayer.setState({ sink: "local" });
+    });
+
+    expect(api.sonosCommand).toHaveBeenCalledWith("RINCON_1", "stop");
+  });
+
+  it("stops the previous Sonos device when switching to a different Sonos (#198)", async () => {
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      queue: [track("trk-1")],
+      currentIndex: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      usePlayer.setState({
+        sink: { type: "sonos", deviceId: "RINCON_2", deviceName: "Bedroom" },
+      });
+    });
+
+    expect(api.sonosCommand).toHaveBeenCalledWith("RINCON_1", "stop");
+  });
+
+  it("does not call stop on initial mount with a Sonos sink already selected", () => {
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      queue: [track("trk-1")],
+      currentIndex: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    const stopCalls = (api.sonosCommand as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c) => c[1] === "stop");
+    expect(stopCalls).toHaveLength(0);
+  });
+
   it("recent drag blocks a poll-driven overwrite within the guard window", () => {
     // Drive the guard window via the slider's onChange (which stamps the
     // drag-guard ref), then push a setCastVolume directly — the store

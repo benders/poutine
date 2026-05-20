@@ -185,6 +185,21 @@ export function PlayerBar() {
   // We pin to `deviceId` rather than the `sink` object so a no-op setSink
   // call (new object literal, same value) doesn't re-trigger play.
   const deviceId = isSonos ? sink.deviceId : null;
+
+  // When the active Sonos device changes (Sonos → local, Sonos → DLNA,
+  // Sonos A → Sonos B), the previous speaker keeps playing the current
+  // track to completion unless we explicitly stop it (#198). Stop —
+  // not pause — so the user's next cast to that room starts clean
+  // instead of resuming where this left off.
+  const prevDeviceIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevDeviceIdRef.current;
+    prevDeviceIdRef.current = deviceId;
+    if (prev && prev !== deviceId) {
+      void sonosCommand(prev, "stop").catch(() => {});
+    }
+  }, [deviceId]);
+
   useEffect(() => {
     if (!deviceId || !currentTrack) return;
     void sonosPlay(deviceId, currentTrack.id, { autoplay: isPlaying }).catch(
