@@ -418,6 +418,10 @@ export function PlayerBar() {
   const handleError = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    // Casting suspends local playback — the Sonos-switch effect clears the
+    // <audio> src, which itself fires `error` with MEDIA_ERR_SRC_NOT_SUPPORTED.
+    // That's deliberate teardown, not a playback failure; squelch.
+    if (isSonos) return;
     const code = audio.error?.code;
     const detail =
       code === MediaError.MEDIA_ERR_NETWORK
@@ -433,7 +437,7 @@ export function PlayerBar() {
       detail,
     });
     setPlaying(false);
-  }, [currentTrack, pushToast, setPlaying]);
+  }, [currentTrack, pushToast, setPlaying, isSonos]);
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
