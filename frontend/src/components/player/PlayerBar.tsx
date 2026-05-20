@@ -538,18 +538,24 @@ export function PlayerBar() {
           </p>
           <div
             className="flex items-center gap-2 text-xs text-text-muted mt-0.5"
-            title={sourceLabel}
+            title={isSonos ? undefined : sourceLabel}
           >
-            {streamed && (
+            {isSonos ? (
+              <span>Playing on {sink.deviceName}</span>
+            ) : (
               <>
-                <span className="uppercase">{streamed.format}</span>
-                <span>
-                  {streamed.bitRateIsCap ? "transcoding" : `${streamed.bitRate} kbps`}
-                </span>
+                {streamed && (
+                  <>
+                    <span className="uppercase">{streamed.format}</span>
+                    <span>
+                      {streamed.bitRateIsCap ? "transcoding" : `${streamed.bitRate} kbps`}
+                    </span>
+                  </>
+                )}
+                {currentTrack.sourceInstance && (
+                  <span>• {currentTrack.sourceInstance}</span>
+                )}
               </>
-            )}
-            {currentTrack.sourceInstance && (
-              <span>• {currentTrack.sourceInstance}</span>
             )}
           </div>
         </div>
