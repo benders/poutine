@@ -81,13 +81,17 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       : null;
   },
 
+  // Explicit user-initiated track changes zero `currentTime` so the local
+  // <audio> + Sonos play effects don't pick up the previous track's
+  // position as a resume point — #194 designed that hand-off for sink
+  // switches, not click-to-play.
   playTrack: (track) =>
     set((state) => {
       const current = state.queue[state.currentIndex];
       if (current && current.id === track.id) {
         return { isPlaying: !state.isPlaying };
       }
-      return { queue: [track], currentIndex: 0, isPlaying: true };
+      return { queue: [track], currentIndex: 0, isPlaying: true, currentTime: 0 };
     }),
 
   playTracks: (tracks, startIndex = 0) =>
@@ -97,7 +101,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       if (requested && current && current.id === requested.id) {
         return { isPlaying: !state.isPlaying };
       }
-      return { queue: tracks, currentIndex: startIndex, isPlaying: true };
+      return { queue: tracks, currentIndex: startIndex, isPlaying: true, currentTime: 0 };
     }),
 
   addToQueue: (track) =>
