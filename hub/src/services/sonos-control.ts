@@ -20,7 +20,11 @@ export type { TrackMetadata } from "./didl.js";
  */
 export const SONOS_VOLUME_CAP = 50;
 
-type Service = "AVTransport" | "RenderingControl" | "ZoneGroupTopology";
+type Service =
+  | "AVTransport"
+  | "RenderingControl"
+  | "ZoneGroupTopology"
+  | "ConnectionManager";
 
 const SERVICE_PATHS: Record<Service, { control: string; serviceType: string }> = {
   AVTransport: {
@@ -35,7 +39,77 @@ const SERVICE_PATHS: Record<Service, { control: string; serviceType: string }> =
     control: "/ZoneGroupTopology/Control",
     serviceType: "urn:schemas-upnp-org:service:ZoneGroupTopology:1",
   },
+  ConnectionManager: {
+    control: "/MediaRenderer/ConnectionManager/Control",
+    serviceType: "urn:schemas-upnp-org:service:ConnectionManager:1",
+  },
 };
+
+/**
+ * Mapping from `track_sources.format` (lowercase) to MIME candidates Sonos
+ * may advertise in `ConnectionManager:GetProtocolInfo` Sink. First entry is
+ * the canonical IANA value used in DIDL `protocolInfo`; later entries are
+ * legacy aliases some firmware reports instead.
+ *
+ * Codecs missing from this table (ogg/opus/vorbis/wma/etc.) are not
+ * Sonos-castable byte-for-byte — fall back to MP3 transcode.
+ */
+export const FORMAT_MIME_CANDIDATES: Record<string, string[]> = {
+  flac: ["audio/flac", "audio/x-flac"],
+  mp3: ["audio/mpeg"],
+  m4a: ["audio/mp4", "audio/x-m4a"],
+  aac: ["audio/mp4", "audio/aac", "audio/aacp"],
+  alac: ["audio/mp4"],
+  wav: ["audio/wav", "audio/x-wav", "audio/wave"],
+};
+
+/**
+ * Decide the AVTransport DIDL mime + whether the cast URL should request
+ * an MP3 transcode, given the source file's format and the target device's
+ * advertised Sink mime set.
+ *
+ * Always-safe default: MP3 transcode + `audio/mpeg`. Used when source
+ * format is unknown, codec is not byte-for-byte castable (ogg/opus/…), or
+ * the device's capability set is not yet known (probe pending / failed).
+ */
+export function chooseSonosCastFormat(
+  sourceFormat: string | null,
+  sinkMimes: Set<string> | null,
+): { mime: string; transcode: boolean } {
+  const fallback = { mime: "audio/mpeg", transcode: true } as const;
+  const fmt = sourceFormat?.toLowerCase() ?? null;
+  if (!fmt) return fallback;
+  const candidates = FORMAT_MIME_CANDIDATES[fmt];
+  if (!candidates) return fallback;
+  if (!sinkMimes || sinkMimes.size === 0) return fallback;
+  for (const m of candidates) {
+    if (sinkMimes.has(m)) return { mime: m, transcode: false };
+  }
+  return fallback;
+}
+
+/**
+ * Parse the `Sink` field of a `ConnectionManager:GetProtocolInfo` response.
+ *
+ * Wire format: comma-separated `protocol:network:mimeType:extras` entries,
+ * e.g. `http-get:*:audio/mpeg:*,http-get:*:audio/flac:*,...`. Returns the
+ * set of mime types from `http-get` entries. Other protocols (rtsp,
+ * x-rincon-stream, x-sonos-spotify, …) are ignored — we only push bytes
+ * over plain HTTP.
+ */
+export function parseSinkProtocolInfo(sink: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of sink.split(",")) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    const parts = entry.split(":");
+    if (parts.length < 3) continue;
+    if (parts[0] !== "http-get") continue;
+    const mime = parts[2].trim();
+    if (mime) out.add(mime);
+  }
+  return out;
+}
 
 export interface TransportState {
   /** PLAYING | PAUSED_PLAYBACK | STOPPED | TRANSITIONING | NO_MEDIA_PRESENT */
@@ -115,6 +189,17 @@ export class SonosControl {
   async getZoneGroupState(device: SonosDevice): Promise<string> {
     const xml = await this.soap(device, "ZoneGroupTopology", "GetZoneGroupState", {});
     return pickXmlTag(xml, "ZoneGroupState") ?? "";
+  }
+
+  /**
+   * Query `ConnectionManager:GetProtocolInfo` and return the parsed set of
+   * `http-get` Sink mime types the device accepts. Discovery calls this
+   * once per device lifecycle so the play route can pass FLAC/AAC/etc.
+   * through verbatim when the target supports it (#180).
+   */
+  async getProtocolInfo(device: SonosDevice): Promise<Set<string>> {
+    const xml = await this.soap(device, "ConnectionManager", "GetProtocolInfo", {});
+    return parseSinkProtocolInfo(pickXmlTag(xml, "Sink") ?? "");
   }
 
   async getState(device: SonosDevice): Promise<TransportState> {

@@ -14,6 +14,13 @@ export interface SonosDevice {
   port: number;
   /** Last time we saw an SSDP response or successful state poll. */
   lastSeen: Date;
+  /**
+   * MIME types reported by `ConnectionManager:GetProtocolInfo` Sink, filled
+   * by discovery after the device first appears (#180). `null` means the
+   * probe has not run / failed — callers must treat that as "unknown" and
+   * fall back to MP3 transcode rather than guessing.
+   */
+  supportedMimes?: Set<string> | null;
 }
 
 const SSDP_MULTICAST_ADDR = "239.255.255.250";
@@ -163,6 +170,12 @@ export function parseZoneGroupState(xml: string): ZoneGroup[] {
  */
 export interface SonosTopologyClient {
   getZoneGroupState(device: SonosDevice): Promise<string>;
+  /**
+   * Optional capability probe — discovery calls this once per device to
+   * fill `SonosDevice.supportedMimes`. Tests can omit it; the route then
+   * falls back to MP3 transcode (#180).
+   */
+  getProtocolInfo?(device: SonosDevice): Promise<Set<string>>;
 }
 
 export interface SonosDiscoveryOptions {
@@ -297,6 +310,11 @@ export class SonosDiscoveryService {
     // accepts AVTransport SOAP, so an entry here would be a duplicate that
     // silently no-ops when cast to.
     if (this.knownSatellites.has(desc.id)) return;
+    // Preserve a previously-probed `supportedMimes` set across SSDP
+    // refreshes so a re-announce doesn't drop the device back to "unknown
+    // capabilities" and force MP3 transcode for the gap before the next
+    // probe lands.
+    const prior = this.devices.get(desc.id);
     this.devices.set(desc.id, {
       id: desc.id,
       room: desc.room,
@@ -304,7 +322,13 @@ export class SonosDiscoveryService {
       ip,
       port: SONOS_PORT,
       lastSeen: new Date(),
+      supportedMimes: prior?.supportedMimes ?? null,
     });
+    // Fire-and-forget capability probe (#180). One call per device per
+    // process lifetime — codec support is firmware-bound and stable.
+    if (!prior?.supportedMimes) {
+      void this.probeProtocolInfo(desc.id);
+    }
     // Collapse stereo pairs the first time a device lands so /api/sonos/devices
     // is clean before the 30s timer tick. Subsequent ticks re-collapse to
     // catch newly-joined satellites.
@@ -321,6 +345,33 @@ export class SonosDiscoveryService {
    * or the topology fetch fails — we keep the un-collapsed view rather
    * than hiding everything.
    */
+  /**
+   * Fetch `ConnectionManager:GetProtocolInfo` for a device and cache the
+   * resulting sink mime set on the device record. Silent on failure — the
+   * route falls back to MP3 transcode when `supportedMimes` stays null.
+   * Issue #180.
+   */
+  private async probeProtocolInfo(deviceId: string): Promise<void> {
+    if (!this.control?.getProtocolInfo) return;
+    const dev = this.devices.get(deviceId);
+    if (!dev) return;
+    try {
+      const mimes = await this.control.getProtocolInfo(dev);
+      // Device may have been evicted / replaced while the SOAP call was
+      // in flight. Re-fetch and only update if it's still the same record.
+      const current = this.devices.get(deviceId);
+      if (!current) return;
+      current.supportedMimes = mimes;
+      this.log.info(
+        `Sonos: ${current.room} sink mimes: ${Array.from(mimes).sort().join(", ") || "(none)"}`,
+      );
+    } catch (err) {
+      this.log.error(
+        `Sonos: GetProtocolInfo failed for ${dev.room}: ${String(err)}`,
+      );
+    }
+  }
+
   async collapseZoneGroups(): Promise<void> {
     if (!this.control) return;
     const picked = this.devices.values().next().value as SonosDevice | undefined;

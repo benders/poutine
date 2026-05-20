@@ -307,6 +307,11 @@ export class SubsonicClient {
     return data.album as SubsonicAlbum;
   }
 
+  async getSong(id: string): Promise<SubsonicSong> {
+    const data = await this.request("/rest/getSong", { id });
+    return data.song as SubsonicSong;
+  }
+
   async search3(
     query: string,
     params?: {

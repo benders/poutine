@@ -2,11 +2,24 @@ import type { FastifyPluginAsync } from "fastify";
 import {
   SonosControl,
   SONOS_VOLUME_CAP,
+  chooseSonosCastFormat,
   type TrackMetadata,
 } from "../services/sonos-control.js";
 import type { SonosDiscoveryService } from "../services/sonos-discovery.js";
 import { signCastToken } from "../services/cast-tokens.js";
 import { requireAuth } from "../auth/middleware.js";
+import { SubsonicClient } from "../adapters/subsonic.js";
+
+/**
+ * Sonos S2 firmware caps locally-streamed FLAC at 24-bit / 48 kHz. Material
+ * above this (24/96, 24/192) is accepted at the AVTransport URI but silently
+ * dropped to STOPPED when the device parses the FLAC header — see #199. Until
+ * the full per-format capability table lands there, this route does a runtime
+ * `getSong` probe and forces MP3 transcode when the local source exceeds these
+ * limits. Peer-routed sources fall through (we don't probe peers).
+ */
+const SONOS_MAX_SAMPLE_RATE_HZ = 48_000;
+const SONOS_MAX_BIT_DEPTH = 24;
 
 /**
  * REST control surface for Sonos devices. Mounted at /api/sonos when
@@ -170,15 +183,76 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(401).send({ error: "User not found" });
       }
 
+      // Look up the preferred source's format so we can decide whether
+      // Sonos can play the bytes verbatim or needs MP3 transcoding (#180).
+      // Matches the source-selection query in stream-relay.ts.
+      const sourceRow = app.db
+        .prepare(
+          `SELECT ts.format, ts.instance_id, it.remote_id
+             FROM track_sources ts
+             JOIN instance_tracks it ON it.id = ts.instance_track_id
+            WHERE ts.unified_track_id = ? AND ts.preferred = 1
+            LIMIT 1`,
+        )
+        .get(unifiedTrackId) as
+        | { format: string | null; instance_id: string; remote_id: string }
+        | undefined;
+      const decision = chooseSonosCastFormat(
+        sourceRow?.format ?? null,
+        dev.supportedMimes ?? null,
+      );
+      let { mime, transcode } = decision;
+
+      // Hi-res FLAC guard (#180 workaround for #199). When we're about to
+      // pass FLAC through from the local Navidrome, ask Subsonic for the
+      // file's samplingRate + bitDepth. If either exceeds the S2 ceiling,
+      // downgrade to MP3 transcode. Skipped for peer sources (no Navidrome
+      // available) and for non-FLAC formats (MP3/AAC/etc. have no rate cap
+      // that Sonos cares about at our bitrates).
+      if (
+        !transcode &&
+        sourceRow?.format?.toLowerCase() === "flac" &&
+        sourceRow.instance_id === "local"
+      ) {
+        try {
+          const client = new SubsonicClient({
+            url: app.config.navidromeUrl,
+            username: app.config.navidromeUsername,
+            password: app.config.navidromePassword,
+          });
+          const song = await client.getSong(sourceRow.remote_id);
+          const sr = song.samplingRate ?? 0;
+          const bd = song.bitDepth ?? 0;
+          if (sr > SONOS_MAX_SAMPLE_RATE_HZ || bd > SONOS_MAX_BIT_DEPTH) {
+            app.log.info(
+              { trackId: unifiedTrackId, samplingRate: sr, bitDepth: bd },
+              "Sonos: hi-res FLAC exceeds S2 ceiling — forcing MP3 transcode",
+            );
+            mime = "audio/mpeg";
+            transcode = true;
+          }
+        } catch (err) {
+          // Probe failure: keep pass-through. 16/44.1 is the overwhelming
+          // common case and Navidrome being unreachable is a louder problem
+          // the stream itself will surface.
+          app.log.warn(
+            { err, trackId: unifiedTrackId },
+            "Sonos: hi-res probe failed; proceeding with pass-through",
+          );
+        }
+      }
+
       const token = signCastToken(app.castSecret, {
         trackId: unifiedTrackId,
         username: user.username,
       });
       const base = app.config.poutineLanUrl.replace(/\/+$/, "");
-      // Force MP3 transcode so the byte stream matches the audio/mpeg DIDL
-      // mime type below. Source library may be FLAC/OGG/etc.; Sonos rejects
-      // a stream whose content-type doesn't match what its AVTransport URI
-      // metadata declared.
+      // When transcoding, force MP3 so byte content-type matches the
+      // audio/mpeg DIDL mime. When passing through, omit `format=` so
+      // Navidrome streams source bytes and the DIDL declares the matching
+      // mime — Sonos rejects a stream whose content-type doesn't match
+      // what its AVTransport URI metadata declared.
+      //
       // When the client asks to start mid-track, embed Subsonic's
       // `timeOffset` in the cast URL so the stream itself begins at that
       // position. Don't use SOAP `Seek` afterward — transcoded MP3 streams
@@ -193,7 +267,8 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
           : 0;
       const streamUri =
         `${base}/cast/stream/${encodeURIComponent(unifiedTrackId)}` +
-        `?token=${encodeURIComponent(token)}&format=mp3` +
+        `?token=${encodeURIComponent(token)}` +
+        (transcode ? `&format=mp3` : "") +
         (startAt > 0 ? `&timeOffset=${startAt}` : "");
 
       const meta: TrackMetadata = {
@@ -203,7 +278,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         album: trackRow.album_name ?? "",
         albumArtUri: trackRow.album_art ?? null,
         durationSec: Math.max(0, Math.round((trackRow.duration_ms ?? 0) / 1000)),
-        mimeType: "audio/mpeg",
+        mimeType: mime,
       };
 
       try {

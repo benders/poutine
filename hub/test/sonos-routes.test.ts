@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { buildApp } from "../src/server.js";
 import { setPassword } from "../src/auth/passwords.js";
 import { createAccessToken } from "../src/auth/jwt.js";
@@ -45,6 +45,31 @@ function seedTrack(app: FastifyInstance) {
       "INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .run("trk-1", "Dancing Queen", "dancing queen", "ur-1", "ua-1", 232000);
+}
+
+function seedTrackSource(
+  app: FastifyInstance,
+  format: string | null,
+  id = "ts-fmt",
+) {
+  app.db
+    .prepare(
+      `INSERT OR IGNORE INTO instances (id, name, url, encrypted_credentials, owner_id)
+       VALUES ('local', 'Local', 'http://local', '', 'user-1')`,
+    )
+    .run();
+  app.db
+    .prepare(
+      `INSERT OR IGNORE INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run("local:fmt-track", "local", "fmt-track", "local:alb-1", "Dancing Queen", "ABBA");
+  app.db
+    .prepare(
+      `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, preferred)
+       VALUES (?, ?, ?, ?, ?, 1)`,
+    )
+    .run(id, "trk-1", "local", "local:fmt-track", format);
 }
 
 function seedSubsonicMapping(app: FastifyInstance, remoteId: string) {
@@ -127,8 +152,26 @@ describe("Sonos play route", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await app.close();
   });
+
+  // Stub global fetch so the route's runtime Navidrome `getSong` probe
+  // (hi-res FLAC guard, #180/#199) returns a deterministic response.
+  function stubGetSong(song: Record<string, unknown>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/rest/getSong")) {
+          return new Response(
+            JSON.stringify({ "subsonic-response": { status: "ok", song } }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("not stubbed", { status: 404 });
+      }),
+    );
+  }
 
   async function authedPost(url: string, body: unknown) {
     const token = await createAccessToken("user-1", app.config);
@@ -267,6 +310,132 @@ describe("Sonos play route", () => {
       level: 150,
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("passes FLAC through verbatim when the device sinks accept audio/flac (#180)", async () => {
+    seedTrackSource(app, "flac");
+    stubGetSong({ samplingRate: 44100, bitDepth: 16 });
+    (app as unknown as {
+      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
+    }).sonosDiscovery = {
+      get: (id) =>
+        id === FAKE_DEVICE.id
+          ? {
+              ...FAKE_DEVICE,
+              supportedMimes: new Set(["audio/mpeg", "audio/flac", "audio/mp4"]),
+            }
+          : undefined,
+    };
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).not.toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/flac");
+  });
+
+  it("transcodes OGG sources to MP3 (no native Sonos support)", async () => {
+    seedTrackSource(app, "ogg");
+    (app as unknown as {
+      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
+    }).sonosDiscovery = {
+      get: (id) =>
+        id === FAKE_DEVICE.id
+          ? {
+              ...FAKE_DEVICE,
+              supportedMimes: new Set(["audio/mpeg", "audio/flac"]),
+            }
+          : undefined,
+    };
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
+  });
+
+  it("transcodes FLAC when the device's capability probe hasn't completed", async () => {
+    seedTrackSource(app, "flac");
+    // FAKE_DEVICE has no supportedMimes — simulates the brief window
+    // before discovery has called GetProtocolInfo. Safe default: MP3.
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
+  });
+
+  it("passes MP3 sources through without re-transcoding", async () => {
+    seedTrackSource(app, "mp3");
+    (app as unknown as {
+      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
+    }).sonosDiscovery = {
+      get: (id) =>
+        id === FAKE_DEVICE.id
+          ? {
+              ...FAKE_DEVICE,
+              supportedMimes: new Set(["audio/mpeg", "audio/flac"]),
+            }
+          : undefined,
+    };
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).not.toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
+  });
+
+  it("forces MP3 transcode for hi-res FLAC (>48 kHz / >24-bit) on FLAC-capable device (#180/#199)", async () => {
+    seedTrackSource(app, "flac");
+    stubGetSong({ samplingRate: 96000, bitDepth: 24 });
+    (app as unknown as {
+      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
+    }).sonosDiscovery = {
+      get: (id) =>
+        id === FAKE_DEVICE.id
+          ? {
+              ...FAKE_DEVICE,
+              supportedMimes: new Set(["audio/mpeg", "audio/flac"]),
+            }
+          : undefined,
+    };
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
+  });
+
+  it("passes 16/44.1 FLAC through (under the S2 ceiling)", async () => {
+    seedTrackSource(app, "flac");
+    stubGetSong({ samplingRate: 44100, bitDepth: 16 });
+    (app as unknown as {
+      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
+    }).sonosDiscovery = {
+      get: (id) =>
+        id === FAKE_DEVICE.id
+          ? {
+              ...FAKE_DEVICE,
+              supportedMimes: new Set(["audio/mpeg", "audio/flac"]),
+            }
+          : undefined,
+    };
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).not.toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/flac");
   });
 
   it("rejects unauthenticated requests", async () => {

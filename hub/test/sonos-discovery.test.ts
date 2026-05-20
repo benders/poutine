@@ -165,6 +165,50 @@ describe("SonosDiscoveryService.collapseZoneGroups", () => {
     expect(svc.list()).toHaveLength(2);
   });
 
+  it("populates supportedMimes via probeProtocolInfo (#180)", async () => {
+    const control: SonosTopologyClient = {
+      getZoneGroupState: async () => topologyXml,
+      getProtocolInfo: async () => new Set(["audio/mpeg", "audio/flac"]),
+    };
+    const svc = new SonosDiscoveryService({ control });
+    const devs = (svc as unknown as { devices: Map<string, SonosDevice> }).devices;
+    devs.set(
+      "RINCON_OFFICE",
+      { ...makeDevice("RINCON_OFFICE", "Office", "192.168.2.30"), supportedMimes: null },
+    );
+    await (svc as unknown as {
+      probeProtocolInfo: (id: string) => Promise<void>;
+    }).probeProtocolInfo("RINCON_OFFICE");
+    const dev = svc.list().find((d) => d.id === "RINCON_OFFICE");
+    expect(dev?.supportedMimes).toBeInstanceOf(Set);
+    expect(dev?.supportedMimes?.has("audio/flac")).toBe(true);
+  });
+
+  it("leaves supportedMimes null on GetProtocolInfo failure", async () => {
+    const control: SonosTopologyClient = {
+      getZoneGroupState: async () => topologyXml,
+      getProtocolInfo: async () => {
+        throw new Error("boom");
+      },
+    };
+    const errors: string[] = [];
+    const svc = new SonosDiscoveryService({
+      control,
+      log: { info: () => {}, error: (m) => errors.push(m) },
+    });
+    const devs = (svc as unknown as { devices: Map<string, SonosDevice> }).devices;
+    devs.set(
+      "RINCON_OFFICE",
+      { ...makeDevice("RINCON_OFFICE", "Office", "192.168.2.30"), supportedMimes: null },
+    );
+    await (svc as unknown as {
+      probeProtocolInfo: (id: string) => Promise<void>;
+    }).probeProtocolInfo("RINCON_OFFICE");
+    const dev = svc.list().find((d) => d.id === "RINCON_OFFICE");
+    expect(dev?.supportedMimes).toBeNull();
+    expect(errors[0]).toMatch(/GetProtocolInfo failed/);
+  });
+
   it("leaves devices untouched if GetZoneGroupState throws", async () => {
     const control: SonosTopologyClient = {
       getZoneGroupState: async () => {
