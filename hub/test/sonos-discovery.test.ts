@@ -174,7 +174,7 @@ describe("SonosDiscoveryService.collapseZoneGroups", () => {
     const devs = (svc as unknown as { devices: Map<string, SonosDevice> }).devices;
     devs.set(
       "RINCON_OFFICE",
-      { ...makeDevice("RINCON_OFFICE", "Office", "192.168.2.30"), supportedMimes: null },
+      makeDevice("RINCON_OFFICE", "Office", "192.168.2.30"),
     );
     await (svc as unknown as {
       probeProtocolInfo: (id: string) => Promise<void>;
@@ -184,7 +184,7 @@ describe("SonosDiscoveryService.collapseZoneGroups", () => {
     expect(dev?.supportedMimes?.has("audio/flac")).toBe(true);
   });
 
-  it("leaves supportedMimes null on GetProtocolInfo failure", async () => {
+  it("leaves supportedMimes unset on GetProtocolInfo failure", async () => {
     const control: SonosTopologyClient = {
       getZoneGroupState: async () => topologyXml,
       getProtocolInfo: async () => {
@@ -199,13 +199,13 @@ describe("SonosDiscoveryService.collapseZoneGroups", () => {
     const devs = (svc as unknown as { devices: Map<string, SonosDevice> }).devices;
     devs.set(
       "RINCON_OFFICE",
-      { ...makeDevice("RINCON_OFFICE", "Office", "192.168.2.30"), supportedMimes: null },
+      makeDevice("RINCON_OFFICE", "Office", "192.168.2.30"),
     );
     await (svc as unknown as {
       probeProtocolInfo: (id: string) => Promise<void>;
     }).probeProtocolInfo("RINCON_OFFICE");
     const dev = svc.list().find((d) => d.id === "RINCON_OFFICE");
-    expect(dev?.supportedMimes).toBeNull();
+    expect(dev?.supportedMimes).toBeUndefined();
     expect(errors[0]).toMatch(/GetProtocolInfo failed/);
   });
 

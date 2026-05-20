@@ -16,11 +16,11 @@ export interface SonosDevice {
   lastSeen: Date;
   /**
    * MIME types reported by `ConnectionManager:GetProtocolInfo` Sink, filled
-   * by discovery after the device first appears (#180). `null` means the
-   * probe has not run / failed — callers must treat that as "unknown" and
-   * fall back to MP3 transcode rather than guessing.
+   * by discovery after the device first appears (#180). Absent means probe
+   * has not run / failed — callers must treat that as "unknown" and fall
+   * back to MP3 transcode rather than guessing.
    */
-  supportedMimes?: Set<string> | null;
+  supportedMimes?: Set<string>;
 }
 
 const SSDP_MULTICAST_ADDR = "239.255.255.250";
@@ -310,10 +310,8 @@ export class SonosDiscoveryService {
     // accepts AVTransport SOAP, so an entry here would be a duplicate that
     // silently no-ops when cast to.
     if (this.knownSatellites.has(desc.id)) return;
-    // Preserve a previously-probed `supportedMimes` set across SSDP
-    // refreshes so a re-announce doesn't drop the device back to "unknown
-    // capabilities" and force MP3 transcode for the gap before the next
-    // probe lands.
+    // Preserve a previously-probed `supportedMimes` across SSDP refreshes
+    // so a re-announce doesn't force MP3 transcode for the probe gap.
     const prior = this.devices.get(desc.id);
     this.devices.set(desc.id, {
       id: desc.id,
@@ -322,10 +320,8 @@ export class SonosDiscoveryService {
       ip,
       port: SONOS_PORT,
       lastSeen: new Date(),
-      supportedMimes: prior?.supportedMimes ?? null,
+      supportedMimes: prior?.supportedMimes,
     });
-    // Fire-and-forget capability probe (#180). One call per device per
-    // process lifetime — codec support is firmware-bound and stable.
     if (!prior?.supportedMimes) {
       void this.probeProtocolInfo(desc.id);
     }
@@ -339,16 +335,9 @@ export class SonosDiscoveryService {
   }
 
   /**
-   * Query topology from any one device, then drop bonded satellites so each
-   * zone group surfaces as a single logical device (the coordinator).
-   * Issue #177. No-op if no control port was injected, no devices known,
-   * or the topology fetch fails — we keep the un-collapsed view rather
-   * than hiding everything.
-   */
-  /**
    * Fetch `ConnectionManager:GetProtocolInfo` for a device and cache the
    * resulting sink mime set on the device record. Silent on failure — the
-   * route falls back to MP3 transcode when `supportedMimes` stays null.
+   * route falls back to MP3 transcode when `supportedMimes` stays absent.
    * Issue #180.
    */
   private async probeProtocolInfo(deviceId: string): Promise<void> {
@@ -372,6 +361,13 @@ export class SonosDiscoveryService {
     }
   }
 
+  /**
+   * Query topology from any one device, then drop bonded satellites so each
+   * zone group surfaces as a single logical device (the coordinator).
+   * Issue #177. No-op if no control port was injected, no devices known,
+   * or the topology fetch fails — we keep the un-collapsed view rather
+   * than hiding everything.
+   */
   async collapseZoneGroups(): Promise<void> {
     if (!this.control) return;
     const picked = this.devices.values().next().value as SonosDevice | undefined;

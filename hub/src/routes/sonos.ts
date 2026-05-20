@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from "fastify";
 import {
   SonosControl,
   SONOS_VOLUME_CAP,
+  SONOS_MAX_SAMPLE_RATE_HZ,
+  SONOS_MAX_BIT_DEPTH,
   chooseSonosCastFormat,
   type TrackMetadata,
 } from "../services/sonos-control.js";
@@ -9,17 +11,8 @@ import type { SonosDiscoveryService } from "../services/sonos-discovery.js";
 import { signCastToken } from "../services/cast-tokens.js";
 import { requireAuth } from "../auth/middleware.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
+import { getPreferredSource } from "../db/preferred-source.js";
 
-/**
- * Sonos S2 firmware caps locally-streamed FLAC at 24-bit / 48 kHz. Material
- * above this (24/96, 24/192) is accepted at the AVTransport URI but silently
- * dropped to STOPPED when the device parses the FLAC header — see #199. Until
- * the full per-format capability table lands there, this route does a runtime
- * `getSong` probe and forces MP3 transcode when the local source exceeds these
- * limits. Peer-routed sources fall through (we don't probe peers).
- */
-const SONOS_MAX_SAMPLE_RATE_HZ = 48_000;
-const SONOS_MAX_BIT_DEPTH = 24;
 
 /**
  * REST control surface for Sonos devices. Mounted at /api/sonos when
@@ -59,6 +52,40 @@ interface VolumeBody {
 
 export const sonosRoutes: FastifyPluginAsync = async (app) => {
   if (!app.config.sonosEnabled) return;
+
+  // Cached `{samplingRate, bitDepth}` per Navidrome `remote_id` for the
+  // hi-res FLAC guard. Naturally static (audio properties don't change at
+  // runtime) and bounded by local library size. Lives on the plugin
+  // closure so each app instance gets its own — important for tests, and
+  // also drops on process restart for free. #199 will replace this with
+  // a `track_sources` schema column.
+  const hiResProbeCache = new Map<string, { sr: number; bd: number }>();
+  const probeHiResFlac = async (
+    remoteId: string,
+    unifiedTrackId: string,
+  ): Promise<{ sr: number; bd: number } | null> => {
+    const cached = hiResProbeCache.get(remoteId);
+    if (cached) return cached;
+    try {
+      const client = new SubsonicClient({
+        url: app.config.navidromeUrl,
+        username: app.config.navidromeUsername,
+        password: app.config.navidromePassword,
+      });
+      const song = await client.getSong(remoteId);
+      const result = { sr: song.samplingRate ?? 0, bd: song.bitDepth ?? 0 };
+      hiResProbeCache.set(remoteId, result);
+      return result;
+    } catch (err) {
+      // 16/44.1 is the overwhelming common case; Navidrome being
+      // unreachable is a louder problem the stream itself will surface.
+      app.log.warn(
+        { err, trackId: unifiedTrackId },
+        "Sonos: hi-res probe failed; proceeding with pass-through",
+      );
+      return null;
+    }
+  };
 
   // Every route under /api/sonos/* requires a logged-in user. The frontend
   // already sends the JWT via `Authorization: Bearer ...`; without this
@@ -153,114 +180,65 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
 
       const trackRow = app.db
         .prepare(
-          `SELECT ut.id, ut.title, ut.duration_ms, ua.name AS artist_name,
-                  urg.name AS album_name, urg.image_url AS album_art
+          `SELECT ut.title, ut.duration_ms, ua.name AS artist_name,
+                  urg.name AS album_name, urg.image_url AS album_art,
+                  u.username
            FROM unified_tracks ut
            JOIN unified_artists ua ON ua.id = ut.artist_id
            LEFT JOIN unified_releases ur ON ur.id = ut.release_id
            LEFT JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-           WHERE ut.id = ?`,
+           CROSS JOIN users u
+           WHERE ut.id = ? AND u.id = ?`,
         )
-        .get(unifiedTrackId) as
+        .get(unifiedTrackId, req.userId) as
         | {
-            id: string;
             title: string;
             duration_ms: number | null;
             artist_name: string;
             album_name: string | null;
             album_art: string | null;
+            username: string;
           }
         | undefined;
       if (!trackRow) return reply.status(404).send({ error: "Track not found" });
 
-      // Recover username from the JWT-authenticated user so we can encode
-      // it in the cast token. Stream-tracking and federated peer routing
-      // at /cast/stream time both want the originating user's identity.
-      const user = app.db
-        .prepare("SELECT username FROM users WHERE id = ?")
-        .get(req.userId) as { username: string } | undefined;
-      if (!user) {
-        return reply.status(401).send({ error: "User not found" });
-      }
-
-      // Look up the preferred source's format so we can decide whether
-      // Sonos can play the bytes verbatim or needs MP3 transcoding (#180).
-      // Matches the source-selection query in stream-relay.ts.
-      const sourceRow = app.db
-        .prepare(
-          `SELECT ts.format, ts.instance_id, it.remote_id
-             FROM track_sources ts
-             JOIN instance_tracks it ON it.id = ts.instance_track_id
-            WHERE ts.unified_track_id = ? AND ts.preferred = 1
-            LIMIT 1`,
-        )
-        .get(unifiedTrackId) as
-        | { format: string | null; instance_id: string; remote_id: string }
-        | undefined;
-      const decision = chooseSonosCastFormat(
-        sourceRow?.format ?? null,
-        dev.supportedMimes ?? null,
+      const source = getPreferredSource(app.db, unifiedTrackId);
+      let { mime, transcode } = chooseSonosCastFormat(
+        source?.format,
+        dev.supportedMimes,
       );
-      let { mime, transcode } = decision;
 
-      // Hi-res FLAC guard (#180 workaround for #199). When we're about to
-      // pass FLAC through from the local Navidrome, ask Subsonic for the
-      // file's samplingRate + bitDepth. If either exceeds the S2 ceiling,
-      // downgrade to MP3 transcode. Skipped for peer sources (no Navidrome
-      // available) and for non-FLAC formats (MP3/AAC/etc. have no rate cap
-      // that Sonos cares about at our bitrates).
+      // Hi-res FLAC guard (#180 workaround for #199). Sonos S2 accepts
+      // audio/flac protocolInfo but silently STOPs when the file is
+      // >24-bit/>48 kHz. Probe samplingRate + bitDepth via Subsonic; cache
+      // the result so repeat casts don't re-fetch. Local sources only —
+      // peer sources stay pass-through until the schema work in #199.
       if (
         !transcode &&
-        sourceRow?.format?.toLowerCase() === "flac" &&
-        sourceRow.instance_id === "local"
+        source?.format?.toLowerCase() === "flac" &&
+        source.instance_id === "local"
       ) {
-        try {
-          const client = new SubsonicClient({
-            url: app.config.navidromeUrl,
-            username: app.config.navidromeUsername,
-            password: app.config.navidromePassword,
-          });
-          const song = await client.getSong(sourceRow.remote_id);
-          const sr = song.samplingRate ?? 0;
-          const bd = song.bitDepth ?? 0;
-          if (sr > SONOS_MAX_SAMPLE_RATE_HZ || bd > SONOS_MAX_BIT_DEPTH) {
-            app.log.info(
-              { trackId: unifiedTrackId, samplingRate: sr, bitDepth: bd },
-              "Sonos: hi-res FLAC exceeds S2 ceiling — forcing MP3 transcode",
-            );
-            mime = "audio/mpeg";
-            transcode = true;
-          }
-        } catch (err) {
-          // Probe failure: keep pass-through. 16/44.1 is the overwhelming
-          // common case and Navidrome being unreachable is a louder problem
-          // the stream itself will surface.
-          app.log.warn(
-            { err, trackId: unifiedTrackId },
-            "Sonos: hi-res probe failed; proceeding with pass-through",
+        const probe = await probeHiResFlac(source.remote_id, unifiedTrackId);
+        if (probe && (probe.sr > SONOS_MAX_SAMPLE_RATE_HZ || probe.bd > SONOS_MAX_BIT_DEPTH)) {
+          app.log.info(
+            { trackId: unifiedTrackId, samplingRate: probe.sr, bitDepth: probe.bd },
+            "Sonos: hi-res FLAC exceeds S2 ceiling — forcing MP3 transcode",
           );
+          mime = "audio/mpeg";
+          transcode = true;
         }
       }
 
       const token = signCastToken(app.castSecret, {
         trackId: unifiedTrackId,
-        username: user.username,
+        username: trackRow.username,
       });
       const base = app.config.poutineLanUrl.replace(/\/+$/, "");
-      // When transcoding, force MP3 so byte content-type matches the
-      // audio/mpeg DIDL mime. When passing through, omit `format=` so
-      // Navidrome streams source bytes and the DIDL declares the matching
-      // mime — Sonos rejects a stream whose content-type doesn't match
-      // what its AVTransport URI metadata declared.
-      //
-      // When the client asks to start mid-track, embed Subsonic's
-      // `timeOffset` in the cast URL so the stream itself begins at that
-      // position. Don't use SOAP `Seek` afterward — transcoded MP3 streams
-      // have no Range support, so seeking past the buffer drives Sonos to
-      // STOPPED and the SPA's poller misreads that as end-of-track (#182).
-      // Same path handles mid-track sink switches (#194). The offset rides
-      // on a query param the token doesn't cover, but the token still binds
-      // trackId + user, so an attacker can't widen scope by adding params.
+      // Pass-through (`format=` omitted) requires the byte content-type to
+      // match the DIDL mime; mismatch sends Sonos to STOPPED. Mid-track
+      // starts ride on `timeOffset` rather than SOAP Seek — transcoded MP3
+      // is Range-less and seeking past the buffer puts the device into
+      // STOPPED which the SPA misreads as end-of-track (#182, #194).
       const startAt =
         typeof position === "number" && position > 0
           ? Math.floor(position)
@@ -282,26 +260,27 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        // Safety clamp on cast start. If the device is currently above the
-        // cap (e.g. left blasting from the Sonos app), drop it to the cap
-        // BEFORE audio hits. Below-cap settings are preserved — the user
-        // may have deliberately set the device quieter.
+        // Volume preflight + URI load are independent SOAP calls, so run
+        // them concurrently. Drop above-cap volume to the cap before audio
+        // hits (preserve below-cap settings — user may have set it quieter).
         // Tolerate getVolume failures: better to play at an unknown level
         // than fail the cast outright.
-        try {
-          const current = await app.sonosControl.getVolume(dev);
-          if (current > SONOS_VOLUME_CAP) {
-            await app.sonosControl.setVolume(dev, SONOS_VOLUME_CAP);
-          }
-        } catch (err) {
-          app.log.warn(
-            { err, deviceId: dev.id },
-            "Sonos: getVolume preflight failed; proceeding without cap check",
-          );
-        }
-        await app.sonosControl.setAvTransportUri(dev, streamUri, meta);
-        // No SOAP Seek here — the stream URL above already starts at
-        // `startAt`. See #182 / #194 above.
+        await Promise.all([
+          (async () => {
+            try {
+              const current = await app.sonosControl.getVolume(dev);
+              if (current > SONOS_VOLUME_CAP) {
+                await app.sonosControl.setVolume(dev, SONOS_VOLUME_CAP);
+              }
+            } catch (err) {
+              app.log.warn(
+                { err, deviceId: dev.id },
+                "Sonos: getVolume preflight failed; proceeding without cap check",
+              );
+            }
+          })(),
+          app.sonosControl.setAvTransportUri(dev, streamUri, meta),
+        ]);
         if (autoplay) await app.sonosControl.play(dev);
         return { ok: true };
       } catch (err) {

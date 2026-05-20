@@ -281,6 +281,14 @@ export function PlayerBar() {
   // Debounce timer for SetVolume POSTs while dragging. 150ms keeps the
   // device responsive without flooding RenderingControl with SOAP calls.
   const castVolumeDebounceRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (castVolumeDebounceRef.current !== null) {
+        window.clearTimeout(castVolumeDebounceRef.current);
+      }
+    },
+    [],
+  );
 
   // Seed castVolume from the device the first time we point at it (and
   // on every device change). The 1.5s poll only runs when there's a

@@ -156,6 +156,20 @@ describe("Sonos play route", () => {
     await app.close();
   });
 
+  // Override the discovery stub with a device that advertises the given
+  // Sonos sink MIMEs. Used by every cast test that needs a non-empty
+  // `supportedMimes` (otherwise chooseSonosCastFormat falls back to MP3).
+  function stubDeviceWithMimes(mimes: string[]) {
+    (app as unknown as {
+      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
+    }).sonosDiscovery = {
+      get: (id) =>
+        id === FAKE_DEVICE.id
+          ? { ...FAKE_DEVICE, supportedMimes: new Set(mimes) }
+          : undefined,
+    };
+  }
+
   // Stub global fetch so the route's runtime Navidrome `getSong` probe
   // (hi-res FLAC guard, #180/#199) returns a deterministic response.
   function stubGetSong(song: Record<string, unknown>) {
@@ -315,17 +329,7 @@ describe("Sonos play route", () => {
   it("passes FLAC through verbatim when the device sinks accept audio/flac (#180)", async () => {
     seedTrackSource(app, "flac");
     stubGetSong({ samplingRate: 44100, bitDepth: 16 });
-    (app as unknown as {
-      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
-    }).sonosDiscovery = {
-      get: (id) =>
-        id === FAKE_DEVICE.id
-          ? {
-              ...FAKE_DEVICE,
-              supportedMimes: new Set(["audio/mpeg", "audio/flac", "audio/mp4"]),
-            }
-          : undefined,
-    };
+    stubDeviceWithMimes(["audio/mpeg", "audio/flac", "audio/mp4"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
     });
@@ -337,17 +341,7 @@ describe("Sonos play route", () => {
 
   it("transcodes OGG sources to MP3 (no native Sonos support)", async () => {
     seedTrackSource(app, "ogg");
-    (app as unknown as {
-      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
-    }).sonosDiscovery = {
-      get: (id) =>
-        id === FAKE_DEVICE.id
-          ? {
-              ...FAKE_DEVICE,
-              supportedMimes: new Set(["audio/mpeg", "audio/flac"]),
-            }
-          : undefined,
-    };
+    stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
     });
@@ -372,17 +366,7 @@ describe("Sonos play route", () => {
 
   it("passes MP3 sources through without re-transcoding", async () => {
     seedTrackSource(app, "mp3");
-    (app as unknown as {
-      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
-    }).sonosDiscovery = {
-      get: (id) =>
-        id === FAKE_DEVICE.id
-          ? {
-              ...FAKE_DEVICE,
-              supportedMimes: new Set(["audio/mpeg", "audio/flac"]),
-            }
-          : undefined,
-    };
+    stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
     });
@@ -395,17 +379,7 @@ describe("Sonos play route", () => {
   it("forces MP3 transcode for hi-res FLAC (>48 kHz / >24-bit) on FLAC-capable device (#180/#199)", async () => {
     seedTrackSource(app, "flac");
     stubGetSong({ samplingRate: 96000, bitDepth: 24 });
-    (app as unknown as {
-      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
-    }).sonosDiscovery = {
-      get: (id) =>
-        id === FAKE_DEVICE.id
-          ? {
-              ...FAKE_DEVICE,
-              supportedMimes: new Set(["audio/mpeg", "audio/flac"]),
-            }
-          : undefined,
-    };
+    stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
     });
@@ -418,17 +392,7 @@ describe("Sonos play route", () => {
   it("passes 16/44.1 FLAC through (under the S2 ceiling)", async () => {
     seedTrackSource(app, "flac");
     stubGetSong({ samplingRate: 44100, bitDepth: 16 });
-    (app as unknown as {
-      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
-    }).sonosDiscovery = {
-      get: (id) =>
-        id === FAKE_DEVICE.id
-          ? {
-              ...FAKE_DEVICE,
-              supportedMimes: new Set(["audio/mpeg", "audio/flac"]),
-            }
-          : undefined,
-    };
+    stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
     });
