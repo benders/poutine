@@ -179,9 +179,22 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       // mime type below. Source library may be FLAC/OGG/etc.; Sonos rejects
       // a stream whose content-type doesn't match what its AVTransport URI
       // metadata declared.
+      // When the client asks to start mid-track, embed Subsonic's
+      // `timeOffset` in the cast URL so the stream itself begins at that
+      // position. Don't use SOAP `Seek` afterward — transcoded MP3 streams
+      // have no Range support, so seeking past the buffer drives Sonos to
+      // STOPPED and the SPA's poller misreads that as end-of-track (#182).
+      // Same path handles mid-track sink switches (#194). The offset rides
+      // on a query param the token doesn't cover, but the token still binds
+      // trackId + user, so an attacker can't widen scope by adding params.
+      const startAt =
+        typeof position === "number" && position > 0
+          ? Math.floor(position)
+          : 0;
       const streamUri =
         `${base}/cast/stream/${encodeURIComponent(unifiedTrackId)}` +
-        `?token=${encodeURIComponent(token)}&format=mp3`;
+        `?token=${encodeURIComponent(token)}&format=mp3` +
+        (startAt > 0 ? `&timeOffset=${startAt}` : "");
 
       const meta: TrackMetadata = {
         trackId: unifiedTrackId,
@@ -212,9 +225,8 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
           );
         }
         await app.sonosControl.setAvTransportUri(dev, streamUri, meta);
-        if (typeof position === "number" && position > 0) {
-          await app.sonosControl.seek(dev, position);
-        }
+        // No SOAP Seek here — the stream URL above already starts at
+        // `startAt`. See #182 / #194 above.
         if (autoplay) await app.sonosControl.play(dev);
         return { ok: true };
       } catch (err) {

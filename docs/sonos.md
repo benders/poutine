@@ -70,6 +70,25 @@ device. Without it the old zone keeps playing through to end-of-track and
 auto-advances on its own queue — see #198. Stop, not pause, so the next
 cast to that room starts clean.
 
+**Position via stream restart, not SOAP Seek.** Sonos casts force-transcode
+to MP3 (Range-less). SOAP `Seek` past the buffered region drives the
+device to STOPPED, and the SPA's poller misreads that as end-of-track and
+fires `next()` (#182). Mid-track sink switches hit the same wall when
+trying to resume position (#194). One fix covers both: when the SPA wants
+to start at a non-zero position — fresh play, sink switch, or slider drag
+— `/api/sonos/devices/:id/play` embeds Subsonic `timeOffset=<sec>` in the
+cast URL and skips SOAP Seek entirely. The stream byte 0 = track-time
+`startAt`. The SPA carries `castBaseOffsetRef` to add the offset back
+into polled positions, and an EOT-guard ref (`lastSonosPlayAtRef`)
+suppresses `next()` for ~2.5 s after any re-cast so the brief
+PLAYING → STOPPED transition during `SetAVTransportURI` doesn't advance
+the queue. `next()`/`previous()` zero `currentTime`, so normal
+track-changes pass no offset.
+
+For the reverse direction (Sonos → local mid-track), the `<audio>`
+element reload uses Subsonic `timeOffset` the same way handleSeek's
+past-buffer path does — see `pendingBaseOffsetRef`.
+
 ## Device picker
 
 `frontend/src/components/player/DevicePicker.tsx`. Cast icon in `PlayerBar`

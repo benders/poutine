@@ -242,6 +242,103 @@ describe("PlayerBar cast volume slider", () => {
     expect(api.sonosCommand).toHaveBeenCalledWith("RINCON_1", "stop");
   });
 
+  it("passes current playback position when switching local → Sonos mid-track (#194)", async () => {
+    usePlayer.setState({
+      sink: "local",
+      queue: [track("trk-1")],
+      currentIndex: 0,
+      currentTime: 42,
+    });
+
+    render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      usePlayer.setState({
+        sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      });
+    });
+
+    expect(api.sonosPlay).toHaveBeenCalledWith(
+      "RINCON_1",
+      "trk-1",
+      expect.objectContaining({ position: 42 }),
+    );
+  });
+
+  it("does not pass position when track-changing on the same Sonos sink", async () => {
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      queue: [track("trk-1"), track("trk-2")],
+      currentIndex: 0,
+      currentTime: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    // Simulate next(): store resets currentTime to 0 and advances index.
+    await act(async () => {
+      usePlayer.setState({ currentIndex: 1, currentTime: 0 });
+    });
+
+    const lastCall = (api.sonosPlay as ReturnType<typeof vi.fn>).mock.calls.at(-1);
+    expect(lastCall?.[1]).toBe("trk-2");
+    expect(lastCall?.[2]).toEqual(
+      expect.objectContaining({ position: undefined }),
+    );
+  });
+
+  it("seeking on Sonos re-issues play with the new position (#182)", () => {
+    const longTrack: SubsonicSong = { ...track("trk-1"), durationMs: 200000 };
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      queue: [longTrack],
+      currentIndex: 0,
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    (api.sonosPlay as ReturnType<typeof vi.fn>).mockClear();
+
+    const seek = container.querySelector(
+      'input[type="range"]:not([aria-label])',
+    ) as HTMLInputElement;
+    expect(seek).not.toBeNull();
+    act(() => {
+      fireEvent.change(seek, { target: { value: "150" } });
+    });
+
+    expect(api.sonosPlay).toHaveBeenCalledWith(
+      "RINCON_1",
+      "trk-1",
+      expect.objectContaining({ position: 150 }),
+    );
+  });
+
+  it("setSink preserves currentTime across sink changes (#194)", () => {
+    usePlayer.setState({
+      sink: "local",
+      currentTime: 33,
+    });
+    usePlayer.getState().setSink({
+      type: "sonos",
+      deviceId: "RINCON_1",
+      deviceName: "Kitchen",
+    });
+    expect(usePlayer.getState().currentTime).toBe(33);
+  });
+
   it("does not call stop on initial mount with a Sonos sink already selected", () => {
     usePlayer.setState({
       sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },

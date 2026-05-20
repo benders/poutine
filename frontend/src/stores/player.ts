@@ -174,5 +174,8 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       const idx = modes.indexOf(state.repeat);
       return { repeat: modes[(idx + 1) % modes.length] };
     }),
-  setSink: (sink) => set({ sink, currentTime: 0 }),
+  // Keep currentTime when switching sinks so playback resumes from the
+  // current position on the new device (#194). Track-changes (next/previous)
+  // already reset it; this is the only path that needs to *preserve* it.
+  setSink: (sink) => set({ sink }),
 }));

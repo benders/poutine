@@ -4,11 +4,11 @@ import { usePlayer } from "@/stores/player";
 import { useToasts } from "@/stores/toast";
 import { formatDuration } from "@/lib/format";
 import { streamUrl, artUrl, effectiveStream } from "@/lib/subsonic";
+import type { SubsonicSong } from "@/lib/subsonic";
 import {
   getCapabilities,
   sonosPlay,
   sonosCommand,
-  sonosSeek,
   sonosSetVolume,
   getSonosState,
 } from "@/lib/api";
@@ -130,12 +130,25 @@ export function PlayerBar() {
 
   // Update audio element when track changes. Skipped when casting to Sonos
   // — the Sonos effect below handles track changes via the control API.
+  // Resumes from the store's currentTime so Sonos → local mid-track keeps
+  // playing where the user left off instead of restarting from 0:00 (#194).
+  // For transcoded streams we pass Subsonic `timeOffset`; the new response
+  // starts at that mark and `pendingBaseOffsetRef` shifts audio.currentTime
+  // back to track time on loadedmetadata (same dance handleSeek uses).
   useEffect(() => {
     if (isSonos) return;
     const audio = audioRef.current;
-    if (!audio || !currentStreamUrl) return;
+    if (!audio || !currentStreamUrl || !currentTrack) return;
 
-    audio.src = currentStreamUrl;
+    const resumeAt = usePlayer.getState().currentTime;
+    if (resumeAt > 0) {
+      pendingBaseOffsetRef.current = resumeAt;
+      audio.src =
+        streamUrl(currentTrack.id, { timeOffset: resumeAt }) ??
+        currentStreamUrl;
+    } else {
+      audio.src = currentStreamUrl;
+    }
     audio.load();
     if (isPlaying) {
       audio.play().catch(() => {});
@@ -200,18 +213,46 @@ export function PlayerBar() {
     }
   }, [deviceId]);
 
-  useEffect(() => {
-    if (!deviceId || !currentTrack) return;
-    void sonosPlay(deviceId, currentTrack.id, { autoplay: isPlaying }).catch(
-      (err) => {
+  // Base offset (track-time seconds) for the Sonos stream. Non-zero when
+  // we resumed mid-track (#194) or seeked past the buffer (#182): the
+  // backend embeds Subsonic `timeOffset` in the cast URL, so Sonos sees a
+  // stream starting at byte 0 = track-time `castBaseOffsetRef`. We add
+  // this back into the polled device position before showing it.
+  const castBaseOffsetRef = useRef(0);
+  // Timestamp of the most-recent sonosPlay we issued. Used to suppress
+  // the spurious PLAYING → STOPPED → PLAYING blip that follows a
+  // SetAVTransportURI re-issue, which would otherwise look like EOT and
+  // advance the queue. #182's worst symptom.
+  const lastSonosPlayAtRef = useRef(0);
+
+  const issueSonosPlay = useCallback(
+    (track: SubsonicSong, startAt: number, autoplay: boolean) => {
+      if (!deviceId) return;
+      castBaseOffsetRef.current = startAt > 0 ? startAt : 0;
+      lastSonosPlayAtRef.current = Date.now();
+      void sonosPlay(deviceId, track.id, {
+        autoplay,
+        position: startAt > 0 ? startAt : undefined,
+      }).catch((err) => {
         pushToast({
           kind: "error",
           title: "Sonos play failed",
           detail: err instanceof Error ? err.message : String(err),
         });
         setPlaying(false);
-      },
-    );
+      });
+    },
+    [deviceId, pushToast, setPlaying],
+  );
+
+  useEffect(() => {
+    if (!deviceId || !currentTrack) return;
+    // Resume from the current store position so a mid-track sink switch
+    // (local → Sonos, or Sonos A → Sonos B) keeps playing where the user
+    // left off instead of restarting from 0:00 (#194). next()/previous()
+    // already zero currentTime, so a normal track-change passes no offset.
+    const resumeAt = usePlayer.getState().currentTime;
+    issueSonosPlay(currentTrack, resumeAt, isPlaying);
     // isPlaying intentionally excluded — pause/resume is handled by its
     // own effect below. We only read its value at track-change time.
   }, [deviceId, currentTrack?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -285,8 +326,17 @@ export function PlayerBar() {
       try {
         const s = await getSonosState(deviceId);
         if (cancelled) return;
-        if (s.duration > 0) setDuration(s.duration);
-        setCurrentTime(s.position);
+        // Stream may have been started mid-track (timeOffset on the cast
+        // URL). Sonos reports position relative to the stream, so add
+        // back the offset; trust the track's metadata duration over the
+        // truncated stream's TrackDuration in that case.
+        const base = castBaseOffsetRef.current;
+        if (base > 0) {
+          setDuration(currentTrack.durationMs / 1000);
+        } else if (s.duration > 0) {
+          setDuration(s.duration);
+        }
+        setCurrentTime(s.position + base);
         // Mirror device volume into the slider so external changes
         // (Sonos app, hardware buttons) reflect within ~1.5s. Skip if
         // the user just touched the slider — otherwise an in-flight
@@ -303,8 +353,15 @@ export function PlayerBar() {
         // no-op in zustand, so this doesn't fight the toggle effect.
         if (s.state === "PLAYING") setPlaying(true);
         else if (s.state === "PAUSED_PLAYBACK") setPlaying(false);
-        // STOPPED after we observed PLAYING means the track ended.
-        if (s.state === "STOPPED" && lastState === "PLAYING") {
+        // STOPPED after we observed PLAYING means the track ended —
+        // EXCEPT during the brief transition right after a fresh
+        // SetAVTransportURI, where Sonos blips through STOPPED. Without
+        // this guard, a mid-track seek (#182) or sink-resume (#194)
+        // looks like EOT and advances the queue.
+        const playGuardMs = 2500;
+        const recentlyPlayed =
+          Date.now() - lastSonosPlayAtRef.current < playGuardMs;
+        if (s.state === "STOPPED" && lastState === "PLAYING" && !recentlyPlayed) {
           next();
         }
         lastState = s.state;
@@ -381,8 +438,13 @@ export function PlayerBar() {
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     if (deviceId) {
+      // Re-issue play with a fresh timeOffset URL rather than SOAP Seek.
+      // Transcoded MP3 has no Range support, so seeking past the buffered
+      // region drove Sonos to STOPPED and the poller fired next() (#182).
+      // The stream restart approach is the same one #194 uses for sink
+      // resume — one code path covers both.
       setCurrentTime(time);
-      void sonosSeek(deviceId, time).catch(() => {});
+      if (currentTrack) issueSonosPlay(currentTrack, time, isPlaying);
       return;
     }
     const audio = audioRef.current;
