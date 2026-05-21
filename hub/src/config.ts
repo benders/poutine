@@ -34,8 +34,10 @@ export interface Config {
   // what's stored in the DB.
   artCacheMaxBytes: number | undefined;
   // Sonos casting (issue #108). Requires network_mode: host so SSDP
-  // multicast works. POUTINE_LAN_URL is the absolute base URL that Sonos
-  // devices use to fetch streams — must be reachable from the LAN.
+  // multicast works. The LAN-reachable base URL Sonos + DLNA devices use
+  // to fetch streams now lives in the `settings` table under `lan_url`
+  // (issue #209) — admin-toggleable, no restart needed. See
+  // services/sonos-settings.ts.
   //
   // The enabled flag and volume cap are runtime-configurable from the admin
   // UI and persisted in the `settings` table (issue #184). `sonosEnabled`
@@ -43,16 +45,26 @@ export interface Config {
   // useful for tests and programmatic boot. Env (`SONOS_ENABLED`) is
   // intentionally not read.
   sonosEnabled: boolean;
-  poutineLanUrl: string | undefined;
+  /** First-boot seed for the `lan_url` setting. Tests use this; production
+   *  boots leave it empty and operators set the URL from the admin UI. */
+  initialLanUrl: string | undefined;
   sonosDiscoveryIntervalMs: number;
-  // DLNA MediaServer (issue #175). Off by default. Shares POUTINE_LAN_URL
-  // with Sonos casting and requires the same host networking override.
-  // Stream endpoint is open on the LAN — gate by network reachability, not
-  // by user identity (DLNA has no notion of one).
+  // DLNA MediaServer (issue #175). Off by default. Shares the runtime
+  // `lan_url` setting (#209) with Sonos casting and requires the same host
+  // networking override. Stream endpoint is open on the LAN — gate by
+  // network reachability, not by user identity (DLNA has no notion of one).
   dlnaEnabled: boolean;
   dlnaFriendlyName: string;
   /** Username streams get attributed to. Defaults to the owner. */
   dlnaPseudoUser: string | undefined;
+  /**
+   * Test-only escape hatch: when true, never bind the DLNA SSDP advertiser
+   * to UDP 1900, even if `lan_url` is set. Lets the dlna-http integration
+   * test exercise `/dlna/control/content-directory` (which needs a non-empty
+   * `lan_url` to emit `res@uri`) without fighting `dlna-ssdp.integration.test.ts`
+   * for the multicast socket.
+   */
+  dlnaSkipSsdp?: boolean;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -120,7 +132,7 @@ export function loadConfig(): Config {
     // First-boot seed only — runtime state lives in the `settings` table.
     // See SonosSettings in services/sonos-settings.ts.
     sonosEnabled: false,
-    poutineLanUrl: process.env.POUTINE_LAN_URL || undefined,
+    initialLanUrl: undefined,
     sonosDiscoveryIntervalMs: parseInt(
       process.env.SONOS_DISCOVERY_INTERVAL_MS || "30000",
       10,

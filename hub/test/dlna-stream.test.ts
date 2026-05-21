@@ -109,9 +109,9 @@ describe("/dlna/stream/:trackId — positive path", () => {
       poutineOwnerUsername: "owner",
       poutineOwnerPassword: "secret",
       dlnaEnabled: true,
-      // poutineLanUrl unset → no SSDP advertiser. The stream route doesn't
+      // lan_url unset → no SSDP advertiser. The stream route doesn't
       // need it; res@uri construction happens in Browse, not here.
-      poutineLanUrl: undefined,
+      initialLanUrl: undefined,
     });
     await app.ready();
   });

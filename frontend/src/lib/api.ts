@@ -406,6 +406,10 @@ export function updateActivitySettings(settings: { maxEvents: number }) {
 export interface SonosSettings {
   enabled: boolean;
   volumeCap: number;
+  /** Absolute http(s) base URL devices use to fetch streams. Empty when
+   *  unset (Sonos casting + DLNA won't work until set). Shared with DLNA
+   *  (#209). */
+  lanUrl: string;
 }
 
 export function getSonosSettings() {

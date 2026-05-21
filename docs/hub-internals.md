@@ -37,13 +37,15 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `FANARTTV_CLIENT_KEY`        | no       | —                            | Optional fanart.tv personal `client_key` — drops the new-image delay from 7 days to 2 |
 | `FANARTTV_API_URL`           | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors)                  |
 | `ART_CACHE_MAX_BYTES`        | no       | `100 MB` (104857600)         | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
-| `POUTINE_LAN_URL`            | if Sonos | —                            | Absolute base URL Sonos devices use to fetch streams (e.g. `http://192.168.1.10:3000`). Must be reachable from the LAN |
 | `SONOS_DISCOVERY_INTERVAL_MS`| no       | `30000`                      | How often to re-issue SSDP M-SEARCH                              |
 
-Sonos casting itself is **not** env-gated. The enabled flag and volume cap are
-runtime-configurable from the Admin page and persisted in `settings`
-(`sonos_enabled`, `sonos_volume_cap`) — see [Sonos integration](#sonos-integration-issue-108)
-and [docs/sonos.md](sonos.md#runtime-toggle-184).
+Sonos casting itself is **not** env-gated. The enabled flag, volume cap, and
+LAN URL are runtime-configurable from the Admin page and persisted in
+`settings` (`sonos_enabled`, `sonos_volume_cap`, `lan_url`) — see [Sonos
+integration](#sonos-integration-issue-108) and
+[docs/sonos.md](sonos.md#runtime-toggle-184). `lan_url` (#209) is the
+absolute LAN-reachable base URL devices fetch streams from; it is shared
+with the DLNA MediaServer.
 
 `hub/src/config.ts` is the authoritative list.
 
@@ -240,7 +242,8 @@ HMAC tokens — no Subsonic credential leak. Full reference: [sonos.md](sonos.md
 ## DLNA MediaServer (issue #175)
 
 Optional UPnP `MediaServer:1` advertisement on the LAN. Gated by `DLNA_ENABLED=true`.
-Reuses the host-networking compose override and `POUTINE_LAN_URL`. Shares
+Reuses the host-networking compose override and the `lan_url` admin setting
+(#209) — set it once in Admin → Sonos and DLNA picks it up too. Shares
 `services/didl.ts` + `services/soap.ts` with Sonos. DLNA has no user identity —
 every route under `/dlna/*` is unauthenticated when enabled; a `requireLan`
 preHandler keeps that openness off any public tunnel. Full reference:

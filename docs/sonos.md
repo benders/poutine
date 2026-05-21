@@ -23,9 +23,10 @@ Enabled state and volume cap live in the `settings` table (keys
   on every SOAP write, and surfaced via `volumeCap` in
   `/api/sonos/devices/:id/state` so the SPA's slider can clamp too.
 
-`SONOS_ENABLED` env is intentionally **not** read. `Config.sonosEnabled`
-exists only as a first-boot seed for tests / programmatic builds; the
-seed uses `INSERT OR IGNORE` so an operator-set value survives redeploy.
+No env var controls this — `Config.sonosEnabled` exists only as a
+first-boot seed for tests / programmatic builds; the seed uses
+`INSERT OR IGNORE` so an operator-set value survives redeploy. The
+same is true of `lan_url` (#209) — `Config.initialLanUrl` is seed-only.
 
 ## Protocol
 
@@ -67,8 +68,9 @@ The override puts **both** services on `network_mode: host`. Hub needs host net
 for multicast. Navidrome also needs host net because Docker Desktop host-net
 containers cannot reach the host's bridge-published loopback ports — without it
 the hub can't reach Navidrome at all. Navidrome binds to `ND_ADDRESS=127.0.0.1`
-so the admin UI is not exposed on the LAN. `POUTINE_LAN_URL` must be the
-address Sonos can reach the hub at (e.g. `http://192.168.1.10:3000`).
+so the admin UI is not exposed on the LAN. The **LAN URL** setting (Admin →
+Sonos, key `lan_url`, #209) must be the address Sonos can reach the hub at
+(e.g. `http://192.168.1.10:3000`). DLNA (#175) reads the same setting.
 
 **macOS limitation — Sonos discovery does not work in Docker Desktop.** Docker
 Desktop's "host networking" on macOS is implemented as a userspace VPN, not a
@@ -207,11 +209,12 @@ Run via `pnpm --filter hub test`.
 
 ### Manual smoke test (real Sonos zone)
 
-1. Boot the hub with the Sonos override and a LAN-reachable `POUTINE_LAN_URL`:
+1. Boot the hub with the Sonos override:
    ```bash
-   SONOS_ENABLED=true POUTINE_LAN_URL=http://<lan-ip>:3000 \
-     docker compose -f docker-compose.yml -f docker-compose.sonos.yml up
+   docker compose -f docker-compose.yml -f docker-compose.sonos.yml up
    ```
+   Then in Admin → Sonos set the **LAN URL** to `http://<lan-ip>:3000` and
+   toggle Sonos on.
 2. Boot log should print `Sonos discovery started` and `Sonos casting enabled`.
 3. `curl http://<lan-ip>:3000/api/sonos/devices` (with a JWT) lists at least one device with a `room` field.
 4. In the SPA: click the cast icon in `PlayerBar`, select a device, press play. Verify audio plays from the Sonos.

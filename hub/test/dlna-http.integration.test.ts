@@ -51,9 +51,12 @@ describe("DLNA HTTP surface (integration)", () => {
       poutineOwnerPassword: "hunter2",
       dlnaEnabled: true,
       dlnaFriendlyName: "Poutine Integration Test",
-      // poutineLanUrl unset → no SSDP advertiser bound to UDP 1900, so this
-      // test won't fight with dlna-ssdp.integration.test.ts.
-      poutineLanUrl: undefined,
+      // Browse needs lan_url to build res@uri, but we don't want SSDP
+      // binding UDP 1900 (fights dlna-ssdp.integration.test.ts). The
+      // dlnaSkipSsdp flag (#209) decouples the two — DLNA HTTP routes run,
+      // SSDP does not, even on runtime lan_url change.
+      dlnaSkipSsdp: true,
+      initialLanUrl: undefined,
     });
 
     await app.listen({ port: 0, host: "127.0.0.1" });
@@ -61,9 +64,9 @@ describe("DLNA HTTP surface (integration)", () => {
     if (typeof addr !== "object" || addr === null) throw new Error("no address");
     baseUrl = `http://127.0.0.1:${addr.port}`;
 
-    // ContentDirectory:Browse builds res@uri from app.config.poutineLanUrl
-    // at request time — set it now to the real listening URL.
-    app.config.poutineLanUrl = baseUrl;
+    // ContentDirectory:Browse builds res@uri from the runtime `lan_url`
+    // setting (#209) at request time — set it now to the real listening URL.
+    app.sonosSettings.setLanUrl(baseUrl);
 
     client = new UPnPClient({ url: `${baseUrl}/dlna/device.xml` });
   });

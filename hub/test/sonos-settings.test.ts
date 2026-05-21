@@ -23,7 +23,7 @@ const SCHEMA = readFileSync(
 const testConfig: Partial<Config> = {
   databasePath: ":memory:",
   jwtSecret: "test-secret-key-for-testing-purposes-#184",
-  poutineLanUrl: "http://hub.lan:3000",
+  initialLanUrl: "http://hub.lan:3000",
 };
 
 async function makeOwnerToken(app: FastifyInstance): Promise<string> {
@@ -95,14 +95,41 @@ describe("SonosSettings (#184)", () => {
 
     it("onChange fires after each setter", () => {
       const s = createSonosSettings(db);
-      const seen: Array<{ enabled: boolean; volumeCap: number }> = [];
+      const seen: Array<{ enabled: boolean; volumeCap: number; lanUrl: string }> = [];
       s.onChange((snap) => seen.push(snap));
       s.setEnabled(true);
       s.setVolumeCap(75);
+      s.setLanUrl("http://hub.lan:3000");
       expect(seen).toEqual([
-        { enabled: true, volumeCap: 50 },
-        { enabled: true, volumeCap: 75 },
+        { enabled: true, volumeCap: 50, lanUrl: "" },
+        { enabled: true, volumeCap: 75, lanUrl: "" },
+        { enabled: true, volumeCap: 75, lanUrl: "http://hub.lan:3000" },
       ]);
+    });
+
+    it("lan_url: empty by default, persists when set, strips trailing slash", () => {
+      const s = createSonosSettings(db);
+      expect(s.getLanUrl()).toBe("");
+      s.setLanUrl("http://hub.lan:3000//");
+      expect(s.getLanUrl()).toBe("http://hub.lan:3000");
+      s.setLanUrl("");
+      expect(s.getLanUrl()).toBe("");
+    });
+
+    it("lan_url: rejects garbage and non-http schemes", () => {
+      const s = createSonosSettings(db);
+      expect(() => s.setLanUrl("not a url")).toThrow();
+      expect(() => s.setLanUrl("ftp://hub.lan")).toThrow();
+      // failed sets must not persist
+      expect(s.getLanUrl()).toBe("");
+    });
+
+    it("initialLanUrl seeds on first boot, ignored when row exists", () => {
+      const s1 = createSonosSettings(db, { initialLanUrl: "http://seed.lan:3000" });
+      expect(s1.getLanUrl()).toBe("http://seed.lan:3000");
+      // second creation should not overwrite the persisted value
+      const s2 = createSonosSettings(db, { initialLanUrl: "http://other.lan:3000" });
+      expect(s2.getLanUrl()).toBe("http://seed.lan:3000");
     });
   });
 
@@ -166,7 +193,11 @@ describe("SonosSettings (#184)", () => {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ enabled: false, volumeCap: 50 });
+      expect(res.json()).toEqual({
+        enabled: false,
+        volumeCap: 50,
+        lanUrl: "http://hub.lan:3000",
+      });
     });
 
     it("requires owner auth", async () => {
@@ -185,9 +216,104 @@ describe("SonosSettings (#184)", () => {
         payload: { enabled: true, volumeCap: 33 },
       });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ enabled: true, volumeCap: 33 });
+      expect(res.json()).toEqual({
+        enabled: true,
+        volumeCap: 33,
+        lanUrl: "http://hub.lan:3000",
+      });
       expect(app.sonosSettings.getEnabled()).toBe(true);
       expect(app.sonosSettings.getVolumeCap()).toBe(33);
+    });
+
+    it("PUT updates lanUrl and persists across reads", async () => {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/admin/settings/sonos",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { lanUrl: "http://192.168.1.10:3000/" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ lanUrl: "http://192.168.1.10:3000" });
+      expect(app.sonosSettings.getLanUrl()).toBe("http://192.168.1.10:3000");
+    });
+
+    it("PUT rejects malformed lanUrl with 400", async () => {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/admin/settings/sonos",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { lanUrl: "not a url" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/lanUrl/);
+    });
+
+    it("PUT accepts empty string to clear lanUrl", async () => {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/admin/settings/sonos",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { lanUrl: "" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().lanUrl).toBe("");
+    });
+
+    it("PUT rejects enable=true while lanUrl is empty", async () => {
+      // Clear the seed first so the invariant has something to fire on.
+      app.sonosSettings.setLanUrl("");
+      const res = await app.inject({
+        method: "PUT",
+        url: "/admin/settings/sonos",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { enabled: true },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/LAN URL/);
+      // Must not have partially applied — still disabled.
+      expect(app.sonosSettings.getEnabled()).toBe(false);
+    });
+
+    it("PUT rejects clearing lanUrl while Sonos is enabled", async () => {
+      app.sonosSettings.setEnabled(true); // lanUrl already seeded
+      const res = await app.inject({
+        method: "PUT",
+        url: "/admin/settings/sonos",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { lanUrl: "" },
+      });
+      expect(res.statusCode).toBe(400);
+      // State must not have mutated — lanUrl still the seed value.
+      expect(app.sonosSettings.getLanUrl()).toBe("http://hub.lan:3000");
+    });
+
+    it("PUT accepts enable + lanUrl in one payload (atomic)", async () => {
+      app.sonosSettings.setLanUrl("");
+      const res = await app.inject({
+        method: "PUT",
+        url: "/admin/settings/sonos",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { enabled: true, lanUrl: "http://192.168.1.10:3000" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        enabled: true,
+        lanUrl: "http://192.168.1.10:3000",
+      });
+    });
+
+    it("PUT with malformed lanUrl does not mutate enabled state", async () => {
+      app.sonosSettings.setEnabled(false);
+      app.sonosSettings.setLanUrl("");
+      const res = await app.inject({
+        method: "PUT",
+        url: "/admin/settings/sonos",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { enabled: true, lanUrl: "not a url" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(app.sonosSettings.getEnabled()).toBe(false);
+      expect(app.sonosSettings.getLanUrl()).toBe("");
     });
 
     it("PUT rejects out-of-range volumeCap", async () => {
