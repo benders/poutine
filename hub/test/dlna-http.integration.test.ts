@@ -51,8 +51,11 @@ describe("DLNA HTTP surface (integration)", () => {
       poutineOwnerPassword: "hunter2",
       dlnaEnabled: true,
       dlnaFriendlyName: "Poutine Integration Test",
-      // lan_url unset → no SSDP advertiser bound to UDP 1900, so this
-      // test won't fight with dlna-ssdp.integration.test.ts.
+      // Browse needs lan_url to build res@uri, but we don't want SSDP
+      // binding UDP 1900 (fights dlna-ssdp.integration.test.ts). The
+      // dlnaSkipSsdp flag (#209) decouples the two — DLNA HTTP routes run,
+      // SSDP does not, even on runtime lan_url change.
+      dlnaSkipSsdp: true,
       initialLanUrl: undefined,
     });
 

@@ -829,9 +829,21 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      if (lanUrl !== undefined) app.sonosSettings.setLanUrl(lanUrl);
-      if (volumeCap !== undefined) app.sonosSettings.setVolumeCap(volumeCap);
-      if (enabled !== undefined) app.sonosSettings.setEnabled(enabled);
+      // Wrap the three setters in a SQLite transaction so a partial write
+      // can't survive an exception mid-batch. Each setter still fires its
+      // onChange listener inside the transaction — listeners run synchronously
+      // and don't issue SQL, so this is safe (SSDP rebuild reads its inputs
+      // from the same connection and sees the queued writes).
+      app.db.transaction(() => {
+        // Reuse the value we already normalized for the invariant check —
+        // setLanUrl re-normalizes internally but feeding it the canonical
+        // form skips the redundant URL parse.
+        if (normalizedLanUrl !== undefined) {
+          app.sonosSettings.setLanUrl(normalizedLanUrl);
+        }
+        if (volumeCap !== undefined) app.sonosSettings.setVolumeCap(volumeCap);
+        if (enabled !== undefined) app.sonosSettings.setEnabled(enabled);
+      })();
 
       return {
         enabled: app.sonosSettings.getEnabled(),

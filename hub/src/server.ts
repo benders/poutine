@@ -372,10 +372,48 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
   // DLNA MediaServer (issue #175) — opt-in, requires network_mode: host
   // (same as Sonos) so SSDP multicast works.
+  //
+  // SSDP advertiser lifecycle (#209):
+  // The advertiser bakes `locationUrl` at construction, so a runtime
+  // `lan_url` change means tearing down the old advertiser and building a
+  // fresh one. `rebuildSsdp` is called once at boot via the onReady hook,
+  // and again from the sonosSettings.onChange listener whenever `lan_url`
+  // flips. Empty URL → no advertiser (clients will see byebye on stop).
   let ssdpAdvertiser: SsdpAdvertiser | null = null;
+  let ssdpStarted = false;
+  let lastAdvertisedLanUrl = "";
+  const rebuildSsdp = async () => {
+    if (!config.dlnaEnabled || config.dlnaSkipSsdp) return;
+    const lan = sonosSettings.getLanUrl();
+    if (lan === lastAdvertisedLanUrl) return; // no-op when nothing changed
+    if (ssdpAdvertiser) {
+      const old = ssdpAdvertiser;
+      ssdpAdvertiser = null;
+      try {
+        await old.stop();
+      } catch (err) {
+        app.log.warn({ err }, "DLNA: SSDP advertiser stop failed during rebuild");
+      }
+    }
+    lastAdvertisedLanUrl = lan;
+    if (!lan) {
+      app.log.info("DLNA: lan_url cleared — SSDP advertiser stopped");
+      return;
+    }
+    ssdpAdvertiser = new SsdpAdvertiser({
+      uuid: app.dlnaUuid,
+      locationUrl: `${lan}/dlna/device.xml`,
+      serverString: `Node/${process.versions.node} UPnP/1.0 Poutine/${APP_VERSION}`,
+      log: { info: (m) => app.log.info(m), error: (m) => app.log.error(m) },
+    });
+    // Only auto-start once we've already passed the initial onReady gate.
+    // Boot-time creation defers .start() to the onReady hook below; runtime
+    // rebuilds need to fire immediately.
+    if (ssdpStarted) ssdpAdvertiser.start();
+  };
+
   if (config.dlnaEnabled) {
-    const dlnaLanUrl = sonosSettings.getLanUrl();
-    if (!dlnaLanUrl) {
+    if (!sonosSettings.getLanUrl()) {
       app.log.error(
         "DLNA_ENABLED=true but the LAN URL setting is empty — clients cannot fetch the device description or streams. Set it from Admin → Sonos.",
       );
@@ -388,16 +426,17 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
     await app.register(dlnaRoutes, { prefix: "/dlna" });
 
-    if (dlnaLanUrl) {
-      ssdpAdvertiser = new SsdpAdvertiser({
-        uuid,
-        locationUrl: `${dlnaLanUrl}/dlna/device.xml`,
-        serverString: `Node/${process.versions.node} UPnP/1.0 Poutine/${APP_VERSION}`,
-        log: { info: (m) => app.log.info(m), error: (m) => app.log.error(m) },
-      });
-    }
+    await rebuildSsdp();
     app.log.info(`DLNA MediaServer enabled (friendly name: ${config.dlnaFriendlyName})`);
   }
+
+  // Pick up runtime lan_url changes (#209): rebuild SSDP, log nothing else.
+  // The Sonos enable listener is wired separately above; this one only
+  // cares about lan_url. Run it async-fire-and-forget — the setter is
+  // synchronous and we don't want admin PUTs blocked on a SOAP teardown.
+  sonosSettings.onChange(() => {
+    void rebuildSsdp();
+  });
 
   // Capabilities probe used by the frontend to decide which UI affordances
   // to render (e.g. the device picker in PlayerBar). Sonos reads from the
@@ -459,6 +498,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     autoSync.start();
     if (sonosSettings.getEnabled()) sonosDiscovery.start();
     if (ssdpAdvertiser) ssdpAdvertiser.start();
+    // Flip the gate so subsequent rebuilds (#209) auto-start their fresh
+    // advertiser immediately instead of waiting on another onReady.
+    ssdpStarted = true;
   });
 
   // Cleanup on close

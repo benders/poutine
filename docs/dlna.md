@@ -39,7 +39,12 @@ Specs to keep open while changing this code:
 | `auth/lan-only.ts`                   | `requireLan` preHandler — rejects requests carrying proxy-forwarding headers. Installed at the `/dlna` plugin scope. |
 
 `server.ts` wires the advertiser to the `onReady` / `onClose` hooks and
-exposes `/api/capabilities` → `{ sonos, dlna }`.
+exposes `/api/capabilities` → `{ sonos, dlna }`. The advertiser bakes
+`locationUrl` at construction, so a runtime `lan_url` change (#209) tears
+down the old advertiser and builds a fresh one with the new URL — wired
+through `sonosSettings.onChange` in `server.ts` (`rebuildSsdp`). Setting
+`lan_url` to empty stops the advertiser entirely (byebye); setting it
+non-empty starts a new one. No restart needed.
 
 ## Object hierarchy
 

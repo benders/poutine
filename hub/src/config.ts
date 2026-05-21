@@ -57,6 +57,14 @@ export interface Config {
   dlnaFriendlyName: string;
   /** Username streams get attributed to. Defaults to the owner. */
   dlnaPseudoUser: string | undefined;
+  /**
+   * Test-only escape hatch: when true, never bind the DLNA SSDP advertiser
+   * to UDP 1900, even if `lan_url` is set. Lets the dlna-http integration
+   * test exercise `/dlna/control/content-directory` (which needs a non-empty
+   * `lan_url` to emit `res@uri`) without fighting `dlna-ssdp.integration.test.ts`
+   * for the multicast socket.
+   */
+  dlnaSkipSsdp?: boolean;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
