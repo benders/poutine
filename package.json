@@ -1,7 +1,7 @@
 {
   "name": "poutine",
   "private": true,
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Federated music player - merges personal music collections into a unified library",
   "scripts": {
     "dev": "pnpm --filter hub dev",
@@ -12,14 +12,13 @@
     "verify": "pnpm typecheck && pnpm test",
     "hub:up": "docker compose up -d --build",
     "hub:up:fresh": "docker compose up -d --build --force-recreate",
-    "hub:logs": "docker compose logs -f hub",
+    "hub:logs": "bash scripts/hub-native-macos.sh logs",
     "test:federation": "bash test/federation/run.sh",
     "sync-version": "node scripts/sync-version.mjs",
     "hub:start": "bash scripts/hub-native-macos.sh start",
     "hub:stop": "bash scripts/hub-native-macos.sh stop",
     "hub:restart": "bash scripts/hub-native-macos.sh restart",
     "hub:status": "bash scripts/hub-native-macos.sh status",
-    "hub:logs": "bash scripts/hub-native-macos.sh logs",
     "preversion": "branch=$(git rev-parse --abbrev-ref HEAD); if [ \"$branch\" != \"main\" ]; then echo \"pnpm version must run on main (current: $branch)\" >&2; exit 1; fi",
     "version": "node scripts/sync-version.mjs && git add hub/package.json frontend/package.json hub/src/version.ts"
   },
