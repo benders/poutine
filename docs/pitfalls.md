@@ -29,6 +29,7 @@ Every `unified_*` insert in `merge.ts` logs the offending row + prior `existingR
 | Treating any `https?://…` ID as a coverArt key                                                                    | #140      | Star/getCoverArt classifiers must be UUID-shaped; non-UUID IDs are external URLs                    |
 | Caching Navidrome's "missing cover" XML envelope as if it were an image                                           | recurring | Validate content-type + magic bytes before writing to `art_cache`                                   |
 | Not honoring caller transcode params when recording proxy stream activity                                         | recurring | Use the resolved params (after `buildStreamParams`), not the raw request                            |
+| Assuming Subsonic `timeOffset` works on raw pass-through streams                                                  | #204      | `timeOffset` is only applied when transcoding — on raw streams it's silently ignored. Seek raw streams via HTTP Range / SOAP Seek instead |
 
 Endpoint coverage detail: [opensubsonic.md](opensubsonic.md).
 

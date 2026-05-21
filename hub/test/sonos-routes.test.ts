@@ -102,6 +102,7 @@ describe("Sonos play route", () => {
   let app: FastifyInstance;
   let setUriCalls: Array<{ device: SonosDevice; uri: string; meta: TrackMetadata }>;
   let playCalls: SonosDevice[];
+  let seekCalls: Array<{ device: SonosDevice; position: number }>;
   let setVolumeCalls: Array<{ device: SonosDevice; level: number }>;
   let currentVolume = 30;
 
@@ -121,6 +122,7 @@ describe("Sonos play route", () => {
     // without touching the network.
     setUriCalls = [];
     playCalls = [];
+    seekCalls = [];
     setVolumeCalls = [];
     currentVolume = 30;
     (app as unknown as { sonosDiscovery: { get: (id: string) => SonosDevice | undefined } }).sonosDiscovery = {
@@ -142,7 +144,9 @@ describe("Sonos play route", () => {
       play: async (device) => {
         playCalls.push(device);
       },
-      seek: async () => {},
+      seek: async (device, position) => {
+        seekCalls.push({ device, position });
+      },
       getVolume: async () => currentVolume,
       setVolume: async (device, level) => {
         setVolumeCalls.push({ device, level });
@@ -205,7 +209,7 @@ describe("Sonos play route", () => {
       trackId: "trk-1",
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true });
+    expect(res.json()).toEqual({ ok: true, transcoded: true });
     expect(setUriCalls).toHaveLength(1);
 
     const call = setUriCalls[0]!;
@@ -374,6 +378,41 @@ describe("Sonos play route", () => {
     const call = setUriCalls[0]!;
     expect(call.uri).not.toContain("format=mp3");
     expect(call.meta.mimeType).toBe("audio/mpeg");
+  });
+
+  it("pass-through resume seeks via SOAP after Play, not via timeOffset (#204)", async () => {
+    // Local→Sonos mid-track switch on a pass-through source: Subsonic
+    // ignores `timeOffset` on raw streams, so the position has to be
+    // applied with a SOAP Seek once the device has loaded the URI.
+    seedTrackSource(app, "mp3");
+    stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+      position: 42,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, transcoded: false });
+    const call = setUriCalls[0]!;
+    expect(call.uri).not.toContain("timeOffset");
+    expect(seekCalls).toEqual([
+      { device: expect.anything(), position: 42 },
+    ]);
+  });
+
+  it("transcoded resume keeps timeOffset and skips SOAP Seek (#182/#204)", async () => {
+    // OGG → MP3 transcode path: stream is Range-less, so the start
+    // offset must ride the cast URL, not a post-load Seek.
+    seedTrackSource(app, "ogg");
+    stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+      position: 42,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, transcoded: true });
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("timeOffset=42");
+    expect(seekCalls).toHaveLength(0);
   });
 
   it("forces MP3 transcode for hi-res FLAC (>48 kHz / >24-bit) on FLAC-capable device (#180/#199)", async () => {

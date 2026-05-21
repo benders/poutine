@@ -234,11 +234,13 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         username: trackRow.username,
       });
       const base = app.config.poutineLanUrl.replace(/\/+$/, "");
-      // Pass-through (`format=` omitted) requires the byte content-type to
-      // match the DIDL mime; mismatch sends Sonos to STOPPED. Mid-track
-      // starts ride on `timeOffset` rather than SOAP Seek — transcoded MP3
-      // is Range-less and seeking past the buffer puts the device into
-      // STOPPED which the SPA misreads as end-of-track (#182, #194).
+      // Pass-through (`format=` omitted) requires the byte content-type
+      // to match the DIDL mime; mismatch sends Sonos to STOPPED.
+      // Mid-track starts split by mode (#204): transcoded MP3 bakes
+      // `timeOffset` into the cast URL (no Range — SOAP Seek past the
+      // buffer drives STOPPED, see #182/#194), raw pass-through ignores
+      // `timeOffset` (silently dropped by Subsonic when no transcode)
+      // and is seeked via SOAP `Seek` after Play.
       const startAt =
         typeof position === "number" && position > 0
           ? Math.floor(position)
@@ -247,7 +249,8 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         `${base}/cast/stream/${encodeURIComponent(unifiedTrackId)}` +
         `?token=${encodeURIComponent(token)}` +
         (transcode ? `&format=mp3` : "") +
-        (startAt > 0 ? `&timeOffset=${startAt}` : "");
+        (transcode && startAt > 0 ? `&timeOffset=${startAt}` : "");
+      const seekAfterPlay = !transcode && startAt > 0 ? startAt : 0;
 
       const meta: TrackMetadata = {
         trackId: unifiedTrackId,
@@ -282,7 +285,23 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
           app.sonosControl.setAvTransportUri(dev, streamUri, meta),
         ]);
         if (autoplay) await app.sonosControl.play(dev);
-        return { ok: true };
+        // Pass-through resume / mid-track sink switch: SOAP Seek to the
+        // requested position after Play. Range-capable, so Sonos pulls a
+        // fresh GET at the byte offset that maps to REL_TIME (#204).
+        if (seekAfterPlay > 0) {
+          try {
+            await app.sonosControl.seek(dev, seekAfterPlay);
+          } catch (err) {
+            app.log.warn(
+              { err, deviceId: dev.id, position: seekAfterPlay },
+              "Sonos: post-play seek failed",
+            );
+          }
+        }
+        // `transcoded` lets the SPA pick the right seek path: SOAP Seek
+        // for raw pass-through (Range-capable), SetAVTransportURI +
+        // `timeOffset` re-issue for transcoded MP3 (no Range — #182/#204).
+        return { ok: true, transcoded: transcode };
       } catch (err) {
         return reply.status(502).send({ error: String(err) });
       }

@@ -443,7 +443,7 @@ export function sonosPlay(
   trackId: string,
   opts: { position?: number; autoplay?: boolean } = {},
 ) {
-  return apiFetch(
+  return apiFetch<{ ok: true; transcoded: boolean }>(
     `/api/sonos/devices/${encodeURIComponent(deviceId)}/play`,
     {
       method: "POST",

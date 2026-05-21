@@ -120,7 +120,7 @@ describe("PlayerBar cast volume slider", () => {
       volume: 25,
       volumeCap: 50,
     });
-    vi.spyOn(api, "sonosPlay").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosPlay").mockResolvedValue({ ok: true, transcoded: true });
     vi.spyOn(api, "sonosCommand").mockResolvedValue(undefined as never);
     vi.spyOn(api, "sonosSetVolume").mockResolvedValue(undefined as never);
     vi.spyOn(api, "sonosSeek").mockResolvedValue(undefined as never);
@@ -324,6 +324,54 @@ describe("PlayerBar cast volume slider", () => {
       "trk-1",
       expect.objectContaining({ position: 150 }),
     );
+  });
+
+  it("seeking on Sonos pass-through uses SOAP Seek, not a re-issue (#204)", async () => {
+    (api.sonosPlay as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      transcoded: false,
+    });
+    // Override getSonosState to report the real track duration so the
+    // poller doesn't clamp the seek-slider max to 1s mid-test.
+    (api.getSonosState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: "PLAYING",
+      position: 0,
+      duration: 200,
+      volume: 25,
+      volumeCap: 50,
+      trackUri: "",
+    });
+    const longTrack: SubsonicSong = { ...track("trk-1"), durationMs: 200000 };
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      queue: [longTrack],
+      currentIndex: 0,
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter>,
+    );
+
+    // Wait for the initial sonosPlay resolve so castTranscodedRef updates.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    (api.sonosPlay as ReturnType<typeof vi.fn>).mockClear();
+    (api.sonosSeek as ReturnType<typeof vi.fn>).mockClear();
+
+    const seek = container.querySelector(
+      'input[type="range"]:not([aria-label])',
+    ) as HTMLInputElement;
+    expect(seek).not.toBeNull();
+    act(() => {
+      fireEvent.change(seek, { target: { value: "150" } });
+    });
+
+    expect(api.sonosSeek).toHaveBeenCalledWith("RINCON_1", 150);
+    expect(api.sonosPlay).not.toHaveBeenCalled();
   });
 
   it("setSink preserves currentTime across sink changes (#194)", () => {

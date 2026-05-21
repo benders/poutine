@@ -8,6 +8,7 @@ import type { SubsonicSong } from "@/lib/subsonic";
 import {
   getCapabilities,
   sonosPlay,
+  sonosSeek,
   sonosCommand,
   sonosSetVolume,
   getSonosState,
@@ -82,6 +83,11 @@ export function PlayerBar() {
   // request with timeOffset; the new response starts at that offset, so we
   // leave audio.currentTime at 0.
   const pendingBaseOffsetRef = useRef<number | null>(null);
+  // Pending audio.currentTime to apply once loadedmetadata fires for a
+  // pass-through Sonos → local resume. Subsonic ignores `timeOffset` on
+  // raw streams, so the URL is plain and we seek the <audio> element
+  // after the file headers parse (#204).
+  const pendingLocalSeekRef = useRef<number | null>(null);
 
   // streamUrl() generates a fresh u+t+s salt per call, so we MUST memoize
   // by track id — otherwise every render produces a new string, every
@@ -123,6 +129,7 @@ export function PlayerBar() {
   useEffect(() => {
     baseOffsetRef.current = 0;
     pendingBaseOffsetRef.current = null;
+    pendingLocalSeekRef.current = null;
     if (currentTrack) {
       setDuration(currentTrack.durationMs / 1000);
     }
@@ -135,19 +142,24 @@ export function PlayerBar() {
   // For transcoded streams we pass Subsonic `timeOffset`; the new response
   // starts at that mark and `pendingBaseOffsetRef` shifts audio.currentTime
   // back to track time on loadedmetadata (same dance handleSeek uses).
+  // For pass-through sources Subsonic ignores `timeOffset` (raw bytes from
+  // byte 0), so we use the plain URL and seek the <audio> element after
+  // metadata loads — the hub forwards Range to Navidrome for raw streams
+  // (#204).
   useEffect(() => {
     if (isSonos) return;
     const audio = audioRef.current;
     if (!audio || !currentStreamUrl || !currentTrack) return;
 
     const resumeAt = usePlayer.getState().currentTime;
-    if (resumeAt > 0) {
+    if (resumeAt > 0 && isTranscoded) {
       pendingBaseOffsetRef.current = resumeAt;
       audio.src =
         streamUrl(currentTrack.id, { timeOffset: resumeAt }) ??
         currentStreamUrl;
     } else {
       audio.src = currentStreamUrl;
+      if (resumeAt > 0) pendingLocalSeekRef.current = resumeAt;
     }
     audio.load();
     if (isPlaying) {
@@ -224,6 +236,11 @@ export function PlayerBar() {
   // SetAVTransportURI re-issue, which would otherwise look like EOT and
   // advance the queue. #182's worst symptom.
   const lastSonosPlayAtRef = useRef(0);
+  // Whether the active Sonos stream is being transcoded by Navidrome.
+  // Pass-through (false) supports HTTP Range, so seeks use SOAP Seek;
+  // transcoded MP3 (true) is Range-less and must re-issue the stream URL
+  // with a fresh `timeOffset` (#182, #204).
+  const castTranscodedRef = useRef(true);
 
   const issueSonosPlay = useCallback(
     (track: SubsonicSong, startAt: number, autoplay: boolean) => {
@@ -233,6 +250,12 @@ export function PlayerBar() {
       void sonosPlay(deviceId, track.id, {
         autoplay,
         position: startAt > 0 ? startAt : undefined,
+      }).then((res) => {
+        castTranscodedRef.current = res.transcoded;
+        // Pass-through resumes/seeks are done server-side via SOAP Seek,
+        // so the device reports position from track-start. No offset to
+        // add back into polled positions (#204).
+        if (!res.transcoded) castBaseOffsetRef.current = 0;
       }).catch((err) => {
         pushToast({
           kind: "error",
@@ -417,6 +440,14 @@ export function PlayerBar() {
     if (isFinite(audio.duration)) {
       setDuration(audio.duration);
     }
+    // Pass-through resume: apply the carried position now that the file
+    // is seekable. Browser issues a Range request internally (#204).
+    if (pendingLocalSeekRef.current !== null) {
+      const target = pendingLocalSeekRef.current;
+      pendingLocalSeekRef.current = null;
+      audio.currentTime = target;
+      setCurrentTime(target);
+    }
   }, [setDuration, setCurrentTime]);
 
   const handleEnded = useCallback(() => {
@@ -450,13 +481,27 @@ export function PlayerBar() {
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     if (deviceId) {
-      // Re-issue play with a fresh timeOffset URL rather than SOAP Seek.
-      // Transcoded MP3 has no Range support, so seeking past the buffered
-      // region drove Sonos to STOPPED and the poller fired next() (#182).
-      // The stream restart approach is the same one #194 uses for sink
-      // resume — one code path covers both.
       setCurrentTime(time);
-      if (currentTrack) issueSonosPlay(currentTrack, time, isPlaying);
+      if (!currentTrack) return;
+      if (castTranscodedRef.current) {
+        // Transcoded MP3 has no Range; SOAP Seek past the buffer drives
+        // Sonos to STOPPED and the poller misreads that as EOT (#182).
+        // Re-issue the stream with a fresh `timeOffset` URL instead —
+        // same path #194 uses for sink resume.
+        issueSonosPlay(currentTrack, time, isPlaying);
+      } else {
+        // Raw pass-through (FLAC/MP3 source): Sonos can map REL_TIME to
+        // a byte range via streaminfo and pull a fresh Range GET, which
+        // the relay forwards to Navidrome. Cheaper than a URI re-load
+        // and preserves lossless across seeks (#204).
+        sonosSeek(deviceId, time).catch((err) => {
+          pushToast({
+            kind: "error",
+            title: "Sonos seek failed",
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
       return;
     }
     const audio = audioRef.current;

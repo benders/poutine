@@ -70,24 +70,38 @@ device. Without it the old zone keeps playing through to end-of-track and
 auto-advances on its own queue — see #198. Stop, not pause, so the next
 cast to that room starts clean.
 
-**Position via stream restart, not SOAP Seek.** Sonos casts force-transcode
-to MP3 (Range-less). SOAP `Seek` past the buffered region drives the
-device to STOPPED, and the SPA's poller misreads that as end-of-track and
-fires `next()` (#182). Mid-track sink switches hit the same wall when
-trying to resume position (#194). One fix covers both: when the SPA wants
-to start at a non-zero position — fresh play, sink switch, or slider drag
-— `/api/sonos/devices/:id/play` embeds Subsonic `timeOffset=<sec>` in the
-cast URL and skips SOAP Seek entirely. The stream byte 0 = track-time
-`startAt`. The SPA carries `castBaseOffsetRef` to add the offset back
-into polled positions, and an EOT-guard ref (`lastSonosPlayAtRef`)
-suppresses `next()` for ~2.5 s after any re-cast so the brief
-PLAYING → STOPPED transition during `SetAVTransportURI` doesn't advance
-the queue. `next()`/`previous()` zero `currentTime`, so normal
-track-changes pass no offset.
+**Position handling depends on whether the stream is transcoded (#204).**
+Pass-through streams (FLAC/MP3 pass-through, Range-capable) seek via SOAP
+`Seek REL_TIME`: Sonos translates time → byte offset from streaminfo and
+pulls a fresh `Range: bytes=<offset>-` GET, which the `/cast/stream`
+relay's `isRaw` path forwards to Navidrome. Transcoded MP3 has no Range,
+so SOAP Seek past the buffer drives the device to STOPPED and the SPA's
+poller misreads that as end-of-track and fires `next()` (#182). For
+transcoded casts only, `/api/sonos/devices/:id/play` embeds Subsonic
+`timeOffset=<sec>` in the cast URL and re-issues `SetAVTransportURI` —
+stream byte 0 = track-time `startAt`. The `/play` response returns
+`transcoded: boolean` so the SPA can pick the right path;
+`castTranscodedRef` remembers it for the next seek. Subsonic's
+`timeOffset` is **only honored when transcoding** — passing it on a raw
+stream is a silent no-op (regression after #180 was that exact trap),
+hence the branch.
 
-For the reverse direction (Sonos → local mid-track), the `<audio>`
-element reload uses Subsonic `timeOffset` the same way handleSeek's
-past-buffer path does — see `pendingBaseOffsetRef`.
+Mid-track sink switches (#194) use the same split: a non-zero `position`
+on `/play` triggers a post-Play SOAP `Seek` for pass-through, or rides
+`timeOffset` for transcoded. `castBaseOffsetRef` adds the offset back
+into polled positions on the transcoded path only (pass-through reports
+track-relative time directly). `lastSonosPlayAtRef` suppresses `next()`
+for ~2.5 s after any re-cast so the brief PLAYING → STOPPED transition
+during `SetAVTransportURI` doesn't advance the queue. `next()` /
+`previous()` zero `currentTime`, so normal track-changes pass no offset.
+
+For the reverse direction (Sonos → local mid-track), the same rule
+applies to Navidrome's Subsonic `/rest/stream`: pass-through stays raw
+and `timeOffset` is dropped by the hub's `applyTranscodeRule`, so the
+SPA loads the plain URL and seeks the `<audio>` element after
+`loadedmetadata` (browser issues a Range request internally). Transcoded
+sources still use `timeOffset` + `pendingBaseOffsetRef` — same dance
+`handleSeek`'s past-buffer path uses.
 
 ## Device picker
 
