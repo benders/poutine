@@ -14,7 +14,7 @@ const testConfig: Partial<Config> = {
   databasePath: ":memory:",
   jwtSecret: "test-secret-key-for-testing-purposes",
   sonosEnabled: true,
-  poutineLanUrl: "http://hub.lan:3000",
+  initialLanUrl: "http://hub.lan:3000",
 };
 
 const FAKE_DEVICE: SonosDevice = {

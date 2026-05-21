@@ -15,6 +15,7 @@ import {
   signInviteeProof,
 } from "../federation/invitations.js";
 import { randomUUID } from "node:crypto";
+import { normalizeLanUrl } from "../services/sonos-settings.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -757,42 +758,85 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
-  // GET /admin/settings/sonos — runtime Sonos config (#184)
+  // GET /admin/settings/sonos — runtime Sonos config (#184). `lanUrl` (#209)
+  // is shared with DLNA but lives under this section for UI simplicity.
   app.get("/settings/sonos", { preHandler: requireOwner }, async () => {
     return {
       enabled: app.sonosSettings.getEnabled(),
       volumeCap: app.sonosSettings.getVolumeCap(),
+      lanUrl: app.sonosSettings.getLanUrl(),
     };
   });
 
   // PUT /admin/settings/sonos
-  app.put<{ Body: { enabled?: boolean; volumeCap?: number } }>(
+  //
+  // Validate the full payload before applying any setter so a 400 on one
+  // field can't partially mutate state. Order of application: lanUrl
+  // first (so the enabled-requires-lanUrl invariant can read the new value),
+  // then volumeCap, then enabled.
+  //
+  // Invariant: Sonos cannot be enabled with an empty lan_url (#209). The
+  // request can flip enable + lanUrl in one PUT — the post-payload lanUrl
+  // is what matters.
+  app.put<{
+    Body: { enabled?: boolean; volumeCap?: number; lanUrl?: string };
+  }>(
     "/settings/sonos",
     { preHandler: requireOwner },
     async (request, reply) => {
-      const { enabled, volumeCap } = request.body ?? {};
-      if (enabled !== undefined) {
-        if (typeof enabled !== "boolean") {
-          return reply.code(400).send({ error: "enabled must be a boolean" });
-        }
-        app.sonosSettings.setEnabled(enabled);
+      const { enabled, volumeCap, lanUrl } = request.body ?? {};
+
+      if (enabled !== undefined && typeof enabled !== "boolean") {
+        return reply.code(400).send({ error: "enabled must be a boolean" });
       }
-      if (volumeCap !== undefined) {
-        if (
-          typeof volumeCap !== "number" ||
+      if (
+        volumeCap !== undefined &&
+        (typeof volumeCap !== "number" ||
           !Number.isFinite(volumeCap) ||
           volumeCap < 0 ||
-          volumeCap > 100
-        ) {
+          volumeCap > 100)
+      ) {
+        return reply
+          .code(400)
+          .send({ error: "volumeCap must be a number between 0 and 100" });
+      }
+      if (lanUrl !== undefined && typeof lanUrl !== "string") {
+        return reply.code(400).send({ error: "lanUrl must be a string" });
+      }
+
+      // Compute the post-write enabled + lanUrl so we can enforce the
+      // invariant before mutating anything.
+      const nextEnabled =
+        enabled !== undefined ? enabled : app.sonosSettings.getEnabled();
+      let normalizedLanUrl: string | undefined;
+      if (lanUrl !== undefined) {
+        try {
+          normalizedLanUrl = normalizeLanUrl(lanUrl);
+        } catch (err) {
           return reply
             .code(400)
-            .send({ error: "volumeCap must be a number between 0 and 100" });
+            .send({ error: err instanceof Error ? err.message : "invalid lanUrl" });
         }
-        app.sonosSettings.setVolumeCap(volumeCap);
       }
+      const nextLanUrl =
+        normalizedLanUrl !== undefined
+          ? normalizedLanUrl
+          : app.sonosSettings.getLanUrl();
+      if (nextEnabled && !nextLanUrl) {
+        return reply.code(400).send({
+          error:
+            "Sonos cannot be enabled while the LAN URL is empty — set a valid http(s) URL first",
+        });
+      }
+
+      if (lanUrl !== undefined) app.sonosSettings.setLanUrl(lanUrl);
+      if (volumeCap !== undefined) app.sonosSettings.setVolumeCap(volumeCap);
+      if (enabled !== undefined) app.sonosSettings.setEnabled(enabled);
+
       return {
         enabled: app.sonosSettings.getEnabled(),
         volumeCap: app.sonosSettings.getVolumeCap(),
+        lanUrl: app.sonosSettings.getLanUrl(),
       };
     },
   );

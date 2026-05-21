@@ -315,6 +315,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // the docker compose side for multicast.
   const sonosSettings = createSonosSettings(db, {
     initialEnabled: config.sonosEnabled,
+    initialLanUrl: config.initialLanUrl,
   });
   const sonosControl = new SonosControl();
   const sonosDiscovery = new SonosDiscoveryService({
@@ -331,9 +332,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(sonosRoutes, { prefix: "/api/sonos" });
   await app.register(castRoutes, { prefix: "/cast" });
 
-  if (sonosSettings.getEnabled() && !config.poutineLanUrl) {
+  if (sonosSettings.getEnabled() && !sonosSettings.getLanUrl()) {
     app.log.error(
-      "Sonos is enabled but POUTINE_LAN_URL is not set — devices cannot fetch streams",
+      "Sonos is enabled but the LAN URL setting is empty — set it from Admin → Sonos before casting",
     );
   }
   app.log.info(
@@ -373,9 +374,10 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // (same as Sonos) so SSDP multicast works.
   let ssdpAdvertiser: SsdpAdvertiser | null = null;
   if (config.dlnaEnabled) {
-    if (!config.poutineLanUrl) {
+    const dlnaLanUrl = sonosSettings.getLanUrl();
+    if (!dlnaLanUrl) {
       app.log.error(
-        "DLNA_ENABLED=true but POUTINE_LAN_URL is not set — clients cannot fetch the device description or streams",
+        "DLNA_ENABLED=true but the LAN URL setting is empty — clients cannot fetch the device description or streams. Set it from Admin → Sonos.",
       );
     }
     // Stable per-instance UUID v5-ish — deterministic across restarts so
@@ -386,11 +388,10 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
     await app.register(dlnaRoutes, { prefix: "/dlna" });
 
-    if (config.poutineLanUrl) {
-      const lan = config.poutineLanUrl.replace(/\/$/, "");
+    if (dlnaLanUrl) {
       ssdpAdvertiser = new SsdpAdvertiser({
         uuid,
-        locationUrl: `${lan}/dlna/device.xml`,
+        locationUrl: `${dlnaLanUrl}/dlna/device.xml`,
         serverString: `Node/${process.versions.node} UPnP/1.0 Poutine/${APP_VERSION}`,
         log: { info: (m) => app.log.info(m), error: (m) => app.log.error(m) },
       });

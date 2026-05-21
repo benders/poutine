@@ -104,12 +104,15 @@ The `.github/workflows/release.yml` workflow verifies the tag matches `package.j
 Lets the bottom-of-screen player stream to Sonos devices on the LAN. Requires host networking for SSDP multicast.
 
 ```bash
-# in .env:
-#   POUTINE_LAN_URL=http://<your-lan-ip>:3000
 docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
 ```
 
-Then open the Admin page → Sonos and toggle it on (#184). Sonos is off by default and toggleable at runtime — no env var, no restart. Pick a device from the cast icon next to the volume slider. Selection resets to local browser on each session. Full details in [docs/sonos.md](docs/sonos.md#runtime-toggle-184).
+Then open the Admin page → Sonos and:
+
+1. Set the **LAN URL** to `http://<your-lan-ip>:3000` (#209) — devices on the LAN fetch streams from this URL. Shared with DLNA.
+2. Toggle **Sonos** on (#184). Sonos is off by default and toggleable at runtime — no env var, no restart.
+
+Pick a device from the cast icon next to the volume slider. Selection resets to local browser on each session. Full details in [docs/sonos.md](docs/sonos.md#runtime-toggle-184).
 
 #### macOS hosts: run the hub natively
 

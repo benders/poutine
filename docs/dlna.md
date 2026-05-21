@@ -3,7 +3,8 @@
 Optional. When `DLNA_ENABLED=true`, Poutine advertises itself as a UPnP
 `MediaServer:1` on the LAN so Windows Media Player, Xbox, Kodi, VLC,
 BubbleUPnP and other UPnP control points can **browse + stream** the merged
-library. Off by default; requires host networking and `POUTINE_LAN_URL`.
+library. Off by default; requires host networking and the `lan_url` admin
+setting (Admin → Sonos, #209) — shared with Sonos casting.
 
 DLNA has no notion of user identity. Every route under `/dlna/*` is
 unauthenticated when the feature is on; the LAN gate (below) keeps that
@@ -179,15 +180,15 @@ Run separately; require UDP multicast and a free UDP 1900 for the advertiser.
 | `test/dlna-ssdp.integration.test.ts`  | Boots `SsdpAdvertiser`. Raw-dgram M-SEARCH for `MediaServer:1` (asserts USN/LOCATION/CACHE-CONTROL/SERVER on the unicast 200). M-SEARCH for `ssdp:all` (asserts all five advertised targets reply). Boots a second advertiser and listens for `NTS: ssdp:byebye` after `stop()` (asserts all five targets emit byebye before the socket closes). |
 | `test/dlna-http.integration.test.ts`  | Boots full hub via `buildApp()` on a random loopback port. `node-upnp` drives device-description fetch + Browse + ConnectionManager:GetProtocolInfo. Raw fetch covers single-output SOAP actions, `/dlna/stream/<unknown>` 404, and LAN-gate rejecting `x-forwarded-for` / `cf-connecting-ip`. |
 
-> **Test constraint:** `dlna-http.integration.test.ts` leaves
-> `POUTINE_LAN_URL` unset on purpose so its `buildApp()` does **not**
+> **Test constraint:** `dlna-http.integration.test.ts` leaves the
+> `lan_url` setting empty on purpose so its `buildApp()` does **not**
 > instantiate the SSDP advertiser. The SSDP advertiser binds UDP 1900;
 > running it alongside `dlna-ssdp.integration.test.ts` (which also binds
 > UDP 1900 directly) makes unicast M-SEARCH-reply delivery non-deterministic
 > on the kernel. If you add positive `Browse` cases that depend on
-> `res@uri` being well-formed, set `app.config.poutineLanUrl` *after*
-> `listen()` instead of passing it through `buildApp()` — see the existing
-> file for the pattern.
+> `res@uri` being well-formed, call `app.sonosSettings.setLanUrl(...)`
+> *after* `listen()` instead of passing it through `initialLanUrl` — see
+> the existing file for the pattern.
 
 ### Driving a real-world DLNA server (ground truth)
 

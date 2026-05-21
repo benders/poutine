@@ -86,7 +86,7 @@ export const dlnaRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/control/content-directory", { bodyLimit: SOAP_BODY_LIMIT }, async (req, reply) => {
-    const baseUrl = (app.config.poutineLanUrl || "").replace(/\/$/, "");
+    const baseUrl = app.sonosSettings.getLanUrl();
     const body = typeof req.body === "string" ? req.body : "";
     const parsedAction = parseSoapAction(
       req.headers["soapaction"] as string | undefined,

@@ -20,7 +20,7 @@ import { getPreferredSource } from "../db/preferred-source.js";
  * frontend's SonosDriver calls these.
  *
  * Play flow: the client posts {trackId} → backend mints a signed cast token,
- * builds `${POUTINE_LAN_URL}/cast/stream/:trackId?token=…`, then issues
+ * builds `${lan_url}/cast/stream/:trackId?token=…`, then issues
  * SetAVTransportURI + Play on the device.
  */
 declare module "fastify" {
@@ -129,12 +129,13 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     dev: { supportedMimes?: Set<string> | null },
     opts: { position?: number; ttlSec?: number } = {},
   ): Promise<CastBuild> => {
-    if (!app.config.poutineLanUrl) {
+    const lanUrl = app.sonosSettings.getLanUrl();
+    if (!lanUrl) {
       return {
         ok: false,
         status: 500,
         error:
-          "POUTINE_LAN_URL is not configured — required for Sonos to fetch streams",
+          "LAN URL is not configured — set it from Admin → Sonos so devices can fetch streams",
       };
     }
 
@@ -230,7 +231,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       username: trackRow.username,
       ttlSec: opts.ttlSec,
     });
-    const base = app.config.poutineLanUrl.replace(/\/+$/, "");
+    const base = lanUrl;
     const startAt =
       typeof opts.position === "number" && opts.position > 0
         ? Math.floor(opts.position)
