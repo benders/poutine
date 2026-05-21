@@ -403,6 +403,22 @@ export function updateActivitySettings(settings: { maxEvents: number }) {
   });
 }
 
+export interface SonosSettings {
+  enabled: boolean;
+  volumeCap: number;
+}
+
+export function getSonosSettings() {
+  return apiFetch<SonosSettings>(`/admin/settings/sonos`);
+}
+
+export function updateSonosSettings(settings: Partial<SonosSettings>) {
+  return apiFetch<SonosSettings>(`/admin/settings/sonos`, {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
+}
+
 // ── Capabilities + Sonos ────────────────────────────────────────────────────
 
 export interface Capabilities {

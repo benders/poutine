@@ -1,13 +1,13 @@
 import type { FastifyPluginAsync } from "fastify";
 import {
   SonosControl,
-  SONOS_VOLUME_CAP,
   SONOS_MAX_SAMPLE_RATE_HZ,
   SONOS_MAX_BIT_DEPTH,
   chooseSonosCastFormat,
   type TrackMetadata,
 } from "../services/sonos-control.js";
 import type { SonosDiscoveryService } from "../services/sonos-discovery.js";
+import type { SonosSettings } from "../services/sonos-settings.js";
 import { signCastToken } from "../services/cast-tokens.js";
 import { requireAuth } from "../auth/middleware.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
@@ -15,8 +15,9 @@ import { getPreferredSource } from "../db/preferred-source.js";
 
 
 /**
- * REST control surface for Sonos devices. Mounted at /api/sonos when
- * SONOS_ENABLED=true. The frontend's SonosDriver calls these.
+ * REST control surface for Sonos devices. Always mounted at /api/sonos —
+ * routes 503 when the admin has Sonos disabled in `settings` (#184). The
+ * frontend's SonosDriver calls these.
  *
  * Play flow: the client posts {trackId} → backend mints a signed cast token,
  * builds `${POUTINE_LAN_URL}/cast/stream/:trackId?token=…`, then issues
@@ -26,6 +27,7 @@ declare module "fastify" {
   interface FastifyInstance {
     sonosDiscovery: SonosDiscoveryService;
     sonosControl: SonosControl;
+    sonosSettings: SonosSettings;
   }
 }
 
@@ -68,8 +70,6 @@ interface VolumeBody {
 }
 
 export const sonosRoutes: FastifyPluginAsync = async (app) => {
-  if (!app.config.sonosEnabled) return;
-
   // Cached `{samplingRate, bitDepth}` per Navidrome `remote_id` for the
   // hi-res FLAC guard. Naturally static (audio properties don't change at
   // runtime) and bounded by local library size. Lives on the plugin
@@ -258,6 +258,17 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true, unifiedTrackId, streamUri, meta, transcoded: transcode };
   };
 
+  // Reject every /api/sonos/* request when the admin has Sonos disabled
+  // (#184). Runs before auth so unauthenticated probes also see 503 — the
+  // SPA's capabilities probe is unauthenticated and reads this signal
+  // indirectly via /api/capabilities, but a direct /api/sonos/devices hit
+  // should also fail loud.
+  app.addHook("preHandler", async (_req, reply) => {
+    if (!app.sonosSettings.getEnabled()) {
+      return reply.code(503).send({ error: "Sonos is disabled" });
+    }
+  });
+
   // Every route under /api/sonos/* requires a logged-in user. The frontend
   // already sends the JWT via `Authorization: Bearer ...`; without this
   // gate, anyone on the LAN could enumerate Sonos rooms and blast audio.
@@ -279,7 +290,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     try {
       const state = await app.sonosControl.getState(dev);
       const volume = await app.sonosControl.getVolume(dev);
-      return { ...state, volume, volumeCap: SONOS_VOLUME_CAP };
+      return { ...state, volume, volumeCap: app.sonosSettings.getVolumeCap() };
     } catch (err) {
       return reply.status(502).send({ error: String(err) });
     }
@@ -315,9 +326,10 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         await Promise.all([
           (async () => {
             try {
+              const cap = app.sonosSettings.getVolumeCap();
               const current = await app.sonosControl.getVolume(dev);
-              if (current > SONOS_VOLUME_CAP) {
-                await app.sonosControl.setVolume(dev, SONOS_VOLUME_CAP);
+              if (current > cap) {
+                await app.sonosControl.setVolume(dev, cap, cap);
               }
             } catch (err) {
               app.log.warn(
@@ -435,15 +447,20 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       const dev = app.sonosDiscovery.get(req.params.id);
       if (!dev) return reply.status(404).send({ error: "Device not found" });
       const { level } = req.body ?? ({} as VolumeBody);
-      // Request-shape check only. The real ceiling is `SONOS_VOLUME_CAP`,
-      // enforced inside `setVolume`. A POST of e.g. 80 succeeds and is
-      // silently clamped to the cap — do NOT re-add a 400 here, the SPA's
-      // notion of the cap can lag a server-side change.
+      // Request-shape check only. The real ceiling is the live
+      // `sonos_volume_cap` setting (#184), enforced inside `setVolume`. A
+      // POST of e.g. 80 succeeds and is silently clamped to the cap — do
+      // NOT re-add a 400 here, the SPA's notion of the cap can lag a
+      // server-side change.
       if (typeof level !== "number" || level < 0 || level > 100) {
         return reply.status(400).send({ error: "level must be 0..100" });
       }
       try {
-        await app.sonosControl.setVolume(dev, level);
+        await app.sonosControl.setVolume(
+          dev,
+          level,
+          app.sonosSettings.getVolumeCap(),
+        );
         return { ok: true };
       } catch (err) {
         return reply.status(502).send({ error: String(err) });

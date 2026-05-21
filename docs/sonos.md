@@ -1,9 +1,31 @@
 # Sonos casting (issue #108)
 
-Optional sink for the bottom-of-screen player. When `SONOS_ENABLED=true`,
-playback can route to a discovered Sonos zone on the LAN instead of the
-browser. Off by default; requires host networking and a LAN-reachable
-hub URL.
+Optional sink for the bottom-of-screen player. Playback can route to a
+discovered Sonos zone on the LAN instead of the browser. Off by default;
+runtime-toggleable from the Admin page (#184). Requires host networking
+and a LAN-reachable hub URL.
+
+## Runtime toggle (#184)
+
+Enabled state and volume cap live in the `settings` table (keys
+`sonos_enabled`, `sonos_volume_cap`), not in env.
+
+- `GET /admin/settings/sonos` → `{ enabled, volumeCap }`
+- `PUT /admin/settings/sonos` with `{ enabled?, volumeCap? }` (owner-only)
+- `/api/capabilities` reads the live flag — the SPA's device picker
+  shows/hides on the next render.
+- `/api/sonos/*` and `/cast/stream/*` return `503` when disabled.
+- On disable: SSDP discovery stops AND the hub issues `Stop` to every
+  known device — in-flight casts go silent immediately.
+- On enable: SSDP starts; devices appear after one SSDP round
+  (~`SONOS_DISCOVERY_INTERVAL_MS`).
+- Volume cap is enforced in `SonosControl.setVolume(device, level, cap)`
+  on every SOAP write, and surfaced via `volumeCap` in
+  `/api/sonos/devices/:id/state` so the SPA's slider can clamp too.
+
+`SONOS_ENABLED` env is intentionally **not** read. `Config.sonosEnabled`
+exists only as a first-boot seed for tests / programmatic builds; the
+seed uses `INSERT OR IGNORE` so an operator-set value survives redeploy.
 
 ## Protocol
 

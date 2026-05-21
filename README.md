@@ -105,12 +105,11 @@ Lets the bottom-of-screen player stream to Sonos devices on the LAN. Requires ho
 
 ```bash
 # in .env:
-#   SONOS_ENABLED=true
 #   POUTINE_LAN_URL=http://<your-lan-ip>:3000
 docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
 ```
 
-Then pick a device from the cast icon next to the volume slider. Selection resets to local browser on each session. Full details in [docs/hub-internals.md](docs/hub-internals.md#sonos-integration-issue-108).
+Then open the Admin page → Sonos and toggle it on (#184). Sonos is off by default and toggleable at runtime — no env var, no restart. Pick a device from the cast icon next to the volume slider. Selection resets to local browser on each session. Full details in [docs/sonos.md](docs/sonos.md#runtime-toggle-184).
 
 #### macOS hosts: run the hub natively
 
