@@ -11,11 +11,27 @@ export type PlayerSink =
   | "local"
   | { type: "sonos"; deviceId: string; deviceName: string };
 
+/**
+ * Default cap fallback used until the hub's /state response supplies the
+ * authoritative value (currently 50 server-side, see SONOS_VOLUME_CAP).
+ * Hard-coded mirror — #184 will turn this into a settable user pref.
+ */
+export const DEFAULT_SONOS_VOLUME_CAP = 50;
+
 interface PlayerState {
   queue: SubsonicSong[];
   currentIndex: number;
   isPlaying: boolean;
   volume: number;
+  /**
+   * Sonos device volume (0..100, integer, capped). Tracked separately
+   * from `volume` because the local `<audio>` slider is commonly pinned
+   * near max while the user controls real loudness via their computer's
+   * volume — that value must not flow to a Sonos device.
+   */
+  castVolume: number;
+  /** Authoritative cap from the hub; mirrored to bound the cast slider. */
+  castVolumeCap: number;
   currentTime: number;
   duration: number;
   shuffle: boolean;
@@ -32,10 +48,32 @@ interface PlayerState {
   removeFromQueue: (index: number) => void;
   clearQueue: () => void;
   next: () => void;
+  /**
+   * Compute what `next()` *would* do without mutating state. Used by
+   * `PlayerBar` to pre-load the next track on Sonos via
+   * `SetNextAVTransportURI` for gapless auto-advance (#202). Returns the
+   * next song and its queue index, or `null` if there is nothing to
+   * follow up with (end of queue + repeat off).
+   *
+   * **Shuffle caveat.** With shuffle on this picks a random index, so two
+   * calls return different songs. Callers that need the *same* choice
+   * across multiple reads (e.g. POST /next, then jump to that index when
+   * Sonos auto-advances onto it) must cache the result.
+   */
+  peekNext: () => { track: SubsonicSong; index: number } | null;
+  /**
+   * Jump to a specific queue index without picking randomly. Used by the
+   * Sonos URI-change handler (#202) to sync the store onto whatever the
+   * device actually started playing after a pre-loaded auto-advance,
+   * sidestepping shuffle's nondeterminism.
+   */
+  jumpTo: (index: number) => void;
   previous: () => void;
   togglePlay: () => void;
   setPlaying: (playing: boolean) => void;
   setVolume: (volume: number) => void;
+  setCastVolume: (level: number) => void;
+  setCastVolumeCap: (cap: number) => void;
   setCurrentTime: (time: number) => void;
   setDuration: (duration: number) => void;
   toggleShuffle: () => void;
@@ -48,6 +86,8 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   currentIndex: -1,
   isPlaying: false,
   volume: parseFloat(localStorage.getItem("volume") || "0.8"),
+  castVolume: DEFAULT_SONOS_VOLUME_CAP,
+  castVolumeCap: DEFAULT_SONOS_VOLUME_CAP,
   currentTime: 0,
   duration: 0,
   shuffle: false,
@@ -61,13 +101,17 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       : null;
   },
 
+  // Explicit user-initiated track changes zero `currentTime` so the local
+  // <audio> + Sonos play effects don't pick up the previous track's
+  // position as a resume point — #194 designed that hand-off for sink
+  // switches, not click-to-play.
   playTrack: (track) =>
     set((state) => {
       const current = state.queue[state.currentIndex];
       if (current && current.id === track.id) {
         return { isPlaying: !state.isPlaying };
       }
-      return { queue: [track], currentIndex: 0, isPlaying: true };
+      return { queue: [track], currentIndex: 0, isPlaying: true, currentTime: 0 };
     }),
 
   playTracks: (tracks, startIndex = 0) =>
@@ -77,7 +121,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       if (requested && current && current.id === requested.id) {
         return { isPlaying: !state.isPlaying };
       }
-      return { queue: tracks, currentIndex: startIndex, isPlaying: true };
+      return { queue: tracks, currentIndex: startIndex, isPlaying: true, currentTime: 0 };
     }),
 
   addToQueue: (track) =>
@@ -118,6 +162,33 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       return { currentIndex: nextIndex, isPlaying: true, currentTime: 0 };
     }),
 
+  peekNext: () => {
+    const { queue, currentIndex, repeat, shuffle } = get();
+    if (queue.length === 0) return null;
+    if (repeat === "one") {
+      const cur = queue[currentIndex];
+      return cur ? { track: cur, index: currentIndex } : null;
+    }
+    let nextIndex: number;
+    if (shuffle) {
+      nextIndex = Math.floor(Math.random() * queue.length);
+    } else {
+      nextIndex = currentIndex + 1;
+    }
+    if (nextIndex >= queue.length) {
+      if (repeat === "all") nextIndex = 0;
+      else return null;
+    }
+    const track = queue[nextIndex];
+    return track ? { track, index: nextIndex } : null;
+  },
+
+  jumpTo: (index) =>
+    set((state) => {
+      if (index < 0 || index >= state.queue.length) return {};
+      return { currentIndex: index, isPlaying: true, currentTime: 0 };
+    }),
+
   previous: () =>
     set((state) => {
       if (state.currentTime > 3) return { currentTime: 0 };
@@ -131,6 +202,20 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     localStorage.setItem("volume", String(volume));
     set({ volume });
   },
+  setCastVolume: (castVolume) =>
+    set((state) => ({
+      castVolume: Math.max(
+        0,
+        Math.min(state.castVolumeCap, Math.round(castVolume)),
+      ),
+    })),
+  setCastVolumeCap: (castVolumeCap) =>
+    set((state) => ({
+      castVolumeCap,
+      // Re-clamp the current value to the new cap so we never present a
+      // slider position above its own max.
+      castVolume: Math.min(state.castVolume, castVolumeCap),
+    })),
   setCurrentTime: (currentTime) => set({ currentTime }),
   setDuration: (duration) => set({ duration }),
   toggleShuffle: () => set((state) => ({ shuffle: !state.shuffle })),
@@ -140,5 +225,8 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       const idx = modes.indexOf(state.repeat);
       return { repeat: modes[(idx + 1) % modes.length] };
     }),
-  setSink: (sink) => set({ sink, currentTime: 0 }),
+  // Keep currentTime when switching sinks so playback resumes from the
+  // current position on the new device (#194). Track-changes (next/previous)
+  // already reset it; this is the only path that needs to *preserve* it.
+  setSink: (sink) => set({ sink }),
 }));

@@ -37,9 +37,13 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `FANARTTV_CLIENT_KEY`        | no       | —                            | Optional fanart.tv personal `client_key` — drops the new-image delay from 7 days to 2 |
 | `FANARTTV_API_URL`           | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors)                  |
 | `ART_CACHE_MAX_BYTES`        | no       | `100 MB` (104857600)         | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
-| `SONOS_ENABLED`              | no       | `false`                      | Enable Sonos casting (issue #108). Requires host networking — see [Sonos integration](#sonos-integration-issue-108) |
 | `POUTINE_LAN_URL`            | if Sonos | —                            | Absolute base URL Sonos devices use to fetch streams (e.g. `http://192.168.1.10:3000`). Must be reachable from the LAN |
 | `SONOS_DISCOVERY_INTERVAL_MS`| no       | `30000`                      | How often to re-issue SSDP M-SEARCH                              |
+
+Sonos casting itself is **not** env-gated. The enabled flag and volume cap are
+runtime-configurable from the Admin page and persisted in `settings`
+(`sonos_enabled`, `sonos_volume_cap`) — see [Sonos integration](#sonos-integration-issue-108)
+and [docs/sonos.md](sonos.md#runtime-toggle-184).
 
 `hub/src/config.ts` is the authoritative list.
 
@@ -227,7 +231,8 @@ docker network connect --alias hub-a poutine-local-cluster cd-rips-hub-1
 
 ## Sonos casting (issue #108)
 
-Optional sink for the player. Gated by `SONOS_ENABLED=true`. SSDP discovery
+Optional sink for the player. Gated by the `sonos_enabled` setting (admin
+toggle, #184). SSDP discovery
 of `ZonePlayer:1` on UDP 1900; SOAP control (AVTransport + RenderingControl)
 on each device's `:1400`. Sonos fetches `/cast/stream/:trackId` via short-lived
 HMAC tokens — no Subsonic credential leak. Full reference: [sonos.md](sonos.md).

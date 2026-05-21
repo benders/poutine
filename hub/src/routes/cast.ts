@@ -8,8 +8,9 @@ import { relayTrackStream } from "../services/stream-relay.js";
  *
  * GET /cast/stream/:trackId?token=<hmac>.<exp>
  *
- * Mounted only when SONOS_ENABLED=true. The token binds to the trackId and
- * has a short TTL — see services/cast-tokens.ts.
+ * Always mounted; rejects when Sonos is disabled in `settings` (#184). The
+ * token binds to the trackId and has a short TTL — see
+ * services/cast-tokens.ts.
  */
 declare module "fastify" {
   interface FastifyInstance {
@@ -21,6 +22,10 @@ export const castRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Params: { trackId: string }; Querystring: Record<string, string> }>(
     "/stream/:trackId",
     async (request, reply) => {
+      if (!app.sonosSettings.getEnabled()) {
+        reply.status(503).send({ error: "Sonos is disabled" });
+        return;
+      }
       const { trackId } = request.params;
       const token = request.query.token;
       if (!token) {

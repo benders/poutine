@@ -756,4 +756,44 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       return { maxEvents: app.streamTracking.getMaxRows() };
     },
   );
+
+  // GET /admin/settings/sonos — runtime Sonos config (#184)
+  app.get("/settings/sonos", { preHandler: requireOwner }, async () => {
+    return {
+      enabled: app.sonosSettings.getEnabled(),
+      volumeCap: app.sonosSettings.getVolumeCap(),
+    };
+  });
+
+  // PUT /admin/settings/sonos
+  app.put<{ Body: { enabled?: boolean; volumeCap?: number } }>(
+    "/settings/sonos",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { enabled, volumeCap } = request.body ?? {};
+      if (enabled !== undefined) {
+        if (typeof enabled !== "boolean") {
+          return reply.code(400).send({ error: "enabled must be a boolean" });
+        }
+        app.sonosSettings.setEnabled(enabled);
+      }
+      if (volumeCap !== undefined) {
+        if (
+          typeof volumeCap !== "number" ||
+          !Number.isFinite(volumeCap) ||
+          volumeCap < 0 ||
+          volumeCap > 100
+        ) {
+          return reply
+            .code(400)
+            .send({ error: "volumeCap must be a number between 0 and 100" });
+        }
+        app.sonosSettings.setVolumeCap(volumeCap);
+      }
+      return {
+        enabled: app.sonosSettings.getEnabled(),
+        volumeCap: app.sonosSettings.getVolumeCap(),
+      };
+    },
+  );
 };

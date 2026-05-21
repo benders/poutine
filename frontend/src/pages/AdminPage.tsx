@@ -16,6 +16,8 @@ import {
   triggerNavidromeScan,
   getActivitySettings,
   updateActivitySettings,
+  getSonosSettings,
+  updateSonosSettings,
 } from "@/lib/api";
 import type { User, Peer } from "@/lib/api";
 import { formatTimeAgo } from "@/lib/format";
@@ -32,6 +34,7 @@ import {
   Copy,
   Check,
   Activity,
+  Speaker,
 } from "lucide-react";
 
 function CopyButton({ text }: { text: string }) {
@@ -584,6 +587,132 @@ function ActivitySettingsSection() {
   );
 }
 
+function SonosSettingsSection() {
+  const queryClient = useQueryClient();
+  const { data: settings, isLoading } = useQuery({
+    queryKey: ["admin-sonos-settings"],
+    queryFn: getSonosSettings,
+  });
+
+  const [volumeCap, setVolumeCap] = useState("");
+  const [dirtyCap, setDirtyCap] = useState(false);
+
+  useEffect(() => {
+    if (settings && !dirtyCap) {
+      setVolumeCap(String(settings.volumeCap));
+    }
+  }, [settings, dirtyCap]);
+
+  // Toggle and cap each mutate independently so the toggle UI doesn't get
+  // stuck waiting on a separate "save" press.
+  const toggleMutation = useMutation({
+    mutationFn: (enabled: boolean) => updateSonosSettings({ enabled }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-sonos-settings"] });
+      // Capabilities probe drives DevicePicker visibility — refresh so the
+      // PlayerBar reflects the new state on the next render.
+      queryClient.invalidateQueries({ queryKey: ["capabilities"] });
+    },
+  });
+
+  const capMutation = useMutation({
+    mutationFn: (cap: number) => updateSonosSettings({ volumeCap: cap }),
+    onSuccess: () => {
+      setDirtyCap(false);
+      queryClient.invalidateQueries({ queryKey: ["admin-sonos-settings"] });
+    },
+  });
+
+  if (isLoading || !settings) {
+    return (
+      <div className="bg-surface border border-border rounded-lg px-4 py-3">
+        <p className="text-sm text-text-muted">Loading Sonos settings...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Speaker className="w-4 h-4 text-text-muted" />
+        <span className="text-sm font-medium text-text-primary">Sonos Casting</span>
+      </div>
+      <p className="text-xs text-text-muted">
+        When enabled, the hub discovers Sonos zones on the LAN and the player
+        gains a device picker. Requires <code>network_mode: host</code> and{" "}
+        <code>POUTINE_LAN_URL</code> reachable from Sonos devices. Disabling
+        stops discovery and stops any in-flight casts immediately.
+      </p>
+
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-text-primary">
+            Status:{" "}
+            <span className={cn(settings.enabled ? "text-success" : "text-text-muted")}>
+              {settings.enabled ? "Enabled" : "Disabled"}
+            </span>
+          </p>
+        </div>
+        <button
+          onClick={() => toggleMutation.mutate(!settings.enabled)}
+          disabled={toggleMutation.isPending}
+          className={cn(
+            "px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50",
+            settings.enabled
+              ? "bg-surface border border-border hover:bg-surface-hover text-text-primary"
+              : "bg-accent hover:bg-accent-hover text-white",
+          )}
+        >
+          {toggleMutation.isPending
+            ? "Saving..."
+            : settings.enabled
+            ? "Disable"
+            : "Enable"}
+        </button>
+      </div>
+
+      <div className="flex items-end gap-3">
+        <div className="flex-1">
+          <label className="block text-sm text-text-secondary mb-1">
+            Volume Cap (0–100)
+          </label>
+          <input
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            value={volumeCap}
+            onChange={(e) => {
+              setVolumeCap(e.target.value);
+              setDirtyCap(true);
+            }}
+            className="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-text-primary focus:outline-none focus:border-accent"
+          />
+          <p className="mt-1 text-xs text-text-muted">
+            Hard ceiling applied to every SetVolume the hub issues. Sonos
+            volume above this is silently clamped.
+          </p>
+        </div>
+        <button
+          onClick={() => capMutation.mutate(parseInt(volumeCap, 10))}
+          disabled={!dirtyCap || capMutation.isPending}
+          className="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+        >
+          {capMutation.isPending ? "Saving..." : "Save"}
+        </button>
+      </div>
+
+      {(toggleMutation.isError || capMutation.isError) && (
+        <p className="text-sm text-error">
+          {(toggleMutation.error || capMutation.error) instanceof Error
+            ? (toggleMutation.error || capMutation.error)!.message
+            : "Failed to save"}
+        </p>
+      )}
+    </div>
+  );
+}
+
 
 /**
  * v5 invitation flow: generate a signed invite, or paste one received
@@ -844,6 +973,12 @@ export function AdminPage() {
       <section>
         <h2 className="text-xl font-bold text-text-primary mb-4">Activity</h2>
         <ActivitySettingsSection />
+      </section>
+
+      {/* Sonos casting (#184) */}
+      <section>
+        <h2 className="text-xl font-bold text-text-primary mb-4">Sonos</h2>
+        <SonosSettingsSection />
       </section>
     </div>
   );

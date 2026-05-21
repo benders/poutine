@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   parseSsdpResponse,
   parseDeviceDescription,
+  parseZoneGroupState,
+  SonosDiscoveryService,
+  type SonosDevice,
+  type SonosTopologyClient,
 } from "../src/services/sonos-discovery.js";
 
 describe("parseSsdpResponse", () => {
@@ -68,5 +72,159 @@ describe("parseDeviceDescription", () => {
   it("returns null when required tags are missing", () => {
     const xml = "<root><device><UDN>uuid:abc</UDN></device></root>";
     expect(parseDeviceDescription(xml)).toBeNull();
+  });
+});
+
+describe("parseZoneGroupState", () => {
+  const xml = `<ZoneGroupState>
+    <ZoneGroups>
+      <ZoneGroup Coordinator="RINCON_KITCHEN1" ID="RINCON_KITCHEN1:1">
+        <ZoneGroupMember UUID="RINCON_KITCHEN1" Location="http://192.168.2.21:1400/xml/device_description.xml" ZoneName="Kitchen">
+          <Satellite UUID="RINCON_KITCHEN2" Location="http://192.168.2.170:1400/xml/device_description.xml" ZoneName="Kitchen"/>
+        </ZoneGroupMember>
+      </ZoneGroup>
+      <ZoneGroup Coordinator="uuid:RINCON_OFFICE" ID="RINCON_OFFICE:2">
+        <ZoneGroupMember UUID="uuid:RINCON_OFFICE" Location="http://192.168.2.30:1400/xml/device_description.xml" ZoneName="Office"/>
+      </ZoneGroup>
+    </ZoneGroups>
+  </ZoneGroupState>`;
+
+  it("returns one entry per zone group with coordinator + members", () => {
+    const groups = parseZoneGroupState(xml);
+    expect(groups).toHaveLength(2);
+    const kitchen = groups.find((g) => g.coordinator === "RINCON_KITCHEN1");
+    expect(kitchen).toBeDefined();
+    expect(kitchen?.members.sort()).toEqual(["RINCON_KITCHEN1", "RINCON_KITCHEN2"]);
+  });
+
+  it("collects nested <Satellite> UUIDs into the same group", () => {
+    const groups = parseZoneGroupState(xml);
+    const kitchen = groups.find((g) => g.coordinator === "RINCON_KITCHEN1");
+    expect(kitchen?.members).toContain("RINCON_KITCHEN2");
+  });
+
+  it("strips uuid: prefixes from coordinator + members", () => {
+    const groups = parseZoneGroupState(xml);
+    const office = groups.find((g) => g.coordinator === "RINCON_OFFICE");
+    expect(office).toBeDefined();
+    expect(office?.members).toEqual(["RINCON_OFFICE"]);
+  });
+
+  it("returns [] on empty or malformed input", () => {
+    expect(parseZoneGroupState("")).toEqual([]);
+    expect(parseZoneGroupState("<not-xml")).toEqual([]);
+    expect(parseZoneGroupState("<ZoneGroupState></ZoneGroupState>")).toEqual([]);
+  });
+});
+
+describe("SonosDiscoveryService.collapseZoneGroups", () => {
+  const makeDevice = (id: string, room: string, ip: string): SonosDevice => ({
+    id,
+    room,
+    model: "Sonos Era 100",
+    ip,
+    port: 1400,
+    lastSeen: new Date(),
+  });
+
+  const topologyXml = `<ZoneGroupState>
+    <ZoneGroups>
+      <ZoneGroup Coordinator="RINCON_KITCHEN1" ID="g1">
+        <ZoneGroupMember UUID="RINCON_KITCHEN1" ZoneName="Kitchen">
+          <Satellite UUID="RINCON_KITCHEN2" ZoneName="Kitchen"/>
+        </ZoneGroupMember>
+      </ZoneGroup>
+      <ZoneGroup Coordinator="RINCON_OFFICE" ID="g2">
+        <ZoneGroupMember UUID="RINCON_OFFICE" ZoneName="Office"/>
+      </ZoneGroup>
+    </ZoneGroups>
+  </ZoneGroupState>`;
+
+  it("drops bonded satellites and keeps coordinators", async () => {
+    const control: SonosTopologyClient = {
+      getZoneGroupState: async () => topologyXml,
+    };
+    const svc = new SonosDiscoveryService({ control });
+    const devs = (svc as unknown as { devices: Map<string, SonosDevice> }).devices;
+    devs.set("RINCON_KITCHEN1", makeDevice("RINCON_KITCHEN1", "Kitchen", "192.168.2.21"));
+    devs.set("RINCON_KITCHEN2", makeDevice("RINCON_KITCHEN2", "Kitchen", "192.168.2.170"));
+    devs.set("RINCON_OFFICE", makeDevice("RINCON_OFFICE", "Office", "192.168.2.30"));
+
+    await svc.collapseZoneGroups();
+
+    const ids = svc.list().map((d) => d.id).sort();
+    expect(ids).toEqual(["RINCON_KITCHEN1", "RINCON_OFFICE"]);
+  });
+
+  it("is a no-op when no control client is configured", async () => {
+    const svc = new SonosDiscoveryService();
+    const devs = (svc as unknown as { devices: Map<string, SonosDevice> }).devices;
+    devs.set("RINCON_KITCHEN1", makeDevice("RINCON_KITCHEN1", "Kitchen", "192.168.2.21"));
+    devs.set("RINCON_KITCHEN2", makeDevice("RINCON_KITCHEN2", "Kitchen", "192.168.2.170"));
+    await svc.collapseZoneGroups();
+    expect(svc.list()).toHaveLength(2);
+  });
+
+  it("populates supportedMimes via probeProtocolInfo (#180)", async () => {
+    const control: SonosTopologyClient = {
+      getZoneGroupState: async () => topologyXml,
+      getProtocolInfo: async () => new Set(["audio/mpeg", "audio/flac"]),
+    };
+    const svc = new SonosDiscoveryService({ control });
+    const devs = (svc as unknown as { devices: Map<string, SonosDevice> }).devices;
+    devs.set(
+      "RINCON_OFFICE",
+      makeDevice("RINCON_OFFICE", "Office", "192.168.2.30"),
+    );
+    await (svc as unknown as {
+      probeProtocolInfo: (id: string) => Promise<void>;
+    }).probeProtocolInfo("RINCON_OFFICE");
+    const dev = svc.list().find((d) => d.id === "RINCON_OFFICE");
+    expect(dev?.supportedMimes).toBeInstanceOf(Set);
+    expect(dev?.supportedMimes?.has("audio/flac")).toBe(true);
+  });
+
+  it("leaves supportedMimes unset on GetProtocolInfo failure", async () => {
+    const control: SonosTopologyClient = {
+      getZoneGroupState: async () => topologyXml,
+      getProtocolInfo: async () => {
+        throw new Error("boom");
+      },
+    };
+    const errors: string[] = [];
+    const svc = new SonosDiscoveryService({
+      control,
+      log: { info: () => {}, error: (m) => errors.push(m) },
+    });
+    const devs = (svc as unknown as { devices: Map<string, SonosDevice> }).devices;
+    devs.set(
+      "RINCON_OFFICE",
+      makeDevice("RINCON_OFFICE", "Office", "192.168.2.30"),
+    );
+    await (svc as unknown as {
+      probeProtocolInfo: (id: string) => Promise<void>;
+    }).probeProtocolInfo("RINCON_OFFICE");
+    const dev = svc.list().find((d) => d.id === "RINCON_OFFICE");
+    expect(dev?.supportedMimes).toBeUndefined();
+    expect(errors[0]).toMatch(/GetProtocolInfo failed/);
+  });
+
+  it("leaves devices untouched if GetZoneGroupState throws", async () => {
+    const control: SonosTopologyClient = {
+      getZoneGroupState: async () => {
+        throw new Error("network down");
+      },
+    };
+    const errors: string[] = [];
+    const svc = new SonosDiscoveryService({
+      control,
+      log: { info: () => {}, error: (m) => errors.push(m) },
+    });
+    const devs = (svc as unknown as { devices: Map<string, SonosDevice> }).devices;
+    devs.set("RINCON_KITCHEN1", makeDevice("RINCON_KITCHEN1", "Kitchen", "192.168.2.21"));
+    devs.set("RINCON_KITCHEN2", makeDevice("RINCON_KITCHEN2", "Kitchen", "192.168.2.170"));
+    await svc.collapseZoneGroups();
+    expect(svc.list()).toHaveLength(2);
+    expect(errors[0]).toMatch(/GetZoneGroupState failed/);
   });
 });

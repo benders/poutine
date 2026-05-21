@@ -11,6 +11,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Readable } from "node:stream";
 import { SubsonicClient } from "../adapters/subsonic.js";
+import { getPreferredSource } from "../db/preferred-source.js";
 import {
   applyTranscodeRule,
   buildStreamParams,
@@ -68,22 +69,7 @@ export async function relayTrackStream(
     return;
   }
 
-  const best = app.db
-    .prepare(
-      `SELECT ts.instance_id, ts.format, ts.bitrate, it.remote_id
-         FROM track_sources ts
-         JOIN instance_tracks it ON it.id = ts.instance_track_id
-        WHERE ts.unified_track_id = ? AND ts.preferred = 1
-        LIMIT 1`,
-    )
-    .get(trackId) as
-    | {
-        instance_id: string;
-        format: string | null;
-        bitrate: number | null;
-        remote_id: string;
-      }
-    | undefined;
+  const best = getPreferredSource(app.db, trackId);
 
   if (!best) {
     // Track exists in the unified library but has no preferred source —

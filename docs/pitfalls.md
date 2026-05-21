@@ -29,6 +29,7 @@ Every `unified_*` insert in `merge.ts` logs the offending row + prior `existingR
 | Treating any `https?://…` ID as a coverArt key                                                                    | #140      | Star/getCoverArt classifiers must be UUID-shaped; non-UUID IDs are external URLs                    |
 | Caching Navidrome's "missing cover" XML envelope as if it were an image                                           | recurring | Validate content-type + magic bytes before writing to `art_cache`                                   |
 | Not honoring caller transcode params when recording proxy stream activity                                         | recurring | Use the resolved params (after `buildStreamParams`), not the raw request                            |
+| Assuming Subsonic `timeOffset` works on raw pass-through streams                                                  | #204      | `timeOffset` is only applied when transcoding — on raw streams it's silently ignored. Seek raw streams via HTTP Range / SOAP Seek instead |
 
 Endpoint coverage detail: [opensubsonic.md](opensubsonic.md).
 
@@ -87,6 +88,9 @@ Full flow: [authentication.md](authentication.md).
 |-------------------------------------------------------------------|-----------|-----------------------------------------------------------------------------------------------|
 | StarButton updating only after the server roundtrip               | #126      | Optimistic update first; reconcile on response; revert on failure                             |
 | Play button missing on the current track / no pause-on-hover      | #99       | Current track always shows the play control; toggle to pause on click                         |
+| Mirroring local `volume` (0..1) into a Sonos device                | #181      | Local `volume` and `castVolume` are separate stores by design — see `docs/sonos.md`           |
+| Calling `next()` on Sonos `PLAYING → STOPPED` as the EOT signal     | #202      | Gapless pre-load means the device auto-advances; use `TrackURI` change + cached `pendingNextRef` index. STOPPED-after-PLAYING is only the end-of-queue fallback. |
+| Calling `peekNext()` twice with shuffle on (returns different songs)| #202      | Cache the first result; reuse for both the `/next` POST and the post-advance `jumpTo`         |
 
 ## Process
 

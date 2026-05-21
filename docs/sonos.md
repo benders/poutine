@@ -1,9 +1,31 @@
 # Sonos casting (issue #108)
 
-Optional sink for the bottom-of-screen player. When `SONOS_ENABLED=true`,
-playback can route to a discovered Sonos zone on the LAN instead of the
-browser. Off by default; requires host networking and a LAN-reachable
-hub URL.
+Optional sink for the bottom-of-screen player. Playback can route to a
+discovered Sonos zone on the LAN instead of the browser. Off by default;
+runtime-toggleable from the Admin page (#184). Requires host networking
+and a LAN-reachable hub URL.
+
+## Runtime toggle (#184)
+
+Enabled state and volume cap live in the `settings` table (keys
+`sonos_enabled`, `sonos_volume_cap`), not in env.
+
+- `GET /admin/settings/sonos` → `{ enabled, volumeCap }`
+- `PUT /admin/settings/sonos` with `{ enabled?, volumeCap? }` (owner-only)
+- `/api/capabilities` reads the live flag — the SPA's device picker
+  shows/hides on the next render.
+- `/api/sonos/*` and `/cast/stream/*` return `503` when disabled.
+- On disable: SSDP discovery stops AND the hub issues `Stop` to every
+  known device — in-flight casts go silent immediately.
+- On enable: SSDP starts; devices appear after one SSDP round
+  (~`SONOS_DISCOVERY_INTERVAL_MS`).
+- Volume cap is enforced in `SonosControl.setVolume(device, level, cap)`
+  on every SOAP write, and surfaced via `volumeCap` in
+  `/api/sonos/devices/:id/state` so the SPA's slider can clamp too.
+
+`SONOS_ENABLED` env is intentionally **not** read. `Config.sonosEnabled`
+exists only as a first-boot seed for tests / programmatic builds; the
+seed uses `INSERT OR IGNORE` so an operator-set value survives redeploy.
 
 ## Protocol
 
@@ -23,13 +45,13 @@ RenderingControl. The control client hardcodes both.
 
 ## Components
 
-- `services/sonos-discovery.ts` — SSDP M-SEARCH on UDP `239.255.255.250:1900` for `urn:schemas-upnp-org:device:ZonePlayer:1`. Stale-evicts devices not seen recently.
-- `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`).
+- `services/sonos-discovery.ts` — SSDP M-SEARCH on UDP `239.255.255.250:1900` for `urn:schemas-upnp-org:device:ZonePlayer:1`. Stale-evicts devices not seen recently. After discovery, calls `ZoneGroupTopology:1#GetZoneGroupState` and drops bonded satellites so each zone group surfaces as a single logical device (the coordinator). See "Bonded / stereo pairs" below. Also calls `ConnectionManager:1#GetProtocolInfo` once per device to populate `SonosDevice.supportedMimes` — the cast route uses that set to decide pass-through vs MP3 transcode (#180).
+- `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `SetNextAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`) + ConnectionManager (`GetProtocolInfo`). Exports `chooseSonosCastFormat()` for the play route's format-vs-capability decision. `getState()` includes the current `TrackURI` so the poller can detect Sonos auto-advancing onto a pre-loaded next track (#202).
 - `services/didl.ts` — `buildDidlLiteTrack()` produces the inline single-item metadata Sonos expects in `CurrentURIMetaData`.
 - `services/soap.ts` — shared SOAP envelope + XML helpers (used by both Sonos and DLNA).
 - `services/cast-tokens.ts` — HMAC-signed short-lived tokens for unauthenticated stream URLs. Secret derived from the instance Ed25519 key via `deriveCastSecret`. Token wire format `<sig>.<exp>.<base64url(username)>`; the username travels in the token so `/cast/stream` can attribute the stream and route federated peer fetches under the originating user.
 - `routes/cast.ts` — `GET /cast/stream/:trackId?token=…`. Token-verified; reuses the local/peer source-selection + transcoding pipeline. Recovered username is used for stream-tracking and federated `asUser`.
-- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public. Play handler appends `?format=mp3` to the cast URL so the stream byte content-type matches the hardcoded `audio/mpeg` DIDL metadata; without this, FLAC/OGG sources are rejected by Sonos and silently land in STOPPED. Lossless pass-through is a follow-up (#180).
+- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,next,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. The shared cast-URL + DIDL builder (`buildCast`) is used by both `/play` and `/next` so format selection, hi-res FLAC guard, and token mint stay identical across the current/next paths. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public. Play handler picks the cast format via `chooseSonosCastFormat(track_sources.format, device.supportedMimes)`: FLAC/MP3/AAC/ALAC/WAV pass through byte-for-byte when the device advertises the matching MIME; OGG/Opus/unknown formats and devices with no probed sink set fall back to `?format=mp3` + `audio/mpeg` DIDL. Byte content-type must match DIDL mime — mismatch sends Sonos straight to STOPPED. Hi-res bit-depth / sample-rate gating tracked separately (#199).
 - `/api/capabilities` — frontend probe; returns `{ sonos: boolean, dlna: boolean }`.
 
 ## Networking gotcha — host mode required
@@ -59,10 +81,70 @@ Linux where host networking behaves correctly.
 
 ## Queue model
 
-App-managed, one track at a time. The frontend pushes the current track via
-`sonosPlay`, polls `/state` every 1.5 s for position + duration, and calls
-`next()` from the store when the device transitions `PLAYING → STOPPED`.
-Shuffle/repeat live in the store, not on the device.
+App-managed, but with a single-slot pre-load for gapless auto-advance (#202).
+The frontend pushes the current track via `sonosPlay` (SOAP
+`SetAVTransportURI`), then immediately hands the device the *next* track's
+URI via `sonosSetNext` (SOAP `SetNextAVTransportURI`). Sonos pre-buffers the
+queued stream and transitions to it at EOT with no audible gap — the
+SPA-driven `STOPPED → next() → SetAVTransportURI` round-trip that the old
+model produced is gone. Shuffle/repeat still live in the store, not on the
+device; only one "next" slot is loaded ahead.
+
+**Auto-advance detection.** The 1.5 s `/state` poll watches `TrackURI` from
+`GetPositionInfo`. When it changes between two non-empty values outside the
+2.5 s `lastSonosPlayAtRef` guard window, that's Sonos auto-advancing onto
+the pre-loaded URI; the SPA calls `jumpTo(pendingNextRef.index)` (not
+`next()`) to keep the store deterministically on the same track Sonos
+actually picked — important under shuffle, where calling `peekNext()` twice
+would return different songs. `pendingNextRef` captures the queue index at
+the moment the SPA POSTs `/next`, so the URI-change handler advances to
+exactly that index.
+
+**Pre-load TTL.** The SPA sizes the cast token's TTL as
+`remaining(current) + duration(next) + 600s`. The 10-minute buffer covers a
+long pause across the boundary so the queued stream doesn't expire while
+the user is making coffee.
+
+**Re-sync triggers.** Any change to `currentIndex`, `queue`, `shuffle`, or
+`repeat` re-fires the next-URI effect. End-of-queue (peek returns null)
+posts `trackId: null` to clear the slot — Sonos then stops naturally at
+EOT, and the STOPPED-after-PLAYING fallback fires `next()` which is a
+no-op past the end.
+
+**Destination switch.** When the active `deviceId` changes (Sonos → local,
+Sonos → DLNA, Sonos A → Sonos B), `PlayerBar` fires `Stop` on the previous
+device. Without it the old zone keeps playing through to end-of-track and
+auto-advances on its own queue — see #198. Stop, not pause, so the next
+cast to that room starts clean.
+
+**Position handling depends on whether the stream is transcoded.** Pass-through
+streams (FLAC/MP3 pass-through, Range-capable) seek via SOAP `Seek REL_TIME`:
+Sonos translates time → byte offset from streaminfo and pulls a fresh
+`Range: bytes=<offset>-` GET, which the `/cast/stream` relay's `isRaw`
+path forwards to Navidrome. Transcoded MP3 has no Range, so SOAP Seek
+past the buffer drives the device to STOPPED and the SPA's poller
+misreads that as end-of-track and fires `next()` (#182). For transcoded
+casts only, `/api/sonos/devices/:id/play` instead embeds Subsonic
+`timeOffset=<sec>` in the cast URL and re-issues `SetAVTransportURI` —
+stream byte 0 = track-time `startAt`. The `/play` response returns
+`transcoded: boolean` so the SPA can pick the right path; `castTranscodedRef`
+remembers it for the next seek (#204). Subsonic's `timeOffset` is
+**only honored when transcoding** — passing it on a raw stream is a
+silent no-op, hence the branch (#204 was that exact regression after
+the lossless pass-through change in #180).
+
+Mid-track sink switches (#194) and the SPA's initial play with a
+non-zero position both re-use the transcoded path's `timeOffset` URL
+(safe in both modes, decisive in the transcoded one). `castBaseOffsetRef`
+adds the offset back into polled positions, and `lastSonosPlayAtRef`
+suppresses `next()` for ~2.5 s after any re-cast so the brief
+PLAYING → STOPPED transition during `SetAVTransportURI` doesn't advance
+the queue. `next()`/`previous()` zero `currentTime`, so normal
+track-changes pass no offset.
+
+For the reverse direction (Sonos → local mid-track), the `<audio>`
+element reload uses Subsonic `timeOffset` the same way handleSeek's
+past-buffer path does — see `pendingBaseOffsetRef`.
 
 ## Device picker
 
@@ -71,14 +153,24 @@ next to the volume slider — only rendered if `/api/capabilities` reports
 `sonos: true`. Device selection is not persisted across sessions (always
 defaults to local browser playback).
 
-## Bonded / stereo pairs (known limitation — issue #177)
+## Bonded / stereo pairs (resolved — issue #177)
 
-`SonosDiscoveryService` treats every SSDP responder as an independent device.
-In a stereo pair (or any bonded zone) both RINCONs respond to M-SEARCH, so
-`/api/sonos/devices` lists them both — typically with identical `room` values.
+Sonos stereo pairs and home-theater bonded zones advertise each RINCON
+separately via SSDP. Only the **coordinator** of a bonded zone accepts
+`AVTransport:1` commands — targeting a satellite silently no-ops.
 
-Only the **coordinator** of a bonded zone accepts `AVTransport:1` commands.
-Empirically, the satellite reports:
+After at least one device lands, discovery calls
+`ZoneGroupTopology:1#GetZoneGroupState` on any one device and parses the
+returned `<ZoneGroupState>` payload. For each `<ZoneGroup Coordinator="…">`
+it drops every non-coordinator UUID (including nested `<Satellite>`
+entries) from the in-memory device map. The collapse runs once shortly
+after the first discovery and again on every periodic re-scan tick, so
+late-joining satellites get pruned within one interval.
+
+Satellite UUIDs only appear in the full `GetZoneGroupState` XML as
+`<Satellite>` children of the bonded coordinator's `<ZoneGroupMember>` —
+`GetZoneGroupAttributes` hides them and is not sufficient. Empirical
+satellite symptoms (kept here for posterity / debugging):
 
 - empty `CurrentZoneGroupName` / `CurrentZoneGroupID` /
   `CurrentZonePlayerUUIDsInGroup` from `ZoneGroupTopology#GetZoneGroupAttributes`
@@ -86,13 +178,9 @@ Empirically, the satellite reports:
 - empty `Actions` from `AVTransport#GetCurrentTransportActions`
 - UPnP 701 errors from `GroupRenderingControl#GetGroupVolume`/`GetGroupMute`
 
-Targeting the satellite makes commands silently no-op. The fix (issue #177)
-is to call `ZoneGroupTopology#GetZoneGroupState` on one device after discovery
-and collapse each `<ZoneGroup Coordinator="…">` into a single logical device.
-Note: `GetZoneGroupAttributes` on the coordinator only lists the coordinator
-UUID in `CurrentZonePlayerUUIDsInGroup` — satellite UUIDs are hidden at that
-layer and only appear in the full `GetZoneGroupState` XML as `<Satellite>`
-children. Don't rely on `GetZoneGroupAttributes` alone.
+If the topology fetch fails, discovery keeps the un-collapsed view rather
+than hiding everything — a transient SOAP error must not blank out the
+device list.
 
 ## Auth
 
@@ -111,7 +199,7 @@ compromises cast tokens.
 
 | File                              | Covers                                                   |
 |-----------------------------------|----------------------------------------------------------|
-| `test/sonos-discovery.test.ts`    | SSDP response parsing, device-description XML parsing    |
+| `test/sonos-discovery.test.ts`    | SSDP response parsing, device-description XML parsing, `ZoneGroupState` parsing + bonded-zone collapse |
 | `test/sonos-control.test.ts`      | SOAP envelope + DIDL-Lite shape (now thin — most of the helpers moved to `test/soap.test.ts` and the new DLNA suites) |
 | `test/cast-tokens.test.ts`        | HMAC token sign/verify, expiry, cross-track rejection, username unicode |
 
@@ -165,6 +253,21 @@ sending `SetAVTransportURI` + `Play` to a zone interrupts whatever's
 currently playing, with no confirmation. Discovery and `GetTransportInfo`
 are read-only and safe; anything under AVTransport that changes state is
 not.
+
+## Volume model (#181)
+
+Two distinct volume scales live in the system and must not be conflated:
+
+| Scope      | Field             | Range            | Curve     | Persists?         |
+|------------|-------------------|------------------|-----------|-------------------|
+| Local SPA  | `volume`          | `0..1`           | quadratic | `localStorage`    |
+| Cast/Sonos | `castVolume`      | `0..volumeCap`   | linear    | session-only      |
+
+- **Cap.** `SONOS_VOLUME_CAP` in `hub/src/services/sonos-control.ts` (currently `50`). Re-clamped inside `SonosControl.setVolume()` so every code path — `/api/sonos/devices/:id/volume`, `/play` preflight, future schedulers — is uniformly safe. Surfaced to the SPA via `volumeCap` in `GET /api/sonos/devices/:id/state`. Making this user-configurable is tracked in #184.
+- **Cast-start preflight.** `/play` calls `getVolume` before `SetAVTransportURI`; if the device is above the cap (left blasting from the Sonos app), drops it to the cap. Below-cap settings are preserved.
+- **Slider sync while casting.** The 1.5s `/state` poll feeds `castVolume` into the SPA store. A drag-guard ref in `PlayerBar` suppresses poll-driven updates for ~1.5s after the user touches the slider, so an in-flight response can't snap the thumb back mid-drag.
+- **POST /volume.** Route validates `0..100` (request shape only); the real ceiling is the service-layer cap. Sending `80` succeeds and is silently clamped — the SPA's notion of the cap is allowed to lag a server change.
+- **Local audio is unaffected.** The local `<audio>` `volume` is never piped into a Sonos device. The previous behavior (mirror `volume * 100` to `setVolume`) caused #181's "device at 80" surprise; that effect is gone.
 
 ## See also
 

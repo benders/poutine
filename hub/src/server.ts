@@ -24,6 +24,7 @@ import { LastFmClient } from "./services/lastfm.js";
 import { FanartTvClient } from "./services/fanarttv.js";
 import { SonosDiscoveryService } from "./services/sonos-discovery.js";
 import { SonosControl } from "./services/sonos-control.js";
+import { createSonosSettings } from "./services/sonos-settings.js";
 import { deriveCastSecret } from "./services/cast-tokens.js";
 import { sonosRoutes } from "./routes/sonos.js";
 import { castRoutes } from "./routes/cast.js";
@@ -308,27 +309,65 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     registry: peerRegistry,
   });
 
-  // Sonos casting (issue #108) — opt-in, requires network_mode: host.
-  let sonosDiscovery: SonosDiscoveryService | null = null;
-  if (config.sonosEnabled) {
-    if (!config.poutineLanUrl) {
-      app.log.error(
-        "SONOS_ENABLED=true but POUTINE_LAN_URL is not set — Sonos devices cannot fetch streams",
-      );
-    }
-    sonosDiscovery = new SonosDiscoveryService({
-      intervalMs: config.sonosDiscoveryIntervalMs,
-      log: { info: (m) => app.log.info(m), error: (m) => app.log.error(m) },
-    });
-    app.decorate("sonosDiscovery", sonosDiscovery);
-    app.decorate("sonosControl", new SonosControl());
-    // HMAC secret for cast tokens, derived from the federation key.
-    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
-    app.decorate("castSecret", deriveCastSecret(privDer));
-    await app.register(sonosRoutes, { prefix: "/api/sonos" });
-    await app.register(castRoutes, { prefix: "/cast" });
-    app.log.info("Sonos casting enabled");
+  // Sonos casting (issue #108, #184). Infra is built unconditionally so the
+  // admin can flip the runtime `sonos_enabled` setting without a restart;
+  // SSDP discovery only runs while enabled. Requires network_mode: host on
+  // the docker compose side for multicast.
+  const sonosSettings = createSonosSettings(db, {
+    initialEnabled: config.sonosEnabled,
+  });
+  const sonosControl = new SonosControl();
+  const sonosDiscovery = new SonosDiscoveryService({
+    intervalMs: config.sonosDiscoveryIntervalMs,
+    log: { info: (m) => app.log.info(m), error: (m) => app.log.error(m) },
+    control: sonosControl,
+  });
+  app.decorate("sonosSettings", sonosSettings);
+  app.decorate("sonosDiscovery", sonosDiscovery);
+  app.decorate("sonosControl", sonosControl);
+  // HMAC secret for cast tokens, derived from the federation key.
+  const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+  app.decorate("castSecret", deriveCastSecret(privDer));
+  await app.register(sonosRoutes, { prefix: "/api/sonos" });
+  await app.register(castRoutes, { prefix: "/cast" });
+
+  if (sonosSettings.getEnabled() && !config.poutineLanUrl) {
+    app.log.error(
+      "Sonos is enabled but POUTINE_LAN_URL is not set — devices cannot fetch streams",
+    );
   }
+  app.log.info(
+    `Sonos casting ${sonosSettings.getEnabled() ? "enabled" : "disabled"} (admin-toggleable, #184)`,
+  );
+
+  // Toggle handler: start/stop SSDP when the admin flips `sonos_enabled`.
+  // On disable we also Stop every known device so a track in flight goes
+  // quiet immediately — see #184 disable behavior decision.
+  sonosSettings.onChange(({ enabled }) => {
+    if (enabled) {
+      sonosDiscovery.start();
+      app.log.info("Sonos enabled at runtime — SSDP discovery started");
+    } else {
+      const known = sonosDiscovery.list();
+      sonosDiscovery.stop();
+      app.log.info(
+        `Sonos disabled at runtime — SSDP stopped, stopping ${known.length} active device(s)`,
+      );
+      // Best-effort: each Stop is independent so don't let one failure
+      // block the rest. Errors are logged but not surfaced — the admin
+      // already saw the toggle succeed.
+      for (const dev of known) {
+        sonosControl
+          .stop(dev)
+          .catch((err) =>
+            app.log.warn(
+              { err, deviceId: dev.id },
+              "Sonos: Stop on disable failed",
+            ),
+          );
+      }
+    }
+  });
 
   // DLNA MediaServer (issue #175) — opt-in, requires network_mode: host
   // (same as Sonos) so SSDP multicast works.
@@ -360,9 +399,11 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   }
 
   // Capabilities probe used by the frontend to decide which UI affordances
-  // to render (e.g. the device picker in PlayerBar).
+  // to render (e.g. the device picker in PlayerBar). Sonos reads from the
+  // live `sonos_enabled` setting (#184) so the picker hides/appears
+  // immediately after an admin toggle without needing a full page reload.
   app.get("/api/capabilities", async () => ({
-    sonos: config.sonosEnabled,
+    sonos: sonosSettings.getEnabled(),
     dlna: config.dlnaEnabled,
   }));
 
@@ -415,14 +456,14 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // Start auto-sync after routes are registered
   app.addHook("onReady", () => {
     autoSync.start();
-    if (sonosDiscovery) sonosDiscovery.start();
+    if (sonosSettings.getEnabled()) sonosDiscovery.start();
     if (ssdpAdvertiser) ssdpAdvertiser.start();
   });
 
   // Cleanup on close
   app.addHook("onClose", async () => {
     autoSync.stop();
-    if (sonosDiscovery) sonosDiscovery.stop();
+    sonosDiscovery.stop();
     // Await so byebye packets actually leave the socket before close().
     if (ssdpAdvertiser) await ssdpAdvertiser.stop();
     process.off("SIGHUP", sighupHandler);
