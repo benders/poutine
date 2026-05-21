@@ -48,6 +48,26 @@ interface PlayerState {
   removeFromQueue: (index: number) => void;
   clearQueue: () => void;
   next: () => void;
+  /**
+   * Compute what `next()` *would* do without mutating state. Used by
+   * `PlayerBar` to pre-load the next track on Sonos via
+   * `SetNextAVTransportURI` for gapless auto-advance (#202). Returns the
+   * next song and its queue index, or `null` if there is nothing to
+   * follow up with (end of queue + repeat off).
+   *
+   * **Shuffle caveat.** With shuffle on this picks a random index, so two
+   * calls return different songs. Callers that need the *same* choice
+   * across multiple reads (e.g. POST /next, then jump to that index when
+   * Sonos auto-advances onto it) must cache the result.
+   */
+  peekNext: () => { track: SubsonicSong; index: number } | null;
+  /**
+   * Jump to a specific queue index without picking randomly. Used by the
+   * Sonos URI-change handler (#202) to sync the store onto whatever the
+   * device actually started playing after a pre-loaded auto-advance,
+   * sidestepping shuffle's nondeterminism.
+   */
+  jumpTo: (index: number) => void;
   previous: () => void;
   togglePlay: () => void;
   setPlaying: (playing: boolean) => void;
@@ -140,6 +160,33 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       }
 
       return { currentIndex: nextIndex, isPlaying: true, currentTime: 0 };
+    }),
+
+  peekNext: () => {
+    const { queue, currentIndex, repeat, shuffle } = get();
+    if (queue.length === 0) return null;
+    if (repeat === "one") {
+      const cur = queue[currentIndex];
+      return cur ? { track: cur, index: currentIndex } : null;
+    }
+    let nextIndex: number;
+    if (shuffle) {
+      nextIndex = Math.floor(Math.random() * queue.length);
+    } else {
+      nextIndex = currentIndex + 1;
+    }
+    if (nextIndex >= queue.length) {
+      if (repeat === "all") nextIndex = 0;
+      else return null;
+    }
+    const track = queue[nextIndex];
+    return track ? { track, index: nextIndex } : null;
+  },
+
+  jumpTo: (index) =>
+    set((state) => {
+      if (index < 0 || index >= state.queue.length) return {};
+      return { currentIndex: index, isPlaying: true, currentTime: 0 };
     }),
 
   previous: () =>

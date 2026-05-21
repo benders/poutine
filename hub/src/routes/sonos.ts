@@ -42,6 +42,23 @@ interface PlayBody {
   autoplay?: boolean;
 }
 
+interface NextBody {
+  /**
+   * Track to pre-load for gapless auto-advance (#202). Null/omitted clears
+   * the next-URI slot — used at end of queue, on sink switch, and after
+   * Stop. The hub mints a token with TTL covering current+next durations
+   * plus a 10-minute buffer so a long pause across a track boundary
+   * doesn't expire the queued stream.
+   */
+  trackId: string | null;
+  /**
+   * Combined seconds the token must remain valid: roughly
+   * `currentTrack.duration + nextTrack.duration`. The hub adds its own
+   * buffer on top. Optional; if absent the default 1 h TTL is used.
+   */
+  ttlSec?: number;
+}
+
 interface SeekBody {
   position: number;
 }
@@ -87,6 +104,160 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     }
   };
 
+  /**
+   * Resolve any of the trackId shapes the /play route accepts to a
+   * unified_tracks UUID, then assemble the cast stream URL + DIDL metadata.
+   * Shared by /play (current track) and /next (pre-loaded follow-up, #202).
+   *
+   * Returns a discriminated result so callers map cleanly to HTTP status.
+   * Does NOT issue any SOAP — the caller decides whether this is a
+   * SetAVTransportURI or SetNextAVTransportURI invocation.
+   */
+  type CastBuild =
+    | {
+        ok: true;
+        unifiedTrackId: string;
+        streamUri: string;
+        meta: TrackMetadata;
+        transcoded: boolean;
+      }
+    | { ok: false; status: number; error: string };
+
+  const buildCast = async (
+    rawTrackId: string,
+    userId: string,
+    dev: { supportedMimes?: Set<string> | null },
+    opts: { position?: number; ttlSec?: number } = {},
+  ): Promise<CastBuild> => {
+    if (!app.config.poutineLanUrl) {
+      return {
+        ok: false,
+        status: 500,
+        error:
+          "POUTINE_LAN_URL is not configured — required for Sonos to fetch streams",
+      };
+    }
+
+    // Resolve the incoming trackId to a unified_tracks UUID. See /play
+    // handler comments for the accepted ID shapes; the same prefix-stripping
+    // ambiguity guard applies here.
+    const candidates =
+      rawTrackId.startsWith("t") && rawTrackId.length > 1
+        ? [rawTrackId, rawTrackId.slice(1)]
+        : [rawTrackId];
+
+    let unifiedTrackId: string | undefined;
+    const unifiedQ = app.db.prepare(
+      "SELECT id FROM unified_tracks WHERE id = ?",
+    );
+    for (const c of candidates) {
+      const row = unifiedQ.get(c) as { id: string } | undefined;
+      if (row) {
+        unifiedTrackId = row.id;
+        break;
+      }
+    }
+    if (!unifiedTrackId) {
+      const sourceQ = app.db.prepare(
+        `SELECT ts.unified_track_id AS uid
+         FROM instance_tracks it
+         JOIN track_sources ts ON ts.instance_track_id = it.id
+         WHERE it.remote_id = ?
+         LIMIT 1`,
+      );
+      for (const c of candidates) {
+        const row = sourceQ.get(c) as { uid: string } | undefined;
+        if (row) {
+          unifiedTrackId = row.uid;
+          break;
+        }
+      }
+    }
+    if (!unifiedTrackId) {
+      return { ok: false, status: 404, error: "Track not found" };
+    }
+
+    const trackRow = app.db
+      .prepare(
+        `SELECT ut.title, ut.duration_ms, ua.name AS artist_name,
+                urg.name AS album_name, urg.image_url AS album_art,
+                u.username
+         FROM unified_tracks ut
+         JOIN unified_artists ua ON ua.id = ut.artist_id
+         LEFT JOIN unified_releases ur ON ur.id = ut.release_id
+         LEFT JOIN unified_release_groups urg ON urg.id = ur.release_group_id
+         CROSS JOIN users u
+         WHERE ut.id = ? AND u.id = ?`,
+      )
+      .get(unifiedTrackId, userId) as
+      | {
+          title: string;
+          duration_ms: number | null;
+          artist_name: string;
+          album_name: string | null;
+          album_art: string | null;
+          username: string;
+        }
+      | undefined;
+    if (!trackRow) {
+      return { ok: false, status: 404, error: "Track not found" };
+    }
+
+    const source = getPreferredSource(app.db, unifiedTrackId);
+    let { mime, transcode } = chooseSonosCastFormat(
+      source?.format,
+      dev.supportedMimes,
+    );
+
+    if (
+      !transcode &&
+      source?.format?.toLowerCase() === "flac" &&
+      source.instance_id === "local"
+    ) {
+      const probe = await probeHiResFlac(source.remote_id, unifiedTrackId);
+      if (probe && (probe.sr > SONOS_MAX_SAMPLE_RATE_HZ || probe.bd > SONOS_MAX_BIT_DEPTH)) {
+        app.log.info(
+          { trackId: unifiedTrackId, samplingRate: probe.sr, bitDepth: probe.bd },
+          "Sonos: hi-res FLAC exceeds S2 ceiling — forcing MP3 transcode",
+        );
+        mime = "audio/mpeg";
+        transcode = true;
+      }
+    }
+
+    const token = signCastToken(app.castSecret, {
+      trackId: unifiedTrackId,
+      username: trackRow.username,
+      ttlSec: opts.ttlSec,
+    });
+    const base = app.config.poutineLanUrl.replace(/\/+$/, "");
+    const startAt =
+      typeof opts.position === "number" && opts.position > 0
+        ? Math.floor(opts.position)
+        : 0;
+    // `timeOffset` only works when Navidrome is transcoding — on raw
+    // pass-through it is silently ignored and the file is served from
+    // byte 0 (#204). For pass-through, the /play handler issues a SOAP
+    // Seek after the URI loads instead.
+    const streamUri =
+      `${base}/cast/stream/${encodeURIComponent(unifiedTrackId)}` +
+      `?token=${encodeURIComponent(token)}` +
+      (transcode ? `&format=mp3` : "") +
+      (transcode && startAt > 0 ? `&timeOffset=${startAt}` : "");
+
+    const meta: TrackMetadata = {
+      trackId: unifiedTrackId,
+      title: trackRow.title,
+      artist: trackRow.artist_name,
+      album: trackRow.album_name ?? "",
+      albumArtUri: trackRow.album_art ?? null,
+      durationSec: Math.max(0, Math.round((trackRow.duration_ms ?? 0) / 1000)),
+      mimeType: mime,
+    };
+
+    return { ok: true, unifiedTrackId, streamUri, meta, transcoded: transcode };
+  };
+
   // Every route under /api/sonos/* requires a logged-in user. The frontend
   // already sends the JWT via `Authorization: Bearer ...`; without this
   // gate, anyone on the LAN could enumerate Sonos rooms and blast audio.
@@ -121,146 +292,19 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       if (!dev) return reply.status(404).send({ error: "Device not found" });
       const { trackId, position, autoplay = true } = req.body ?? ({} as PlayBody);
       if (!trackId) return reply.status(400).send({ error: "trackId required" });
-      if (!app.config.poutineLanUrl) {
-        return reply.status(500).send({
-          error:
-            "POUTINE_LAN_URL is not configured — required for Sonos to fetch streams",
-        });
-      }
 
-      // Resolve the incoming trackId to a unified_tracks UUID. cast.ts
-      // /stream + the cast token both verify against unified_tracks.
-      //
-      // Accepted inputs:
-      //   1. Subsonic song id from the SPA: "t<unified-uuid>" — the hub's
-      //      /rest/* endpoints encode unified_tracks.id with a "t" prefix
-      //      (see encodeId in subsonic-response.ts).
-      //   2. Raw unified_tracks UUID — direct API callers / tests.
-      //   3. Instance remote_id (e.g. Navidrome's 22-char hash) — older
-      //      flows / debugging.
-      // Real-world unified_tracks IDs are UUIDs (hex + dashes) and never
-      // start with "t", so stripping the prefix is unambiguous in
-      // production. Still, try both the raw value and the stripped form
-      // so a test fixture or future ID scheme doesn't break the route.
-      const candidates =
-        trackId.startsWith("t") && trackId.length > 1
-          ? [trackId, trackId.slice(1)]
-          : [trackId];
-
-      let unifiedTrackId: string | undefined;
-      const unifiedQ = app.db.prepare(
-        "SELECT id FROM unified_tracks WHERE id = ?",
-      );
-      for (const c of candidates) {
-        const row = unifiedQ.get(c) as { id: string } | undefined;
-        if (row) {
-          unifiedTrackId = row.id;
-          break;
-        }
-      }
-      if (!unifiedTrackId) {
-        const sourceQ = app.db.prepare(
-          `SELECT ts.unified_track_id AS uid
-           FROM instance_tracks it
-           JOIN track_sources ts ON ts.instance_track_id = it.id
-           WHERE it.remote_id = ?
-           LIMIT 1`,
-        );
-        for (const c of candidates) {
-          const row = sourceQ.get(c) as { uid: string } | undefined;
-          if (row) {
-            unifiedTrackId = row.uid;
-            break;
-          }
-        }
-      }
-      if (!unifiedTrackId) {
-        return reply.status(404).send({ error: "Track not found" });
-      }
-
-      const trackRow = app.db
-        .prepare(
-          `SELECT ut.title, ut.duration_ms, ua.name AS artist_name,
-                  urg.name AS album_name, urg.image_url AS album_art,
-                  u.username
-           FROM unified_tracks ut
-           JOIN unified_artists ua ON ua.id = ut.artist_id
-           LEFT JOIN unified_releases ur ON ur.id = ut.release_id
-           LEFT JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-           CROSS JOIN users u
-           WHERE ut.id = ? AND u.id = ?`,
-        )
-        .get(unifiedTrackId, req.userId) as
-        | {
-            title: string;
-            duration_ms: number | null;
-            artist_name: string;
-            album_name: string | null;
-            album_art: string | null;
-            username: string;
-          }
-        | undefined;
-      if (!trackRow) return reply.status(404).send({ error: "Track not found" });
-
-      const source = getPreferredSource(app.db, unifiedTrackId);
-      let { mime, transcode } = chooseSonosCastFormat(
-        source?.format,
-        dev.supportedMimes,
-      );
-
-      // Hi-res FLAC guard (#180 workaround for #199). Sonos S2 accepts
-      // audio/flac protocolInfo but silently STOPs when the file is
-      // >24-bit/>48 kHz. Probe samplingRate + bitDepth via Subsonic; cache
-      // the result so repeat casts don't re-fetch. Local sources only —
-      // peer sources stay pass-through until the schema work in #199.
-      if (
-        !transcode &&
-        source?.format?.toLowerCase() === "flac" &&
-        source.instance_id === "local"
-      ) {
-        const probe = await probeHiResFlac(source.remote_id, unifiedTrackId);
-        if (probe && (probe.sr > SONOS_MAX_SAMPLE_RATE_HZ || probe.bd > SONOS_MAX_BIT_DEPTH)) {
-          app.log.info(
-            { trackId: unifiedTrackId, samplingRate: probe.sr, bitDepth: probe.bd },
-            "Sonos: hi-res FLAC exceeds S2 ceiling — forcing MP3 transcode",
-          );
-          mime = "audio/mpeg";
-          transcode = true;
-        }
-      }
-
-      const token = signCastToken(app.castSecret, {
-        trackId: unifiedTrackId,
-        username: trackRow.username,
-      });
-      const base = app.config.poutineLanUrl.replace(/\/+$/, "");
       // Pass-through (`format=` omitted) requires the byte content-type
       // to match the DIDL mime; mismatch sends Sonos to STOPPED.
       // Mid-track starts split by mode (#204): transcoded MP3 bakes
       // `timeOffset` into the cast URL (no Range — SOAP Seek past the
       // buffer drives STOPPED, see #182/#194), raw pass-through ignores
-      // `timeOffset` (silently dropped by Subsonic when no transcode)
-      // and is seeked via SOAP `Seek` after Play.
-      const startAt =
-        typeof position === "number" && position > 0
+      // `timeOffset` and is seeked via SOAP `Seek` below.
+      const cast = await buildCast(trackId, req.userId, dev, { position });
+      if (!cast.ok) return reply.status(cast.status).send({ error: cast.error });
+      const seekAfterPlay =
+        !cast.transcoded && typeof position === "number" && position > 0
           ? Math.floor(position)
           : 0;
-      const streamUri =
-        `${base}/cast/stream/${encodeURIComponent(unifiedTrackId)}` +
-        `?token=${encodeURIComponent(token)}` +
-        (transcode ? `&format=mp3` : "") +
-        (transcode && startAt > 0 ? `&timeOffset=${startAt}` : "");
-      const seekAfterPlay = !transcode && startAt > 0 ? startAt : 0;
-
-      const meta: TrackMetadata = {
-        trackId: unifiedTrackId,
-        title: trackRow.title,
-        artist: trackRow.artist_name,
-        album: trackRow.album_name ?? "",
-        albumArtUri: trackRow.album_art ?? null,
-        durationSec: Math.max(0, Math.round((trackRow.duration_ms ?? 0) / 1000)),
-        mimeType: mime,
-      };
 
       try {
         // Volume preflight + URI load are independent SOAP calls, so run
@@ -282,7 +326,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
               );
             }
           })(),
-          app.sonosControl.setAvTransportUri(dev, streamUri, meta),
+          app.sonosControl.setAvTransportUri(dev, cast.streamUri, cast.meta),
         ]);
         if (autoplay) await app.sonosControl.play(dev);
         // Pass-through resume / mid-track sink switch: SOAP Seek to the
@@ -298,10 +342,48 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
             );
           }
         }
-        // `transcoded` lets the SPA pick the right seek path: SOAP Seek
-        // for raw pass-through (Range-capable), SetAVTransportURI +
-        // `timeOffset` re-issue for transcoded MP3 (no Range — #182/#204).
-        return { ok: true, transcoded: transcode };
+        // `transcoded` lets the SPA pick the right seek path: SOAP Seek for
+        // raw pass-through (Range-capable), SetAVTransportURI+timeOffset
+        // re-issue for transcoded MP3 (no Range — see #182 / #204).
+        return { ok: true, transcoded: cast.transcoded };
+      } catch (err) {
+        return reply.status(502).send({ error: String(err) });
+      }
+    },
+  );
+
+  /**
+   * Pre-load the next track for gapless auto-advance (#202). Null/omitted
+   * trackId clears the slot — used at end of queue, on sink switch, and
+   * after Stop. The SPA fires this after a successful /play and whenever
+   * the queue's "next" mutates (skip, shuffle, repeat toggle).
+   *
+   * Token TTL is whatever the SPA passes (typically current+next durations);
+   * `buildCast` mints accordingly. The caller is responsible for sizing this
+   * to outlive the longest realistic pause across the track boundary.
+   */
+  app.post<{ Params: { id: string }; Body: NextBody }>(
+    "/devices/:id/next",
+    async (req, reply) => {
+      const dev = app.sonosDiscovery.get(req.params.id);
+      if (!dev) return reply.status(404).send({ error: "Device not found" });
+      const { trackId, ttlSec } = req.body ?? ({} as NextBody);
+
+      if (!trackId) {
+        try {
+          await app.sonosControl.setNextAvTransportUri(dev, "", null);
+          return { ok: true, cleared: true };
+        } catch (err) {
+          return reply.status(502).send({ error: String(err) });
+        }
+      }
+
+      const cast = await buildCast(trackId, req.userId, dev, { ttlSec });
+      if (!cast.ok) return reply.status(cast.status).send({ error: cast.error });
+
+      try {
+        await app.sonosControl.setNextAvTransportUri(dev, cast.streamUri, cast.meta);
+        return { ok: true };
       } catch (err) {
         return reply.status(502).send({ error: String(err) });
       }

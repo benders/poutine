@@ -24,12 +24,12 @@ RenderingControl. The control client hardcodes both.
 ## Components
 
 - `services/sonos-discovery.ts` — SSDP M-SEARCH on UDP `239.255.255.250:1900` for `urn:schemas-upnp-org:device:ZonePlayer:1`. Stale-evicts devices not seen recently. After discovery, calls `ZoneGroupTopology:1#GetZoneGroupState` and drops bonded satellites so each zone group surfaces as a single logical device (the coordinator). See "Bonded / stereo pairs" below. Also calls `ConnectionManager:1#GetProtocolInfo` once per device to populate `SonosDevice.supportedMimes` — the cast route uses that set to decide pass-through vs MP3 transcode (#180).
-- `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`) + ConnectionManager (`GetProtocolInfo`). Exports `chooseSonosCastFormat()` for the play route's format-vs-capability decision.
+- `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `SetNextAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`) + ConnectionManager (`GetProtocolInfo`). Exports `chooseSonosCastFormat()` for the play route's format-vs-capability decision. `getState()` includes the current `TrackURI` so the poller can detect Sonos auto-advancing onto a pre-loaded next track (#202).
 - `services/didl.ts` — `buildDidlLiteTrack()` produces the inline single-item metadata Sonos expects in `CurrentURIMetaData`.
 - `services/soap.ts` — shared SOAP envelope + XML helpers (used by both Sonos and DLNA).
 - `services/cast-tokens.ts` — HMAC-signed short-lived tokens for unauthenticated stream URLs. Secret derived from the instance Ed25519 key via `deriveCastSecret`. Token wire format `<sig>.<exp>.<base64url(username)>`; the username travels in the token so `/cast/stream` can attribute the stream and route federated peer fetches under the originating user.
 - `routes/cast.ts` — `GET /cast/stream/:trackId?token=…`. Token-verified; reuses the local/peer source-selection + transcoding pipeline. Recovered username is used for stream-tracking and federated `asUser`.
-- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public. Play handler picks the cast format via `chooseSonosCastFormat(track_sources.format, device.supportedMimes)`: FLAC/MP3/AAC/ALAC/WAV pass through byte-for-byte when the device advertises the matching MIME; OGG/Opus/unknown formats and devices with no probed sink set fall back to `?format=mp3` + `audio/mpeg` DIDL. Byte content-type must match DIDL mime — mismatch sends Sonos straight to STOPPED. Hi-res bit-depth / sample-rate gating tracked separately (#199).
+- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,next,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. The shared cast-URL + DIDL builder (`buildCast`) is used by both `/play` and `/next` so format selection, hi-res FLAC guard, and token mint stay identical across the current/next paths. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public. Play handler picks the cast format via `chooseSonosCastFormat(track_sources.format, device.supportedMimes)`: FLAC/MP3/AAC/ALAC/WAV pass through byte-for-byte when the device advertises the matching MIME; OGG/Opus/unknown formats and devices with no probed sink set fall back to `?format=mp3` + `audio/mpeg` DIDL. Byte content-type must match DIDL mime — mismatch sends Sonos straight to STOPPED. Hi-res bit-depth / sample-rate gating tracked separately (#199).
 - `/api/capabilities` — frontend probe; returns `{ sonos: boolean, dlna: boolean }`.
 
 ## Networking gotcha — host mode required
@@ -59,10 +59,35 @@ Linux where host networking behaves correctly.
 
 ## Queue model
 
-App-managed, one track at a time. The frontend pushes the current track via
-`sonosPlay`, polls `/state` every 1.5 s for position + duration, and calls
-`next()` from the store when the device transitions `PLAYING → STOPPED`.
-Shuffle/repeat live in the store, not on the device.
+App-managed, but with a single-slot pre-load for gapless auto-advance (#202).
+The frontend pushes the current track via `sonosPlay` (SOAP
+`SetAVTransportURI`), then immediately hands the device the *next* track's
+URI via `sonosSetNext` (SOAP `SetNextAVTransportURI`). Sonos pre-buffers the
+queued stream and transitions to it at EOT with no audible gap — the
+SPA-driven `STOPPED → next() → SetAVTransportURI` round-trip that the old
+model produced is gone. Shuffle/repeat still live in the store, not on the
+device; only one "next" slot is loaded ahead.
+
+**Auto-advance detection.** The 1.5 s `/state` poll watches `TrackURI` from
+`GetPositionInfo`. When it changes between two non-empty values outside the
+2.5 s `lastSonosPlayAtRef` guard window, that's Sonos auto-advancing onto
+the pre-loaded URI; the SPA calls `jumpTo(pendingNextRef.index)` (not
+`next()`) to keep the store deterministically on the same track Sonos
+actually picked — important under shuffle, where calling `peekNext()` twice
+would return different songs. `pendingNextRef` captures the queue index at
+the moment the SPA POSTs `/next`, so the URI-change handler advances to
+exactly that index.
+
+**Pre-load TTL.** The SPA sizes the cast token's TTL as
+`remaining(current) + duration(next) + 600s`. The 10-minute buffer covers a
+long pause across the boundary so the queued stream doesn't expire while
+the user is making coffee.
+
+**Re-sync triggers.** Any change to `currentIndex`, `queue`, `shuffle`, or
+`repeat` re-fires the next-URI effect. End-of-queue (peek returns null)
+posts `trackId: null` to clear the slot — Sonos then stops naturally at
+EOT, and the STOPPED-after-PLAYING fallback fires `next()` which is a
+no-op past the end.
 
 **Destination switch.** When the active `deviceId` changes (Sonos → local,
 Sonos → DLNA, Sonos A → Sonos B), `PlayerBar` fires `Stop` on the previous
@@ -70,38 +95,34 @@ device. Without it the old zone keeps playing through to end-of-track and
 auto-advances on its own queue — see #198. Stop, not pause, so the next
 cast to that room starts clean.
 
-**Position handling depends on whether the stream is transcoded (#204).**
-Pass-through streams (FLAC/MP3 pass-through, Range-capable) seek via SOAP
-`Seek REL_TIME`: Sonos translates time → byte offset from streaminfo and
-pulls a fresh `Range: bytes=<offset>-` GET, which the `/cast/stream`
-relay's `isRaw` path forwards to Navidrome. Transcoded MP3 has no Range,
-so SOAP Seek past the buffer drives the device to STOPPED and the SPA's
-poller misreads that as end-of-track and fires `next()` (#182). For
-transcoded casts only, `/api/sonos/devices/:id/play` embeds Subsonic
+**Position handling depends on whether the stream is transcoded.** Pass-through
+streams (FLAC/MP3 pass-through, Range-capable) seek via SOAP `Seek REL_TIME`:
+Sonos translates time → byte offset from streaminfo and pulls a fresh
+`Range: bytes=<offset>-` GET, which the `/cast/stream` relay's `isRaw`
+path forwards to Navidrome. Transcoded MP3 has no Range, so SOAP Seek
+past the buffer drives the device to STOPPED and the SPA's poller
+misreads that as end-of-track and fires `next()` (#182). For transcoded
+casts only, `/api/sonos/devices/:id/play` instead embeds Subsonic
 `timeOffset=<sec>` in the cast URL and re-issues `SetAVTransportURI` —
 stream byte 0 = track-time `startAt`. The `/play` response returns
-`transcoded: boolean` so the SPA can pick the right path;
-`castTranscodedRef` remembers it for the next seek. Subsonic's
-`timeOffset` is **only honored when transcoding** — passing it on a raw
-stream is a silent no-op (regression after #180 was that exact trap),
-hence the branch.
+`transcoded: boolean` so the SPA can pick the right path; `castTranscodedRef`
+remembers it for the next seek (#204). Subsonic's `timeOffset` is
+**only honored when transcoding** — passing it on a raw stream is a
+silent no-op, hence the branch (#204 was that exact regression after
+the lossless pass-through change in #180).
 
-Mid-track sink switches (#194) use the same split: a non-zero `position`
-on `/play` triggers a post-Play SOAP `Seek` for pass-through, or rides
-`timeOffset` for transcoded. `castBaseOffsetRef` adds the offset back
-into polled positions on the transcoded path only (pass-through reports
-track-relative time directly). `lastSonosPlayAtRef` suppresses `next()`
-for ~2.5 s after any re-cast so the brief PLAYING → STOPPED transition
-during `SetAVTransportURI` doesn't advance the queue. `next()` /
-`previous()` zero `currentTime`, so normal track-changes pass no offset.
+Mid-track sink switches (#194) and the SPA's initial play with a
+non-zero position both re-use the transcoded path's `timeOffset` URL
+(safe in both modes, decisive in the transcoded one). `castBaseOffsetRef`
+adds the offset back into polled positions, and `lastSonosPlayAtRef`
+suppresses `next()` for ~2.5 s after any re-cast so the brief
+PLAYING → STOPPED transition during `SetAVTransportURI` doesn't advance
+the queue. `next()`/`previous()` zero `currentTime`, so normal
+track-changes pass no offset.
 
-For the reverse direction (Sonos → local mid-track), the same rule
-applies to Navidrome's Subsonic `/rest/stream`: pass-through stays raw
-and `timeOffset` is dropped by the hub's `applyTranscodeRule`, so the
-SPA loads the plain URL and seeks the `<audio>` element after
-`loadedmetadata` (browser issues a Range request internally). Transcoded
-sources still use `timeOffset` + `pendingBaseOffsetRef` — same dance
-`handleSeek`'s past-buffer path uses.
+For the reverse direction (Sonos → local mid-track), the `<audio>`
+element reload uses Subsonic `timeOffset` the same way handleSeek's
+past-buffer path does — see `pendingBaseOffsetRef`.
 
 ## Device picker
 

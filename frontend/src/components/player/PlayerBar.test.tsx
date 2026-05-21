@@ -119,8 +119,10 @@ describe("PlayerBar cast volume slider", () => {
       duration: 1,
       volume: 25,
       volumeCap: 50,
+      trackUri: "",
     });
     vi.spyOn(api, "sonosPlay").mockResolvedValue({ ok: true, transcoded: true });
+    vi.spyOn(api, "sonosSetNext").mockResolvedValue(undefined as never);
     vi.spyOn(api, "sonosCommand").mockResolvedValue(undefined as never);
     vi.spyOn(api, "sonosSetVolume").mockResolvedValue(undefined as never);
     vi.spyOn(api, "sonosSeek").mockResolvedValue(undefined as never);

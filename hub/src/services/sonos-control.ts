@@ -126,6 +126,14 @@ export interface TransportState {
   state: string;
   position: number;
   duration: number;
+  /**
+   * Current TrackURI from `GetPositionInfo`. The SPA's poller compares this
+   * across ticks to detect Sonos auto-advancing onto a pre-loaded next
+   * track (#202) — a change between non-empty values means the device
+   * transitioned tracks on its own and the store's currentIndex should
+   * follow. Empty string when nothing is loaded.
+   */
+  trackUri: string;
 }
 
 /**
@@ -143,6 +151,25 @@ export class SonosControl {
       InstanceID: 0,
       CurrentURI: streamUri,
       CurrentURIMetaData: didl,
+    });
+  }
+
+  /**
+   * Pre-load the track Sonos should auto-advance to at end-of-current (#202).
+   * Eliminates the PLAYING→STOPPED gap the SPA-driven one-track-at-a-time
+   * model produces between tracks. Pass `""` + `null` to clear the slot
+   * (queue end, sink switch); UPnP treats empty NextURI as "no follow-up".
+   */
+  async setNextAvTransportUri(
+    device: SonosDevice,
+    streamUri: string,
+    meta: TrackMetadata | null,
+  ): Promise<void> {
+    const didl = streamUri && meta ? buildDidlLiteTrack(meta, streamUri) : "";
+    await this.soap(device, "AVTransport", "SetNextAVTransportURI", {
+      InstanceID: 0,
+      NextURI: streamUri,
+      NextURIMetaData: didl,
     });
   }
 
@@ -224,6 +251,7 @@ export class SonosControl {
       state,
       position: parseUpnpDuration(pickXmlTag(pos, "RelTime") ?? "00:00:00"),
       duration: parseUpnpDuration(pickXmlTag(pos, "TrackDuration") ?? "00:00:00"),
+      trackUri: pickXmlTag(pos, "TrackURI") ?? "",
     };
   }
 

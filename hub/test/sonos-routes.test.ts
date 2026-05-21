@@ -101,6 +101,7 @@ function seedSubsonicMapping(app: FastifyInstance, remoteId: string) {
 describe("Sonos play route", () => {
   let app: FastifyInstance;
   let setUriCalls: Array<{ device: SonosDevice; uri: string; meta: TrackMetadata }>;
+  let setNextUriCalls: Array<{ device: SonosDevice; uri: string; meta: TrackMetadata | null }>;
   let playCalls: SonosDevice[];
   let seekCalls: Array<{ device: SonosDevice; position: number }>;
   let setVolumeCalls: Array<{ device: SonosDevice; level: number }>;
@@ -121,6 +122,7 @@ describe("Sonos play route", () => {
     // Stub discovery + control so the route exercises real DB + URL logic
     // without touching the network.
     setUriCalls = [];
+    setNextUriCalls = [];
     playCalls = [];
     seekCalls = [];
     setVolumeCalls = [];
@@ -131,15 +133,23 @@ describe("Sonos play route", () => {
     (app as unknown as {
       sonosControl: {
         setAvTransportUri: (d: SonosDevice, u: string, m: TrackMetadata) => Promise<void>;
+        setNextAvTransportUri: (
+          d: SonosDevice,
+          u: string,
+          m: TrackMetadata | null,
+        ) => Promise<void>;
         play: (d: SonosDevice) => Promise<void>;
         seek: (d: SonosDevice, p: number) => Promise<void>;
         getVolume: (d: SonosDevice) => Promise<number>;
         setVolume: (d: SonosDevice, l: number) => Promise<void>;
-        getState: (d: SonosDevice) => Promise<{ state: string; position: number; duration: number }>;
+        getState: (d: SonosDevice) => Promise<{ state: string; position: number; duration: number; trackUri: string }>;
       };
     }).sonosControl = {
       setAvTransportUri: async (device, uri, meta) => {
         setUriCalls.push({ device, uri, meta });
+      },
+      setNextAvTransportUri: async (device, uri, meta) => {
+        setNextUriCalls.push({ device, uri, meta });
       },
       play: async (device) => {
         playCalls.push(device);
@@ -151,7 +161,7 @@ describe("Sonos play route", () => {
       setVolume: async (device, level) => {
         setVolumeCalls.push({ device, level });
       },
-      getState: async () => ({ state: "STOPPED", position: 0, duration: 0 }),
+      getState: async () => ({ state: "STOPPED", position: 0, duration: 0, trackUri: "" }),
     };
   });
 
@@ -449,5 +459,60 @@ describe("Sonos play route", () => {
       payload: { trackId: "trk-1" },
     });
     expect(res.statusCode).toBe(401);
+  });
+
+  describe("POST /next — gapless pre-load (#202)", () => {
+    it("pre-loads the next track via SetNextAVTransportURI without issuing Play", async () => {
+      const res = await authedPost(
+        `/api/sonos/devices/${FAKE_DEVICE.id}/next`,
+        { trackId: "trk-1", ttlSec: 600 },
+      );
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true });
+      expect(setNextUriCalls).toHaveLength(1);
+      expect(setNextUriCalls[0]!.uri).toContain("/cast/stream/trk-1?");
+      expect(setNextUriCalls[0]!.meta?.title).toBe("Dancing Queen");
+      // Must NOT touch transport state or play — only pre-buffer.
+      expect(setUriCalls).toHaveLength(0);
+      expect(playCalls).toHaveLength(0);
+    });
+
+    it("clears the slot when trackId is null", async () => {
+      const res = await authedPost(
+        `/api/sonos/devices/${FAKE_DEVICE.id}/next`,
+        { trackId: null },
+      );
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true, cleared: true });
+      expect(setNextUriCalls).toHaveLength(1);
+      expect(setNextUriCalls[0]!.uri).toBe("");
+      expect(setNextUriCalls[0]!.meta).toBeNull();
+    });
+
+    it("returns 404 for unknown track", async () => {
+      const res = await authedPost(
+        `/api/sonos/devices/${FAKE_DEVICE.id}/next`,
+        { trackId: "no-such-track" },
+      );
+      expect(res.statusCode).toBe(404);
+      expect(setNextUriCalls).toHaveLength(0);
+    });
+
+    it("returns 404 for unknown device", async () => {
+      const res = await authedPost(`/api/sonos/devices/UNKNOWN/next`, {
+        trackId: "trk-1",
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects unauthenticated requests", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sonos/devices/${FAKE_DEVICE.id}/next`,
+        headers: { "content-type": "application/json" },
+        payload: { trackId: "trk-1" },
+      });
+      expect(res.statusCode).toBe(401);
+    });
   });
 });

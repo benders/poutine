@@ -89,6 +89,8 @@ Full flow: [authentication.md](authentication.md).
 | StarButton updating only after the server roundtrip               | #126      | Optimistic update first; reconcile on response; revert on failure                             |
 | Play button missing on the current track / no pause-on-hover      | #99       | Current track always shows the play control; toggle to pause on click                         |
 | Mirroring local `volume` (0..1) into a Sonos device                | #181      | Local `volume` and `castVolume` are separate stores by design — see `docs/sonos.md`           |
+| Calling `next()` on Sonos `PLAYING → STOPPED` as the EOT signal     | #202      | Gapless pre-load means the device auto-advances; use `TrackURI` change + cached `pendingNextRef` index. STOPPED-after-PLAYING is only the end-of-queue fallback. |
+| Calling `peekNext()` twice with shuffle on (returns different songs)| #202      | Cache the first result; reuse for both the `/next` POST and the post-advance `jumpTo`         |
 
 ## Process
 

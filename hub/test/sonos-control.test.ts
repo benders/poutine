@@ -180,6 +180,113 @@ describe("chooseSonosCastFormat", () => {
   });
 });
 
+describe("SonosControl.setNextAvTransportUri (#202)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(): Array<{ url: string; body: string; soapAction: string }> {
+    const calls: Array<{ url: string; body: string; soapAction: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        const headers = (init.headers ?? {}) as Record<string, string>;
+        calls.push({
+          url,
+          body: String(init.body ?? ""),
+          soapAction: headers["soapaction"] ?? "",
+        });
+        return new Response("<ok/>", { status: 200 });
+      }),
+    );
+    return calls;
+  }
+
+  const META = {
+    trackId: "t-next",
+    title: "Next Track",
+    artist: "An Artist",
+    album: "An Album",
+    durationSec: 200,
+    mimeType: "audio/flac",
+  };
+
+  it("issues SetNextAVTransportURI with NextURI + DIDL", async () => {
+    const calls = stubFetch();
+    await new SonosControl().setNextAvTransportUri(
+      FAKE_DEVICE,
+      "http://lan/cast/stream/t-next?token=abc",
+      META,
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.soapAction).toBe(`"${AVT}#SetNextAVTransportURI"`);
+    expect(calls[0]!.body).toContain("<u:SetNextAVTransportURI");
+    expect(calls[0]!.body).toContain(
+      "<NextURI>http://lan/cast/stream/t-next?token=abc</NextURI>",
+    );
+    expect(calls[0]!.body).toContain("<NextURIMetaData>");
+    expect(calls[0]!.body).toContain("&lt;DIDL-Lite");
+  });
+
+  it("clears the slot with empty NextURI when meta is null", async () => {
+    const calls = stubFetch();
+    await new SonosControl().setNextAvTransportUri(FAKE_DEVICE, "", null);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toContain("<NextURI></NextURI>");
+    expect(calls[0]!.body).toContain("<NextURIMetaData></NextURIMetaData>");
+  });
+});
+
+describe("SonosControl.getState includes trackUri (#202)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("parses TrackURI out of GetPositionInfo", async () => {
+    const transportInfo =
+      `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>` +
+      `<u:GetTransportInfoResponse xmlns:u="${AVT}">` +
+      `<CurrentTransportState>PLAYING</CurrentTransportState>` +
+      `<CurrentTransportStatus>OK</CurrentTransportStatus>` +
+      `</u:GetTransportInfoResponse></s:Body></s:Envelope>`;
+    const positionInfo =
+      `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>` +
+      `<u:GetPositionInfoResponse xmlns:u="${AVT}">` +
+      `<Track>1</Track>` +
+      `<TrackDuration>00:03:21</TrackDuration>` +
+      `<TrackURI>http://lan/cast/stream/abc?token=xyz</TrackURI>` +
+      `<RelTime>00:00:42</RelTime>` +
+      `</u:GetPositionInfoResponse></s:Body></s:Envelope>`;
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const body = call++ === 0 ? transportInfo : positionInfo;
+        return new Response(body, { status: 200 });
+      }),
+    );
+    const state = await new SonosControl().getState(FAKE_DEVICE);
+    expect(state.state).toBe("PLAYING");
+    expect(state.position).toBe(42);
+    expect(state.duration).toBe(201);
+    expect(state.trackUri).toBe("http://lan/cast/stream/abc?token=xyz");
+  });
+
+  it("defaults trackUri to empty string when missing", async () => {
+    const empty =
+      `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>` +
+      `<u:GetPositionInfoResponse xmlns:u="${AVT}">` +
+      `<RelTime>00:00:00</RelTime><TrackDuration>00:00:00</TrackDuration>` +
+      `</u:GetPositionInfoResponse></s:Body></s:Envelope>`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(empty, { status: 200 })),
+    );
+    const state = await new SonosControl().getState(FAKE_DEVICE);
+    expect(state.trackUri).toBe("");
+  });
+});
+
 describe("SonosControl.setVolume cap", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

@@ -57,6 +57,66 @@ describe("player store play/pause toggle", () => {
   });
 });
 
+describe("player store peekNext + jumpTo (#202)", () => {
+  it("peekNext returns the next queue entry under default sequential play", () => {
+    usePlayer.getState().playTracks([song("a"), song("b"), song("c")], 0);
+    const peek = usePlayer.getState().peekNext();
+    expect(peek?.track.id).toBe("b");
+    expect(peek?.index).toBe(1);
+  });
+
+  it("peekNext returns null at end of queue when repeat is off", () => {
+    usePlayer.getState().playTracks([song("a"), song("b")], 1);
+    expect(usePlayer.getState().peekNext()).toBeNull();
+  });
+
+  it("peekNext wraps to start when repeat is all", () => {
+    usePlayer.getState().playTracks([song("a"), song("b")], 1);
+    usePlayer.setState({ repeat: "all" });
+    const peek = usePlayer.getState().peekNext();
+    expect(peek?.track.id).toBe("a");
+    expect(peek?.index).toBe(0);
+  });
+
+  it("peekNext returns the current track when repeat is one", () => {
+    usePlayer.getState().playTracks([song("a"), song("b")], 0);
+    usePlayer.setState({ repeat: "one" });
+    const peek = usePlayer.getState().peekNext();
+    expect(peek?.track.id).toBe("a");
+    expect(peek?.index).toBe(0);
+  });
+
+  it("peekNext returns null on an empty queue", () => {
+    expect(usePlayer.getState().peekNext()).toBeNull();
+  });
+
+  it("peekNext does NOT mutate state", () => {
+    usePlayer.getState().playTracks([song("a"), song("b")], 0);
+    const before = usePlayer.getState();
+    usePlayer.getState().peekNext();
+    const after = usePlayer.getState();
+    expect(after.currentIndex).toBe(before.currentIndex);
+    expect(after.isPlaying).toBe(before.isPlaying);
+  });
+
+  it("jumpTo advances to the given index and resets currentTime", () => {
+    usePlayer.getState().playTracks([song("a"), song("b"), song("c")], 0);
+    usePlayer.setState({ currentTime: 42 });
+    usePlayer.getState().jumpTo(2);
+    expect(usePlayer.getState().currentIndex).toBe(2);
+    expect(usePlayer.getState().currentTime).toBe(0);
+    expect(usePlayer.getState().isPlaying).toBe(true);
+  });
+
+  it("jumpTo ignores out-of-range indices", () => {
+    usePlayer.getState().playTracks([song("a"), song("b")], 0);
+    usePlayer.getState().jumpTo(99);
+    expect(usePlayer.getState().currentIndex).toBe(0);
+    usePlayer.getState().jumpTo(-1);
+    expect(usePlayer.getState().currentIndex).toBe(0);
+  });
+});
+
 describe("player store castVolume", () => {
   it("setCastVolume clamps to the current cap", () => {
     usePlayer.setState({ castVolumeCap: 50 });

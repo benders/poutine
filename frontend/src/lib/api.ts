@@ -426,6 +426,12 @@ export interface SonosState {
   volume: number;
   /** Hard ceiling enforced server-side on every SetVolume. */
   volumeCap: number;
+  /**
+   * Current TrackURI from `GetPositionInfo`. The player uses changes
+   * between non-empty values across polls to detect Sonos auto-advancing
+   * onto a pre-loaded next track (#202).
+   */
+  trackUri: string;
 }
 
 export function getSonosDevices() {
@@ -470,6 +476,24 @@ export function sonosSeek(deviceId: string, position: number) {
   return apiFetch(
     `/api/sonos/devices/${encodeURIComponent(deviceId)}/seek`,
     { method: "POST", body: JSON.stringify({ position }) },
+  );
+}
+
+/**
+ * Pre-load the next track for gapless Sonos auto-advance (#202). Pass
+ * `null` to clear the slot — required on sink switch, stop, or when the
+ * queue is exhausted with repeat off. `ttlSec` should cover the combined
+ * duration of the currently-playing track plus this track plus a buffer,
+ * so a long pause across the boundary doesn't expire the queued stream.
+ */
+export function sonosSetNext(
+  deviceId: string,
+  trackId: string | null,
+  ttlSec?: number,
+) {
+  return apiFetch(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/next`,
+    { method: "POST", body: JSON.stringify({ trackId, ttlSec }) },
   );
 }
 

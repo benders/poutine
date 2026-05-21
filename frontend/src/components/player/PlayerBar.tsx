@@ -9,6 +9,7 @@ import {
   getCapabilities,
   sonosPlay,
   sonosSeek,
+  sonosSetNext,
   sonosCommand,
   sonosSetVolume,
   getSonosState,
@@ -44,6 +45,7 @@ export function PlayerBar() {
     shuffle,
     repeat,
     next,
+    jumpTo,
     previous,
     togglePlay,
     setPlaying,
@@ -270,6 +272,13 @@ export function PlayerBar() {
 
   useEffect(() => {
     if (!deviceId || !currentTrack) return;
+    // Skip the re-issue when Sonos auto-advanced onto this exact track
+    // via SetNextAVTransportURI — it's already playing, and a fresh
+    // SetAVTransportURI would restart it from 0 (stutter, #202).
+    if (skipNextSonosPlayForTrackRef.current === currentTrack.id) {
+      skipNextSonosPlayForTrackRef.current = null;
+      return;
+    }
     // Resume from the current store position so a mid-track sink switch
     // (local → Sonos, or Sonos A → Sonos B) keeps playing where the user
     // left off instead of restarting from 0:00 (#194). next()/previous()
@@ -279,6 +288,46 @@ export function PlayerBar() {
     // isPlaying intentionally excluded — pause/resume is handled by its
     // own effect below. We only read its value at track-change time.
   }, [deviceId, currentTrack?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Gapless pre-load (#202). After a track starts on Sonos, hand the device
+  // the URI it should auto-advance onto at EOT via SetNextAVTransportURI.
+  // Sonos pre-buffers the next stream so the transition is seamless instead
+  // of producing the multi-second gap the one-track-at-a-time SPA-driven
+  // model introduces (worst on lossless pass-through, where the bytes come
+  // direct from disk).
+  //
+  // The pending choice is cached in a ref so the URI-change handler in the
+  // poller knows which queue index to advance to when Sonos actually
+  // transitions — shuffle's randomness makes calling peekNext() twice
+  // unsafe.
+  const pendingNextRef = useRef<{ trackId: string; index: number } | null>(null);
+  // When Sonos auto-advances onto the pre-loaded next URI, the poll syncs
+  // the store via jumpTo() — which trips the track-change effect below
+  // and would re-issue SetAVTransportURI for a track Sonos is already
+  // playing, restarting it from byte 0 with an audible stutter (#202).
+  // The poll sets this ref to the auto-advanced trackId so the next
+  // effect fire for that id is skipped.
+  const skipNextSonosPlayForTrackRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!deviceId || !currentTrack) return;
+    const peek = usePlayer.getState().peekNext();
+    if (!peek) {
+      pendingNextRef.current = null;
+      void sonosSetNext(deviceId, null).catch(() => {});
+      return;
+    }
+    pendingNextRef.current = { trackId: peek.track.id, index: peek.index };
+    // TTL: time remaining on current + full duration of next + 10-min
+    // buffer. Buffer covers a long pause across the track boundary so the
+    // queued stream doesn't expire while the user is making coffee. Default
+    // server TTL (1 h) would be too tight for a back-to-back long-track
+    // pause.
+    const curDuration = currentTrack.durationMs / 1000;
+    const remaining = Math.max(0, curDuration - usePlayer.getState().currentTime);
+    const nextDuration = peek.track.durationMs / 1000;
+    const ttlSec = Math.ceil(remaining + nextDuration + 600);
+    void sonosSetNext(deviceId, peek.track.id, ttlSec).catch(() => {});
+  }, [deviceId, currentTrack?.id, queue, currentIndex, shuffle, repeat]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Play/pause toggle while casting.
   useEffect(() => {
@@ -351,6 +400,7 @@ export function PlayerBar() {
     let cancelled = false;
     let inFlight = false;
     let lastState = "";
+    let lastTrackUri = "";
     const tick = async () => {
       if (inFlight) return;
       inFlight = true;
@@ -384,14 +434,39 @@ export function PlayerBar() {
         // no-op in zustand, so this doesn't fight the toggle effect.
         if (s.state === "PLAYING") setPlaying(true);
         else if (s.state === "PAUSED_PLAYBACK") setPlaying(false);
-        // STOPPED after we observed PLAYING means the track ended —
-        // EXCEPT during the brief transition right after a fresh
-        // SetAVTransportURI, where Sonos blips through STOPPED. Without
-        // this guard, a mid-track seek (#182) or sink-resume (#194)
-        // looks like EOT and advances the queue.
+
         const playGuardMs = 2500;
         const recentlyPlayed =
           Date.now() - lastSonosPlayAtRef.current < playGuardMs;
+
+        // Sonos transitioned to a different stream URI on its own (#202).
+        // With SetNextAVTransportURI pre-loaded, this happens at EOT — the
+        // device picks up the pre-buffered next track seamlessly. Sync the
+        // store's currentIndex onto the queue position we previously asked
+        // it to advance to, sidestepping shuffle's nondeterminism.
+        // Suppress within the play-guard window so a fresh user-driven
+        // SetAVTransportURI (skip, sink switch) doesn't look like an
+        // auto-advance.
+        if (
+          s.trackUri &&
+          lastTrackUri &&
+          s.trackUri !== lastTrackUri &&
+          !recentlyPlayed &&
+          pendingNextRef.current
+        ) {
+          const pending = pendingNextRef.current;
+          pendingNextRef.current = null;
+          castBaseOffsetRef.current = 0;
+          skipNextSonosPlayForTrackRef.current = pending.trackId;
+          jumpTo(pending.index);
+        }
+        lastTrackUri = s.trackUri;
+
+        // STOPPED-after-PLAYING fallback for end-of-queue (no next was
+        // pre-loaded, or pre-load failed). Still guarded against the brief
+        // PLAYING → STOPPED blip a fresh SetAVTransportURI produces (#182,
+        // #194). Auto-advance via pending-next is handled above and clears
+        // the pending ref; this only fires when there was nothing queued.
         if (s.state === "STOPPED" && lastState === "PLAYING" && !recentlyPlayed) {
           next();
         }
@@ -412,6 +487,7 @@ export function PlayerBar() {
     deviceId,
     currentTrack?.id,
     next,
+    jumpTo,
     setCurrentTime,
     setDuration,
     setPlaying,
