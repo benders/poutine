@@ -656,9 +656,43 @@ function SonosSettingsSection() {
       <p className="text-xs text-text-muted">
         When enabled, the hub discovers Sonos zones on the LAN and the player
         gains a device picker. Requires <code>network_mode: host</code> and a
-        LAN URL (below) reachable from Sonos devices. Disabling stops
-        discovery and stops any in-flight casts immediately.
+        LAN URL reachable from Sonos devices (set below — Sonos cannot be
+        enabled until it is). Disabling stops discovery and stops any
+        in-flight casts immediately.
       </p>
+
+      {/* LAN URL first — every other feature in this section depends on it,
+          so it leads. Sonos enable + DLNA both read from this setting. */}
+      <div className="flex items-end gap-3">
+        <div className="flex-1">
+          <label className="block text-sm text-text-secondary mb-1">
+            LAN URL
+          </label>
+          <input
+            type="url"
+            placeholder="http://192.168.1.10:3000"
+            value={lanUrl}
+            onChange={(e) => {
+              setLanUrl(e.target.value);
+              setDirtyLan(true);
+            }}
+            className="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-text-primary focus:outline-none focus:border-accent"
+          />
+          <p className="mt-1 text-xs text-text-muted">
+            Absolute base URL Sonos + DLNA devices use to fetch streams from
+            this hub. Must be reachable on the LAN (a public hostname or LAN
+            IP, not <code>localhost</code>). Shared with the DLNA MediaServer.
+            Leave empty to disable.
+          </p>
+        </div>
+        <button
+          onClick={() => lanMutation.mutate(lanUrl.trim())}
+          disabled={!dirtyLan || lanMutation.isPending}
+          className="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+        >
+          {lanMutation.isPending ? "Saving..." : "Save"}
+        </button>
+      </div>
 
       <div className="flex items-center justify-between">
         <div>
@@ -679,7 +713,7 @@ function SonosSettingsSection() {
           }
           title={
             !settings.enabled && !settings.lanUrl
-              ? "Set a LAN URL below before enabling Sonos"
+              ? "Set a LAN URL above before enabling Sonos"
               : undefined
           }
           className={cn(
@@ -725,37 +759,6 @@ function SonosSettingsSection() {
           className="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
         >
           {capMutation.isPending ? "Saving..." : "Save"}
-        </button>
-      </div>
-
-      <div className="flex items-end gap-3">
-        <div className="flex-1">
-          <label className="block text-sm text-text-secondary mb-1">
-            LAN URL
-          </label>
-          <input
-            type="url"
-            placeholder="http://192.168.1.10:3000"
-            value={lanUrl}
-            onChange={(e) => {
-              setLanUrl(e.target.value);
-              setDirtyLan(true);
-            }}
-            className="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-text-primary focus:outline-none focus:border-accent"
-          />
-          <p className="mt-1 text-xs text-text-muted">
-            Absolute base URL Sonos + DLNA devices use to fetch streams from
-            this hub. Must be reachable on the LAN (a public hostname or LAN
-            IP, not <code>localhost</code>). Shared with the DLNA MediaServer.
-            Leave empty to disable.
-          </p>
-        </div>
-        <button
-          onClick={() => lanMutation.mutate(lanUrl.trim())}
-          disabled={!dirtyLan || lanMutation.isPending}
-          className="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-        >
-          {lanMutation.isPending ? "Saving..." : "Save"}
         </button>
       </div>
 
