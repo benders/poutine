@@ -308,15 +308,28 @@ export function PlayerBar() {
   // The poll sets this ref to the auto-advanced trackId so the next
   // effect fire for that id is skipped.
   const skipNextSonosPlayForTrackRef = useRef<string | null>(null);
+  // Decision key for the pre-load. When this matches the last successful
+  // pre-load, the effect re-fire was for a non-material reason (e.g. a
+  // referentially-new `queue` array with identical contents) and we
+  // should keep the already-buffered next track — re-rolling under
+  // shuffle would overwrite a still-valid URI with a different random
+  // pick and waste a SOAP call (#208).
+  const lastNextDecisionKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!deviceId || !currentTrack) return;
+    const decisionKey = `${deviceId}|${currentTrack.id}|${queue.length}|${currentIndex}|${shuffle}|${repeat}`;
+    if (pendingNextRef.current && lastNextDecisionKeyRef.current === decisionKey) {
+      return;
+    }
     const peek = usePlayer.getState().peekNext();
     if (!peek) {
       pendingNextRef.current = null;
+      lastNextDecisionKeyRef.current = decisionKey;
       void sonosSetNext(deviceId, null).catch(() => {});
       return;
     }
     pendingNextRef.current = { trackId: peek.track.id, index: peek.index };
+    lastNextDecisionKeyRef.current = decisionKey;
     // TTL: time remaining on current + full duration of next + 10-min
     // buffer. Buffer covers a long pause across the track boundary so the
     // queued stream doesn't expire while the user is making coffee. Default

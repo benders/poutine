@@ -333,6 +333,24 @@ describe("Sonos play route", () => {
     expect(setVolumeCalls[0]!.level).toBe(80);
   });
 
+  it("POST /volume forwards the live cap from settings to setVolume (#208)", async () => {
+    // Operator just dropped the cap from the admin UI. A refactor that
+    // silently stopped passing the cap argument would let above-cap
+    // requests reach the device. Lock the wiring with a dedicated stub.
+    app.sonosSettings.setVolumeCap(35);
+    const capArgs: number[] = [];
+    (app.sonosControl as unknown as {
+      setVolume: (d: SonosDevice, l: number, c?: number) => Promise<void>;
+    }).setVolume = async (_d, _l, c) => {
+      capArgs.push(c as number);
+    };
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/volume`, {
+      level: 80,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(capArgs).toEqual([35]);
+  });
+
   it("POST /volume still rejects out-of-protocol values (>100)", async () => {
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/volume`, {
       level: 150,
@@ -459,6 +477,19 @@ describe("Sonos play route", () => {
       payload: { trackId: "trk-1" },
     });
     expect(res.statusCode).toBe(401);
+  });
+
+  it("returns 503 (not 401) for unauthenticated requests when Sonos is disabled (#208)", async () => {
+    // The disabled-Sonos preHandler is registered before requireAuth so
+    // unauthenticated probes see the "not available" signal rather than
+    // an auth challenge. Pin the hook ordering with a test.
+    app.sonosSettings.setEnabled(false);
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sonos/devices`,
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toEqual({ error: "Sonos is disabled" });
   });
 
   describe("POST /next — gapless pre-load (#202)", () => {
