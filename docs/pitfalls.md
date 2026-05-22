@@ -9,6 +9,7 @@ Recurring traps that have caused bugs and follow-up PRs. Read before touching th
 | `unified_releases.id` collision when two non-MBID releases share a name in the same release group                                                      | #117      | Dedup keys must include enough discriminator (track count, year, format) to survive upstreams that omit MBIDs                       |
 | Same recording MBID appearing on distinct releases collapsed into one `unified_tracks` row                                                             | #118      | A recording MBID is not unique across releases — key tracks by (release_id, mbid) not mbid alone                                    |
 | Per-track artist collapsed into album artist during unification                                                                                        | #142      | Resolve track artist from `instance_tracks.artist_name`, never from the album row                                                   |
+| Letting `unified_release_groups.created_at` default to `datetime('now')` at merge time                                                                 | #186      | Source it from `MAX(instance_albums.created_at)` so the SPA's "Recently Added" sort reflects Navidrome's actual added time         |
 
 Every `unified_*` insert in `merge.ts` logs the offending row + prior `existingRow` + source IDs on PK conflict. Preserve that — it is the first thing you read when a collision regresses.
 

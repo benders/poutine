@@ -81,6 +81,9 @@ export interface SubsonicAlbum {
   genre?: string;
   shareId?: string;
   starred?: string;
+  /** OpenSubsonic `created` — ISO 8601 timestamp of when the album was
+   * first added to the source hub. Drives the "Recently Added" sort (#148). */
+  created?: string;
 }
 
 export interface SubsonicSong {
@@ -164,6 +167,7 @@ interface RawAlbum {
   song?: RawSong[];
   shareId?: string;
   starred?: string;
+  created?: string;
 }
 
 interface RawSong {
@@ -212,6 +216,7 @@ function parseAlbum(raw: RawAlbum): SubsonicAlbum {
     genre: raw.genre,
     shareId: raw.shareId,
     starred: raw.starred,
+    created: raw.created,
   };
 }
 

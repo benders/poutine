@@ -172,9 +172,23 @@ export function mergeLibraries(db: Database.Database): void {
       .all() as Array<Record<string, unknown>>;
 
     const insertReleaseGroup = db.prepare(`
-      INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, musicbrainz_id, year, genre, image_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, musicbrainz_id, year, genre, image_url, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
     `);
+
+    // Source created_at from the instance albums: use the latest add time
+    // across all sources contributing to the release group. This is the
+    // Navidrome (or peer) "added" timestamp, with sub-second precision —
+    // unlike `datetime('now')` at merge time, which collapses bulk imports
+    // to a single second and breaks "Recently Added" sort.
+    const groupCreatedAt = (group: Array<Record<string, unknown>>): string | null => {
+      let best: string | null = null;
+      for (const ia of group) {
+        const c = (ia.created_at as string | null) ?? null;
+        if (c && (!best || c > best)) best = c;
+      }
+      return best;
+    };
 
     // Group by release_group_mbid, else by (unified_artist_id + normalized album name)
     const rgByMbid = new Map<string, Array<Record<string, unknown>>>();
@@ -214,6 +228,13 @@ export function mergeLibraries(db: Database.Database): void {
         ? `${representative.instance_id as string}:${coverArtId}`
         : null;
 
+      // Combine the MBID group with any non-MBID albums sharing the same
+      // artist+name key, so created_at reflects every contributing source.
+      const normName = normalizeName(name);
+      const keyToCheck = `${unifiedArtistId}::${normName}`;
+      const absorbed = rgByKey.get(keyToCheck) ?? [];
+      const combined = absorbed.length ? [...group, ...absorbed] : group;
+
       try {
         insertReleaseGroup.run(
           id,
@@ -224,6 +245,7 @@ export function mergeLibraries(db: Database.Database): void {
           representative.year as number | null,
           representative.genre as string | null,
           encodedArt,
+          groupCreatedAt(combined),
         );
       } catch (err) {
         const existing = db
@@ -246,11 +268,8 @@ export function mergeLibraries(db: Database.Database): void {
       }
 
       // Also absorb non-MBID albums with same artist+name key
-      const normName = normalizeName(name);
-      const keyToCheck = `${unifiedArtistId}::${normName}`;
-      const normGroup = rgByKey.get(keyToCheck);
-      if (normGroup) {
-        for (const ia of normGroup) {
+      if (absorbed.length) {
+        for (const ia of absorbed) {
           instanceAlbumToReleaseGroup.set(ia.id as string, id);
           instanceAlbumToArtist.set(ia.id as string, instanceArtistToUnified.get(ia.artist_id as string) ?? unifiedArtistId);
         }
@@ -280,6 +299,7 @@ export function mergeLibraries(db: Database.Database): void {
           representative.year as number | null,
           representative.genre as string | null,
           encodedArt2,
+          groupCreatedAt(group),
         );
       } catch (err) {
         const existing = db

@@ -818,6 +818,46 @@ describe("Subsonic routes — endpoints", () => {
     expect(allAlbums.map((a) => a.name).sort()).toEqual(["Peer Only", "Share Album"]);
   });
 
+  it("getAlbumList2 type=newest orders by created_at DESC and exposes `created` (#148)", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("ua-rec", "Recent Artist", "recent artist");
+
+    // Insert with explicit created_at so the test is deterministic.
+    const ins = app.db.prepare(
+      "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, created_at) VALUES (?, ?, ?, ?, ?)",
+    );
+    ins.run("urg-old",   "Old Album",   "old album",   "ua-rec", "2024-01-01 00:00:00");
+    ins.run("urg-mid",   "Mid Album",   "mid album",   "ua-rec", "2024-06-01 00:00:00");
+    ins.run("urg-new",   "New Album",   "new album",   "ua-rec", "2025-01-01 00:00:00");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getAlbumList2?u=tester&p=secret&f=json&type=newest&size=10",
+    });
+    expect(res.statusCode).toBe(200);
+    const albums = res.json()["subsonic-response"].albumList2.album as Array<{
+      name: string;
+      created?: string;
+    }>;
+    // Only assert relative order of the three we seeded; other seed fixtures
+    // may add albums with their own created_at.
+    const seeded = albums.filter((a) =>
+      ["Old Album", "Mid Album", "New Album"].includes(a.name),
+    );
+    expect(seeded.map((a) => a.name)).toEqual([
+      "New Album",
+      "Mid Album",
+      "Old Album",
+    ]);
+    // OpenSubsonic `created` must be an ISO 8601 timestamp.
+    for (const a of seeded) {
+      expect(a.created).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    }
+  });
+
   it("search3 with unknown remote_id returns no results", async () => {
     await seedShareFixture(app);
     const res = await app.inject({
