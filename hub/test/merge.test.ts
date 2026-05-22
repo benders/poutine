@@ -51,15 +51,16 @@ describe("mergeLibraries", () => {
     remoteId: string,
     name: string,
     artistId: string,
-    opts: { mbid?: string; rgMbid?: string; trackCount?: number; year?: number } = {},
+    opts: { mbid?: string; rgMbid?: string; trackCount?: number; year?: number; createdAt?: string } = {},
   ) {
     const id = `${instanceId}:${remoteId}`;
     db.prepare(
-      `INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name, year, musicbrainz_id, release_group_mbid, track_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name, year, musicbrainz_id, release_group_mbid, track_count, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id, instanceId, remoteId, name, artistId, "Artist",
       opts.year ?? 2000, opts.mbid ?? null, opts.rgMbid ?? null, opts.trackCount ?? 10,
+      opts.createdAt ?? null,
     );
     return id;
   }
@@ -267,6 +268,38 @@ describe("mergeLibraries", () => {
 
     const artists = db.prepare("SELECT * FROM unified_artists").all();
     expect(artists).toHaveLength(2);
+  });
+
+  it("propagates instance_albums.created_at (latest across sources) to unified_release_groups", () => {
+    const artistMbid = "artist-mbid-1";
+    insertArtist(inst1, "a1", "Radiohead", artistMbid);
+    insertArtist(inst2, "a1", "Radiohead", artistMbid);
+
+    const earlier = "2026-01-01T00:00:00.000Z";
+    const later   = "2026-05-01T12:34:56.789Z";
+    const rgMbid = "rg-mbid-1";
+
+    const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { rgMbid, trackCount: 1, createdAt: earlier });
+    const album2 = insertAlbum(inst2, "al1", "OK Computer", `${inst2}:a1`, { rgMbid, trackCount: 1, createdAt: later });
+    insertTrack(inst1, "t1", album1, "Paranoid Android", { trackNumber: 1 });
+    insertTrack(inst2, "t1", album2, "Paranoid Android", { trackNumber: 1 });
+
+    mergeLibraries(db);
+
+    const rgs = db.prepare("SELECT created_at FROM unified_release_groups").all() as Array<{ created_at: string }>;
+    expect(rgs).toHaveLength(1);
+    expect(rgs[0].created_at).toBe(later);
+  });
+
+  it("falls back to current time when no instance_albums.created_at is set", () => {
+    insertArtist(inst1, "a1", "Radiohead", "artist-mbid-1");
+    const album = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { trackCount: 1 });
+    insertTrack(inst1, "t1", album, "Paranoid Android", { trackNumber: 1 });
+
+    mergeLibraries(db);
+
+    const rg = db.prepare("SELECT created_at FROM unified_release_groups").get() as { created_at: string };
+    expect(rg.created_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 
   it("should handle empty database without errors", () => {
