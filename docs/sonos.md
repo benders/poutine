@@ -52,8 +52,33 @@ RenderingControl. The control client hardcodes both.
 - `services/soap.ts` — shared SOAP envelope + XML helpers (used by both Sonos and DLNA).
 - `services/cast-tokens.ts` — HMAC-signed short-lived tokens for stream-only auth at `/rest/stream.view?castToken=…`. Secret persisted in `player.db.player_settings.cast_signing_key`, with a derive-from-Ed25519 fallback for pre-#215 instances. Token wire format `<sig>.<exp>.<base64url(username)>`; the username travels in the token so the stream handler can attribute activity and route federated peer fetches as the originating user. Also exports `buildStreamUrl()` — single source-of-truth helper used by both Sonos (`routes/sonos.ts`) and DLNA (`services/dlna-objects.ts`) cast URL builders.
 - **(#218: deleted `routes/cast.ts`.)** Cast-token auth is now an alternate mode of `requireSubsonicAuthBinary` for `/rest/stream(.view)` — see [authentication.md](authentication.md#cast-tokens-reststreamviewcasttoken).
-- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,next,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. The shared cast-URL + DIDL builder (`buildCast`) is used by both `/play` and `/next` so format selection, hi-res FLAC guard, and token mint stay identical across the current/next paths. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public. Play handler picks the cast format via `chooseSonosCastFormat(track_sources.format, device.supportedMimes)`: FLAC/MP3/AAC/ALAC/WAV pass through byte-for-byte when the device advertises the matching MIME; OGG/Opus/unknown formats and devices with no probed sink set fall back to `?format=mp3` + `audio/mpeg` DIDL. Byte content-type must match DIDL mime — mismatch sends Sonos straight to STOPPED. Hi-res bit-depth / sample-rate gating tracked separately (#199).
+- `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,next,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. The shared cast-URL + DIDL builder (`buildCast`) is used by both `/play` and `/next` so format selection and token mint stay identical across the current/next paths. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public. Play handler picks the cast format via `chooseSonosCastFormat(getSong.suffix, device.supportedMimes)`: FLAC/MP3/AAC/ALAC/WAV pass through byte-for-byte when the device advertises the matching MIME; OGG/Opus/unknown formats and devices with no probed sink set fall back to `?format=mp3` + `audio/mpeg` DIDL. Byte content-type must match DIDL mime — mismatch sends Sonos straight to STOPPED. Hi-res bit-depth / sample-rate gating tracked separately (#199) — see "Hi-res FLAC guard" below.
+- `services/hub-subsonic-caller.ts` — in-process Hub Subsonic HTTP client used by `routes/sonos.ts` (and `services/dlna-objects.ts`). Wraps `app.inject()` with the owner's u+p; future deploy-split swaps this for a real loopback `fetch()` without touching the callers. See [hub-internals.md](hub-internals.md).
 - `/api/capabilities` — frontend probe; returns `{ sonos: boolean, dlna: boolean }`.
+
+## Hi-res FLAC guard (regression pending #199, #220)
+
+Pre-#220 the cast planner called `SubsonicClient.getSong` directly
+against Navidrome to read `samplingRate` + `bitDepth` and forced an MP3
+transcode for 24-bit / 96 kHz FLAC sources on Sonos S2 zones. #220
+removed Player code's ability to reach Navidrome in-process; Hub
+Subsonic `getSong` does not surface those fields today, so the probe
+is dropped. Behavior change: 24-bit / 96 kHz FLAC sources now pass
+through verbatim on FLAC-capable Sonos zones — older S2 zones may
+silently STOPPED at the cast moment.
+
+Workarounds until #199 lands:
+
+- Force MP3 transcode via the source instance's Navidrome admin
+  (raise `ND_TRANSCODING_*` settings to make FLAC opt-in).
+- Manually verify hi-res tracks before adding to playlists destined
+  for casting.
+
+#199 plan: add `sampling_rate` + `bit_depth` columns to
+`track_sources`, populate them from `instance_tracks` during sync,
+project them into the Hub `/rest/getSong` response, then restore the
+guard inside `routes/sonos.ts#buildCast` using
+`HubSubsonicCaller` — no Player→Navidrome regression.
 
 ## Networking gotcha — host mode required
 

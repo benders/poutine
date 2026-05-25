@@ -66,6 +66,8 @@ Full protocol: [federation-api.md](federation-api.md).
 | SPA `/login` route firing authenticated API calls before login completes              | memory    | Login page must not call any endpoint requiring a session — causes 401-self-redirect loops                    |
 | Missing salt validation on `u+t+s`                                                    | #112      | Salt is required, must be ≥ 6 hex chars; reject otherwise                                                     |
 | Accepting `castToken=` on Subsonic endpoints other than `/rest/stream(.view)`         | #218      | Cast tokens grant *single-track stream access only*. `requireSubsonicAuthBinary` path-gates the token branch — never widen it (especially not to `/rest/getCoverArt` or any JSON endpoint) |
+| Player code importing `SubsonicClient` from `hub/src/adapters/subsonic.js`            | #220      | Player BE (sonos / dlna / cast routes + services) must reach Hub Subsonic via HTTP only — use the shared `HubSubsonicCaller` (`services/hub-subsonic-caller.ts`). In-process `SubsonicClient` is Hub→Navidrome only (admin.ts, subsonic.ts, auto-sync.ts) |
+| Player code touching `app.db` directly                                                | #220      | Same boundary. `routes/sonos.ts` reads track metadata + source format via Hub `/rest/getSong` over `app.inject`; never re-add `app.db.prepare(...)` to Player files. `app.playerDb` (the player-owned SQLite file) is allowed via the typed `PlayerSettings` wrapper |
 
 Full flow: [authentication.md](authentication.md).
 
@@ -84,6 +86,13 @@ Full flow: [authentication.md](authentication.md).
 | Using `ND_INITIALADMINPASSWORD` to seed the admin user                                              | memory    | No-op in Navidrome 0.52+. Use `ND_DEVAUTOCREATEADMINPASSWORD`                                                                     |
 | Forgetting to log a warning when local `instance_tracks` count drops materially between syncs       | #159      | Early signal that the music volume disappeared — keep the warning if you touch sync metrics                                       |
 | Wiring k8s / LB probes to `/api/health` HTTP status                                                  | #178      | Always returns 200 (so federation handshake survives a Navidrome blip). Key probes on `body.status === "ok"` instead              |
+
+## Sonos cast
+
+| Trap                                                                                                       | Caught by | Rule                                                                                             |
+|------------------------------------------------------------------------------------------------------------|-----------|--------------------------------------------------------------------------------------------------|
+| Re-adding a runtime Navidrome `getSong` call from Player to detect hi-res FLAC                             | #220      | Player BE cannot reach Navidrome — boundary set by #212. Restore the hi-res guard via Hub Subsonic (#199 adds `track_sources.sampling_rate` / `bit_depth` columns + projects them into `/rest/getSong`) |
+| Assuming the SPA can send a bare Navidrome `remote_id` to `/api/sonos/devices/:id/play`                    | #220      | SPA has always sent `t<uuid>` (the Subsonic id). The remote_id fallback was dead defensive code and is removed |
 
 ## Frontend
 
