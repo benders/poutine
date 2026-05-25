@@ -21,7 +21,8 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 
 | Variable                     | Required | Default                      | Description                                                     |
 |------------------------------|----------|------------------------------|-----------------------------------------------------------------|
-| `DATABASE_PATH`              | no       | `./data/poutine.db`          | SQLite file path                                                |
+| `DATABASE_PATH`              | no       | `./data/poutine.db`          | Hub SQLite file (`hub.db`) path                                 |
+| `PLAYER_DATABASE_PATH`       | no       | sibling of `DATABASE_PATH`   | Player SQLite file (`player.db`) path — see #215, #212          |
 | `PORT` / `HOST`              | no       | `3000` / `0.0.0.0`           | Hub bind                                                        |
 | `NAVIDROME_URL`              | no       | `http://navidrome:4533`      | Internal Navidrome URL                                          |
 | `NAVIDROME_USERNAME`         | prod     | —                            | Navidrome admin user                                            |
@@ -197,6 +198,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 ## SQLite notes
 
+- **Two SQLite files (issue #215, Phase 1 of #212).** `hub.db` (catalog, users, peers, activity, cache, `settings`) and `player.db` (Player-private state — DLNA UDN, cast HMAC key today; more to follow in #217). Both open at `buildApp` time. **No `ATTACH`, no cross-joins.** Hub code MUST NOT import `db/player-db.ts` or read `player_settings`; Player code MUST NOT touch `hub.db`. Schemas: `hub/src/db/schema.sql` and `hub/src/db/player-schema.sql`. Both are picked up by the existing `hub/src/db/*.sql` Dockerfile copy rule.
 - **`datetime('now')` has no timezone marker.** Output: `"2026-04-10 03:54:22"` (space separator, no `Z`). JavaScript `new Date()` parses this as local time, so users west of UTC see timestamps in the future — `formatTimeAgo` returns `"just now"` forever. **Always use `strftime('%Y-%m-%dT%H:%M:%SZ', col)`** in SELECTs that return timestamps to the frontend.
 - **`.sql` files are not copied by `tsc`.** The hub Dockerfile explicitly copies `hub/src/db/*.sql` → `hub/dist/db/` after `tsc`. Update the Dockerfile if new non-TS assets are added under `hub/src/`.
 - **Schema or merge-logic change → resync required.** Changes to unified-table storage only take effect after `syncAll()` + merge runs.
