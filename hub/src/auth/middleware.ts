@@ -4,6 +4,12 @@ import { verifyToken } from "./jwt.js";
 declare module "fastify" {
   interface FastifyRequest {
     userId: string;
+    /**
+     * #220: username of the authenticated user, populated alongside
+     * `userId`. Lets Player code (sonos cast token mint) avoid a second
+     * DB lookup or `users` JOIN.
+     */
+    username: string;
     isAdmin: boolean;
   }
 }
@@ -45,10 +51,12 @@ export async function requireAuth(
   try {
     const { userId } = await verifyToken(token, config);
 
-    // Look up user to get admin status
+    // Look up user to get admin status + username (#220).
     const user = db
-      .prepare("SELECT id, is_admin FROM users WHERE id = ?")
-      .get(userId) as { id: string; is_admin: number } | undefined;
+      .prepare("SELECT id, username, is_admin FROM users WHERE id = ?")
+      .get(userId) as
+      | { id: string; username: string; is_admin: number }
+      | undefined;
 
     if (!user) {
       reply.code(401).send({ error: "User not found" });
@@ -56,6 +64,7 @@ export async function requireAuth(
     }
 
     request.userId = user.id;
+    request.username = user.username;
     request.isAdmin = user.is_admin === 1;
   } catch {
     reply.code(401).send({ error: "Invalid or expired token" });
