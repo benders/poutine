@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { verifyPassword, getStoredPassword } from "./passwords.js";
-import { sendSubsonicError, sendBinaryError } from "../routes/subsonic-response.js";
+import { sendSubsonicError, sendBinaryError, decodeId } from "../routes/subsonic-response.js";
+import { verifyCastToken } from "../services/cast-tokens.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -112,12 +113,65 @@ export async function requireSubsonicAuth(
  * Same as requireSubsonicAuth but uses HTTP error status codes instead of
  * Subsonic envelopes. Use this for binary endpoints (getCoverArt, stream)
  * where a 200+JSON body would be interpreted as corrupt image/audio data.
+ *
+ * Cast-token auth (`castToken=<token>`, #218): an alternate path used by
+ * non-Subsonic clients on the LAN (Sonos devices, DLNA renderers). Player
+ * mints a token bound to a specific trackId + originating username; the
+ * token authenticates a single `id` on `/rest/stream(.view)` for the bound
+ * user. The token is NOT accepted on getCoverArt — art is shared from the
+ * DIDL/SOAP plane and does not need a per-track gate.
  */
 export async function requireSubsonicAuthBinary(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<void> {
   const query = request.query as Record<string, string>;
+
+  // Cast-token path: only valid on stream endpoints (id required, token
+  // signs over the resolved unified track id). Skip lookups in `users` —
+  // the cast token already authenticated the originating user when it was
+  // minted by /api/sonos/devices/:id/play.
+  const castToken = query.castToken;
+  if (castToken) {
+    const url = request.url || "";
+    const path = url.split("?")[0] || "";
+    if (!/\/stream(\.view)?$/.test(path)) {
+      sendBinaryError(reply, 401, "Cast token not accepted on this endpoint");
+      return;
+    }
+    let unifiedId: string;
+    try {
+      unifiedId = decodeId(query.id ?? "", "t");
+    } catch {
+      sendBinaryError(reply, 400, "Invalid track ID");
+      return;
+    }
+    const verified = verifyCastToken(request.server.castSecret, unifiedId, castToken);
+    if (!verified) {
+      sendBinaryError(reply, 401, "Invalid or expired cast token");
+      return;
+    }
+    // Resolve the carried username to a real user row so downstream
+    // attribution (stream-tracking, federated asUser) has a stable id.
+    const user = request.server.db
+      .prepare(
+        "SELECT id, username, is_admin FROM users WHERE username = ?",
+      )
+      .get(verified.username) as
+      | { id: string; username: string; is_admin: number }
+      | undefined;
+    if (!user) {
+      sendBinaryError(reply, 401, "Cast token user not found");
+      return;
+    }
+    request.subsonicUser = {
+      id: user.id,
+      username: user.username,
+      isAdmin: user.is_admin === 1,
+    };
+    return;
+  }
+
   const creds = readSubsonicCreds(query);
 
   if (!creds.hasAny) {

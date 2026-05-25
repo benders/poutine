@@ -14,7 +14,7 @@ Enabled state and volume cap live in the `settings` table (keys
 - `PUT /admin/settings/sonos` with `{ enabled?, volumeCap? }` (owner-only)
 - `/api/capabilities` reads the live flag — the SPA's device picker
   shows/hides on the next render.
-- `/api/sonos/*` and `/cast/stream/*` return `503` when disabled.
+- `/api/sonos/*` returns `503` when disabled. (Pre-#218 there was also a `/cast/stream/*` relay gated on the same flag; it's been deleted — devices now stream through Hub's Subsonic endpoint with a cast token.)
 - On disable: SSDP discovery stops AND the hub issues `Stop` to every
   known device — in-flight casts go silent immediately.
 - On enable: SSDP starts; devices appear after one SSDP round
@@ -38,8 +38,8 @@ on port `1400` per device.
 | Discovery   | SSDP M-SEARCH, ST `ZonePlayer:1`          | Find zones; fetch `/xml/device_description.xml`       |
 | Control     | UPnP SOAP                                  | `AVTransport:1` + `RenderingControl:1`                |
 | Metadata    | DIDL-Lite (`urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/`) | `CurrentURIMetaData` argument to `SetAVTransportURI` |
-| Streaming   | Plain HTTP GET (Range)                     | Sonos fetches `/cast/stream/:trackId` from the hub    |
-| Stream auth | HMAC token in query string                 | Sonos can't compute Subsonic auth; see below          |
+| Streaming   | Plain HTTP GET (Range)                     | Sonos fetches `${lan_url}/rest/stream.view?id=t<uuid>&castToken=…` from the hub Subsonic endpoint (#218) |
+| Stream auth | HMAC cast token in query string            | Sonos can't compute Subsonic `u+t+s`; cast token replaces it on the stream endpoint — see below          |
 
 Sonos only supports `InstanceID=0` and `Channel="Master"` on AVTransport /
 RenderingControl. The control client hardcodes both.
@@ -50,8 +50,8 @@ RenderingControl. The control client hardcodes both.
 - `services/sonos-control.ts` — SOAP client. AVTransport (`SetAVTransportURI`, `SetNextAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`, `GetPositionInfo`, `GetTransportInfo`) + RenderingControl (`SetVolume`, `GetVolume`) + ConnectionManager (`GetProtocolInfo`). Exports `chooseSonosCastFormat()` for the play route's format-vs-capability decision. `getState()` includes the current `TrackURI` so the poller can detect Sonos auto-advancing onto a pre-loaded next track (#202).
 - `services/didl.ts` — `buildDidlLiteTrack()` produces the inline single-item metadata Sonos expects in `CurrentURIMetaData`.
 - `services/soap.ts` — shared SOAP envelope + XML helpers (used by both Sonos and DLNA).
-- `services/cast-tokens.ts` — HMAC-signed short-lived tokens for unauthenticated stream URLs. Secret derived from the instance Ed25519 key via `deriveCastSecret`. Token wire format `<sig>.<exp>.<base64url(username)>`; the username travels in the token so `/cast/stream` can attribute the stream and route federated peer fetches under the originating user.
-- `routes/cast.ts` — `GET /cast/stream/:trackId?token=…`. Token-verified; reuses the local/peer source-selection + transcoding pipeline. Recovered username is used for stream-tracking and federated `asUser`.
+- `services/cast-tokens.ts` — HMAC-signed short-lived tokens for stream-only auth at `/rest/stream.view?castToken=…`. Secret persisted in `player.db.player_settings.cast_signing_key`, with a derive-from-Ed25519 fallback for pre-#215 instances. Token wire format `<sig>.<exp>.<base64url(username)>`; the username travels in the token so the stream handler can attribute activity and route federated peer fetches as the originating user. Also exports `buildStreamUrl()` — single source-of-truth helper used by both Sonos (`routes/sonos.ts`) and DLNA (`services/dlna-objects.ts`) cast URL builders.
+- **(#218: deleted `routes/cast.ts`.)** Cast-token auth is now an alternate mode of `requireSubsonicAuthBinary` for `/rest/stream(.view)` — see [authentication.md](authentication.md#cast-tokens-reststreamviewcasttoken).
 - `routes/sonos.ts` — `GET /api/sonos/devices`, `POST /api/sonos/devices/:id/{play,next,pause,resume,stop,seek,volume}`, `GET /api/sonos/devices/:id/state`. The shared cast-URL + DIDL builder (`buildCast`) is used by both `/play` and `/next` so format selection, hi-res FLAC guard, and token mint stay identical across the current/next paths. **JWT-authenticated via `requireAuth` preHandler** — Sonos control is operator-functional, not public. Play handler picks the cast format via `chooseSonosCastFormat(track_sources.format, device.supportedMimes)`: FLAC/MP3/AAC/ALAC/WAV pass through byte-for-byte when the device advertises the matching MIME; OGG/Opus/unknown formats and devices with no probed sink set fall back to `?format=mp3` + `audio/mpeg` DIDL. Byte content-type must match DIDL mime — mismatch sends Sonos straight to STOPPED. Hi-res bit-depth / sample-rate gating tracked separately (#199).
 - `/api/capabilities` — frontend probe; returns `{ sonos: boolean, dlna: boolean }`.
 
@@ -122,8 +122,9 @@ cast to that room starts clean.
 **Position handling depends on whether the stream is transcoded.** Pass-through
 streams (FLAC/MP3 pass-through, Range-capable) seek via SOAP `Seek REL_TIME`:
 Sonos translates time → byte offset from streaminfo and pulls a fresh
-`Range: bytes=<offset>-` GET, which the `/cast/stream` relay's `isRaw`
-path forwards to Navidrome. Transcoded MP3 has no Range, so SOAP Seek
+`Range: bytes=<offset>-` GET, which the Subsonic stream handler's
+`isRaw` path forwards to Navidrome (#218 — same source-selection +
+transcoding pipeline previously inside the `/cast/stream` relay). Transcoded MP3 has no Range, so SOAP Seek
 past the buffer drives the device to STOPPED and the SPA's poller
 misreads that as end-of-track and fires `next()` (#182). For transcoded
 casts only, `/api/sonos/devices/:id/play` instead embeds Subsonic
@@ -189,11 +190,12 @@ device list.
 | Surface              | Auth                                                                  |
 |----------------------|-----------------------------------------------------------------------|
 | `/api/sonos/*`       | JWT (`requireAuth` preHandler) — only logged-in users can control     |
-| `/cast/stream/:id`   | HMAC token, bound to `(trackId, username, exp)`, 1 h TTL              |
+| `/rest/stream.view?castToken=…` | HMAC cast token, bound to `(trackId, username, exp)`, 1 h TTL — see [authentication.md](authentication.md#cast-tokens-reststreamviewcasttoken) |
 
-The HMAC secret derives from the federation Ed25519 private key so no extra
-on-disk secret is needed. Trade-off: compromise of the federation key also
-compromises cast tokens.
+Cast-secret persisted in `player.db.player_settings.cast_signing_key` (#215);
+the pre-#215 derive-from-Ed25519 fallback is still used on first boot when
+that key is absent. Cast tokens grant *single-track stream access only* —
+they cannot be used against any other Subsonic endpoint.
 
 ## Testing
 
@@ -228,7 +230,7 @@ control-point library used for the DLNA tests (`node-upnp`) drives Sonos
 just as well. There are no integration tests committed for this because the
 Sonos casting *direction* (hub → device) is sufficiently covered by:
 
-- The HMAC token tests proving `/cast/stream` is reachable.
+- The HMAC token tests + `cast-token-stream.integration.test.ts` proving the cast-token handoff at `/rest/stream.view` actually streams bytes (#218).
 - A manual smoke test against a real zone.
 
 If you ever need to script a real-zone interaction (e.g. for an interactive

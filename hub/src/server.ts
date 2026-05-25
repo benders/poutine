@@ -32,7 +32,6 @@ import { SonosControl } from "./services/sonos-control.js";
 import { createSonosSettings } from "./services/sonos-settings.js";
 import { deriveCastSecret } from "./services/cast-tokens.js";
 import { sonosRoutes } from "./routes/sonos.js";
-import { castRoutes } from "./routes/cast.js";
 import { SubsonicClient } from "./adapters/subsonic.js";
 import { SsdpAdvertiser } from "./services/ssdp-advertiser.js";
 import { DlnaObjectService } from "./services/dlna-objects.js";
@@ -382,7 +381,8 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const castSecret = playerSettings.getCastSecret(() => deriveCastSecret(privDer));
   app.decorate("castSecret", castSecret);
   await app.register(sonosRoutes, { prefix: "/api/sonos" });
-  await app.register(castRoutes, { prefix: "/cast" });
+  // #218: /cast/stream was deleted. Sonos devices now fetch directly from
+  // /rest/stream.view with an embedded cast token (see cast-tokens.ts).
 
   if (sonosSettings.getEnabled() && !sonosSettings.getLanUrl()) {
     app.log.error(

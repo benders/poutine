@@ -65,6 +65,7 @@ Full protocol: [federation-api.md](federation-api.md).
 | `reset-password.sh` calling a hash helper                                             | #114      | Reset must go through the AES path, same as user creation                                                     |
 | SPA `/login` route firing authenticated API calls before login completes              | memory    | Login page must not call any endpoint requiring a session — causes 401-self-redirect loops                    |
 | Missing salt validation on `u+t+s`                                                    | #112      | Salt is required, must be ≥ 6 hex chars; reject otherwise                                                     |
+| Accepting `castToken=` on Subsonic endpoints other than `/rest/stream(.view)`         | #218      | Cast tokens grant *single-track stream access only*. `requireSubsonicAuthBinary` path-gates the token branch — never widen it (especially not to `/rest/getCoverArt` or any JSON endpoint) |
 
 Full flow: [authentication.md](authentication.md).
 

@@ -105,7 +105,15 @@ describe("parseObjectId", () => {
 describe("DlnaObjectService.browse", () => {
   let db: Database.Database;
   let svc: DlnaObjectService;
-  const opts = { startIndex: 0, requestedCount: 0, baseUrl: "http://lan:3000" };
+  // #218: DIDL `res@uri` is now a self-contained cast-token URL.
+  // Tests below assert the prefix only — the cast token body changes per run.
+  const opts = {
+    startIndex: 0,
+    requestedCount: 0,
+    baseUrl: "http://lan:3000",
+    castSecret: Buffer.from("a".repeat(32)),
+    username: "tester",
+  };
 
   beforeEach(() => {
     db = seedDb();
@@ -152,8 +160,14 @@ describe("DlnaObjectService.browse", () => {
     const idx2 = out.result.indexOf("Track Two");
     expect(idx1).toBeGreaterThan(-1);
     expect(idx2).toBeGreaterThan(idx1);
-    expect(out.result).toContain("http://lan:3000/dlna/stream/t1");
-    expect(out.result).toContain("http://lan:3000/dlna/stream/t2");
+    // #218: stream URL now points at Hub's Subsonic /rest/stream.view
+    // with id=t<unifiedId>, an embedded castToken, and dlna=1 marker.
+    expect(out.result).toContain("http://lan:3000/rest/stream.view?id=tt1");
+    expect(out.result).toContain("http://lan:3000/rest/stream.view?id=tt2");
+    // `&` is XML-escaped to `&amp;` in DIDL — match raw token names.
+    expect(out.result).toContain("castToken=");
+    expect(out.result).toContain("dlna=1");
+    expect(out.result).toContain("&amp;");
     expect(out.result).toContain(
       'protocolInfo="http-get:*:audio/mpeg:DLNA.ORG_OP=01',
     );

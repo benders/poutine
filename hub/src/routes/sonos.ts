@@ -8,7 +8,7 @@ import {
 } from "../services/sonos-control.js";
 import type { SonosDiscoveryService } from "../services/sonos-discovery.js";
 import type { SonosSettings } from "../services/sonos-settings.js";
-import { signCastToken } from "../services/cast-tokens.js";
+import { buildStreamUrl } from "../services/cast-tokens.js";
 import { requireAuth } from "../auth/middleware.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { getPreferredSource } from "../db/preferred-source.js";
@@ -226,12 +226,6 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
-    const token = signCastToken(app.castSecret, {
-      trackId: unifiedTrackId,
-      username: trackRow.username,
-      ttlSec: opts.ttlSec,
-    });
-    const base = lanUrl;
     const startAt =
       typeof opts.position === "number" && opts.position > 0
         ? Math.floor(opts.position)
@@ -240,11 +234,19 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     // pass-through it is silently ignored and the file is served from
     // byte 0 (#204). For pass-through, the /play handler issues a SOAP
     // Seek after the URI loads instead.
-    const streamUri =
-      `${base}/cast/stream/${encodeURIComponent(unifiedTrackId)}` +
-      `?token=${encodeURIComponent(token)}` +
-      (transcode ? `&format=mp3` : "") +
-      (transcode && startAt > 0 ? `&timeOffset=${startAt}` : "");
+    //
+    // #218: Sonos devices fetch bytes directly from Hub's Subsonic
+    // `/rest/stream.view` with the cast token as auth. No Player relay.
+    const streamUri = buildStreamUrl({
+      lanUrl,
+      castSecret: app.castSecret,
+      unifiedTrackId,
+      username: trackRow.username,
+      ttlSec: opts.ttlSec,
+      ...(transcode ? { format: "mp3" } : {}),
+      ...(transcode && startAt > 0 ? { timeOffsetSec: startAt } : {}),
+      client: "poutine-sonos",
+    });
 
     const meta: TrackMetadata = {
       trackId: unifiedTrackId,

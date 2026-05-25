@@ -40,6 +40,8 @@ import {
 const SUB_USER = "spike";
 const SUB_PASS = "spikepw";
 const BASE_URL = "http://lan:3000";
+// #218: BrowseOptions requires a cast-token signer + attribution user.
+const SECRET = Buffer.from("a".repeat(32));
 
 function seedFixtures(app: FastifyInstance): void {
   const db = app.db;
@@ -210,7 +212,7 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   // ── Correctness ────────────────────────────────────────────────────────
 
   it("Browse(root, BrowseDirectChildren) matches the DB-backed shape", async () => {
-    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     const dbOut = dbSvc.browse(ROOT_ID, "BrowseDirectChildren", opts);
     const subOut = await subSvc.browse(ROOT_ID, "BrowseDirectChildren", opts);
     expect(subOut.numberReturned).toBe(dbOut.numberReturned);
@@ -224,7 +226,7 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   });
 
   it("Browse(artists, BrowseDirectChildren) returns the same artist set ordered by name", async () => {
-    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     const dbOut = dbSvc.browse(ARTISTS_ID, "BrowseDirectChildren", opts);
     const subOut = await subSvc.browse(ARTISTS_ID, "BrowseDirectChildren", opts);
     expect(subOut.numberReturned).toBe(dbOut.numberReturned);
@@ -244,7 +246,7 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   });
 
   it("Browse(artist/a1) returns the same release groups in the same order", async () => {
-    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     const id = artistObjectId("a1");
     const dbOut = dbSvc.browse(id, "BrowseDirectChildren", opts);
     const subOut = await subSvc.browse(id, "BrowseDirectChildren", opts);
@@ -265,15 +267,16 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   });
 
   it("Browse(album/rg1) returns the same tracks in disc/track order with correct MIME", async () => {
-    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     const id = albumObjectId("rg1");
     const dbOut = dbSvc.browse(id, "BrowseDirectChildren", opts);
     const subOut = await subSvc.browse(id, "BrowseDirectChildren", opts);
     expect(subOut.numberReturned).toBe(dbOut.numberReturned);
     expect(subOut.result).toContain("Track One");
     expect(subOut.result).toContain("Track Two");
-    expect(subOut.result).toContain(`${BASE_URL}/dlna/stream/t1`);
-    expect(subOut.result).toContain(`${BASE_URL}/dlna/stream/t2`);
+    // #218: streams point at /rest/stream.view with embedded cast token.
+    expect(subOut.result).toContain(`${BASE_URL}/rest/stream.view?id=tt1`);
+    expect(subOut.result).toContain(`${BASE_URL}/rest/stream.view?id=tt2`);
     // FLAC source → audio/flac MIME.
     expect(subOut.result).toContain("audio/flac");
     expect(subOut.result).toContain("audio/mpeg");
@@ -288,7 +291,7 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   });
 
   it("BrowseMetadata(artist/a1) returns one container with album count", async () => {
-    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     const id = artistObjectId("a1");
     const subOut = await subSvc.browse(id, "BrowseMetadata", opts);
     expect(subOut.numberReturned).toBe(1);
@@ -297,7 +300,7 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   });
 
   it("BrowseMetadata(album/rg1) returns one container with song count", async () => {
-    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     const id = albumObjectId("rg1");
     const subOut = await subSvc.browse(id, "BrowseMetadata", opts);
     expect(subOut.numberReturned).toBe(1);
@@ -306,12 +309,12 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   });
 
   it("Search by title surfaces a song container", async () => {
-    const opts = { startIndex: 0, requestedCount: 10, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 10, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     const stats: CallStats = { roundTrips: 0, subsonicMs: 0 };
     const out = await subSvc.search("Track One", { ...opts, stats });
     expect(out.numberReturned).toBeGreaterThan(0);
     expect(out.result).toContain("Track One");
-    expect(out.result).toContain(`${BASE_URL}/dlna/stream/t1`);
+    expect(out.result).toContain(`${BASE_URL}/rest/stream.view?id=tt1`);
     expect(stats.roundTrips).toBe(1);
     measurements.push({
       op: "Search title",
@@ -322,7 +325,7 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   });
 
   it("Search by artist + album surfaces containers", async () => {
-    const opts = { startIndex: 0, requestedCount: 10, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 10, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     const stats: CallStats = { roundTrips: 0, subsonicMs: 0 };
     const out = await subSvc.search("Artist One", { ...opts, stats });
     expect(out.result).toContain("Artist One");
@@ -332,7 +335,7 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   // ── Round-trip + N+1 audit ────────────────────────────────────────────
 
   it("single-call browse + metadata operations make exactly one Subsonic call", async () => {
-    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     type Op = [string, string, "BrowseDirectChildren" | "BrowseMetadata"];
     const ops: Op[] = [
       ["Browse artists", ARTISTS_ID, "BrowseDirectChildren"],
@@ -350,7 +353,7 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   });
 
   it("Browse(tracks) is N+1 — flagged as a known gap", async () => {
-    const opts = { startIndex: 0, requestedCount: 5, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 5, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     const stats: CallStats = { roundTrips: 0, subsonicMs: 0 };
     const out = await subSvc.browse("0/music/tracks", "BrowseDirectChildren", {
       ...opts,
@@ -371,7 +374,7 @@ describe("DLNA Subsonic-backed parallel implementation (spike #213)", () => {
   // ── Latency budget ────────────────────────────────────────────────────
 
   it("single-call browses stay within 5x of the DB path on loopback", async () => {
-    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL };
+    const opts = { startIndex: 0, requestedCount: 0, baseUrl: BASE_URL, castSecret: SECRET, username: "tester" };
     for (const [label, dbCall, subCall] of [
       [
         "artists",
