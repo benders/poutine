@@ -2,6 +2,13 @@ export interface Config {
   port: number;
   host: string;
   databasePath: string;
+  /**
+   * Player database path (`player.db`). Optional override; defaults to a
+   * sibling of `databasePath` (see `db/player-db.ts#defaultPlayerDbPath`).
+   * Introduced in #215 (Phase 1 of #212) — Player BE owns this file
+   * exclusively.
+   */
+  playerDatabasePath: string | undefined;
   jwtSecret: string;
   jwtAccessExpiresIn: string;
   jwtRefreshExpiresIn: string;
@@ -79,6 +86,7 @@ export function loadConfig(): Config {
     port: parseInt(process.env.PORT || "3000", 10),
     host: process.env.HOST || "0.0.0.0",
     databasePath: process.env.DATABASE_PATH || "./data/poutine.db",
+    playerDatabasePath: process.env.PLAYER_DATABASE_PATH || undefined,
     jwtSecret: "",
     jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
     jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d",

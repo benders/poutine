@@ -15,7 +15,8 @@ One Docker Compose stack per participant. Two services: hub (Fastify + SQLite, s
 │    ├─ /federation/*   Federation API     │
 │    ├─ /admin/*        Admin API          │
 │    ├─ /external-art/* fanart.tv/Last.fm  │
-│    └─ SQLite (data + art cache)          │
+│    ├─ SQLite hub.db    (data + art cache)│
+│    └─ SQLite player.db (DLNA UUID, cast) │
 ├──────────────────────────────────────────┤
 │  Internal Docker network (not exposed)   │
 │    └─ Navidrome                          │
@@ -78,6 +79,15 @@ instance_tracks   ─┘              unified_release_groups
 `track_sources` is the streaming branch point. `selectBestSource()` ranks by format → bitrate → local tie-break. Merge rules: [hub-internals.md#federation](hub-internals.md#federation).
 
 `unified_*_sources` join tables back the "which peers own this" UI and the Subsonic MusicFolders mapping (one folder per peer).
+
+**Dual-DB split (issue #212, Phase 1 in #215).** Two SQLite files open side-by-side, no `ATTACH`, no cross-joins:
+
+| File         | Owner   | Path (default)            | Holds                                                                                                      |
+|--------------|---------|---------------------------|------------------------------------------------------------------------------------------------------------|
+| `hub.db`     | Hub BE  | `DATABASE_PATH`           | Users, peers, catalog (`instance_*`/`unified_*`), `settings` (incl. `sonos_*`, `lan_url`), activity, cache |
+| `player.db`  | Player  | sibling of `hub.db`       | `player_settings` (key/value): DLNA UDN + cast token HMAC key today; more in Phase 3 (#217)                |
+
+Both handles are opened at entry-point boot (`buildApp` in `hub/src/server.ts`) and capability-injected into the owning code paths. Hub code holds zero references to `player.db`; Player code holds zero references to `hub.db`. Override `player.db` location via `PLAYER_DATABASE_PATH` env (default: `dirname(DATABASE_PATH)/player.db`).
 
 | Table                                  | Purpose                                                         |
 |----------------------------------------|------------------------------------------------------------------|
