@@ -5,6 +5,11 @@ import fastifyStatic from "@fastify/static";
 import { loadConfig } from "./config.js";
 import { APP_VERSION, FEDERATION_API_VERSION } from "./version.js";
 import { createDatabase } from "./db/client.js";
+import { createPlayerDatabase, defaultPlayerDbPath } from "./db/player-db.js";
+import {
+  createPlayerSettings,
+  type PlayerSettings,
+} from "./services/player-settings.js";
 import { adminRoutes } from "./routes/admin.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
 import { proxyRoutes } from "./routes/proxy.js";
@@ -44,6 +49,14 @@ declare module "fastify" {
   interface FastifyInstance {
     config: Config;
     db: Database.Database;
+    /**
+     * Player-owned SQLite database (`player.db`). Hub code MUST NOT read or
+     * write this — it is exposed only so Player BE modules (routes/dlna,
+     * routes/cast, services/player-settings) can be wired via capability
+     * injection. See issue #215 and `docs/system-architecture.md`.
+     */
+    playerDb: Database.Database;
+    playerSettings: PlayerSettings;
     artCache: ArtCache;
   peerRegistry: PeerRegistry;
   privateKey: KeyObject;
@@ -141,6 +154,23 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   }
   app.decorate("config", config);
   app.decorate("db", db);
+
+  // Player BE owns a separate SQLite file (`player.db`). Opened here so the
+  // entry point holds the capability and hands each owner (Hub vs Player)
+  // only the handle it needs. No ATTACH, no cross-joins. See issue #215.
+  const playerDbPath =
+    config.playerDatabasePath || defaultPlayerDbPath(config.databasePath);
+  const playerDb = createPlayerDatabase(playerDbPath);
+  const playerSettings = createPlayerSettings(playerDb);
+  app.decorate("playerDb", playerDb);
+  app.decorate("playerSettings", playerSettings);
+  app.addHook("onClose", async () => {
+    try {
+      playerDb.close();
+    } catch {
+      // already closed — fine
+    }
+  });
 
   // Art cache — store cached images alongside the database
   const { dirname, join } = await import("node:path");
@@ -326,9 +356,15 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   app.decorate("sonosSettings", sonosSettings);
   app.decorate("sonosDiscovery", sonosDiscovery);
   app.decorate("sonosControl", sonosControl);
-  // HMAC secret for cast tokens, derived from the federation key.
+  // HMAC secret for cast tokens. Phase 1 of #212 persists this in player.db
+  // (#215) so it survives federation-key rotations. The fallback derives
+  // the previous value (HMAC over the Ed25519 private key) so existing
+  // deployments keep the same secret across this upgrade — first boot
+  // under the new code path migrates by writing the derived value into
+  // player.db.
   const privDer = privateKey.export({ format: "der", type: "pkcs8" });
-  app.decorate("castSecret", deriveCastSecret(privDer));
+  const castSecret = playerSettings.getCastSecret(() => deriveCastSecret(privDer));
+  app.decorate("castSecret", castSecret);
   await app.register(sonosRoutes, { prefix: "/api/sonos" });
   await app.register(castRoutes, { prefix: "/cast" });
 
@@ -418,9 +454,14 @@ export async function buildApp(configOverrides?: Partial<Config>) {
         "DLNA_ENABLED=true but the LAN URL setting is empty — clients cannot fetch the device description or streams. Set it from Admin → Sonos.",
       );
     }
-    // Stable per-instance UUID v5-ish — deterministic across restarts so
-    // WMP doesn't re-add the server every boot.
-    const uuid = uuidFromInstanceId(config.poutineInstanceId || "poutine");
+    // Stable per-instance UUID for the DLNA UDN. Phase 1 of #212 persists
+    // this in player.db so it survives across restarts AND across changes
+    // to POUTINE_INSTANCE_ID (#215). The fallback preserves the historical
+    // derivation (SHA1 of poutine/dlna/<instance-id>), so existing
+    // deployments migrate transparently on first boot under the new code.
+    const uuid = playerSettings.getDlnaUuid(() =>
+      uuidFromInstanceId(config.poutineInstanceId || "poutine"),
+    );
     app.decorate("dlnaUuid", uuid);
     app.decorate("dlnaObjects", new DlnaObjectService(db));
 
