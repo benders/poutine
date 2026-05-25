@@ -104,10 +104,18 @@ Full flow: [authentication.md](authentication.md).
 | Calling `next()` on Sonos `PLAYING → STOPPED` as the EOT signal     | #202      | Gapless pre-load means the device auto-advances; use `TrackURI` change + cached `pendingNextRef` index. STOPPED-after-PLAYING is only the end-of-queue fallback. |
 | Calling `peekNext()` twice with shuffle on (returns different songs)| #202      | Cache the first result; reuse for both the `/next` POST and the post-advance `jumpTo`         |
 
+## Hub/Player boundary
+
+| Trap                                                                                            | Caught by | Rule                                                                                          |
+|-------------------------------------------------------------------------------------------------|-----------|-----------------------------------------------------------------------------------------------|
+| Player-side route/service grabbing `better-sqlite3`, `app.db`, the in-process `SubsonicClient`, or any `db/preferred-source*` / `db/client*` module | #213–#220 audit; #221 lint | Player code accesses Hub state only through `services/hub-subsonic-caller.ts` (HTTP-shaped `app.inject()` against `/rest/*`). Take a Database handle via capability injection for `player.db`; type-only `import type Database from "better-sqlite3"` is allowed. |
+| Adding a new Player route or service without extending the boundary lint glob                   | #221      | `playerFiles` lives in `hub/eslint.config.js`. Add the new file there. Negative tests live in `hub/test/boundary-lint.test.ts`. |
+| Cross-importing between `features/hub-admin/`, `features/player-admin/`, and `features/player/` | #221      | `frontend/eslint.config.js` blocks it. Lift shared helpers into `features/shared/` instead.  |
+
 ## Process
 
 | Trap                                                                | Caught by | Rule                                                                                          |
 |---------------------------------------------------------------------|-----------|-----------------------------------------------------------------------------------------------|
-| Broken tests landed on green CI                                     | #116      | CI runs `pnpm verify` (typecheck + test) on every PR                                          |
+| Broken tests landed on green CI                                     | #116      | CI runs `pnpm verify` (typecheck + lint:boundary + test) on every PR                          |
 | Stacked PRs                                                         | CLAUDE.md | Follow-ups go on the same feature branch — never branch off a draft PR                        |
 | Working without a GitHub issue                                      | AGENTS.md | No issue, no work. Reference the issue in the commit and close on merge                       |
