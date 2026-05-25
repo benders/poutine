@@ -488,6 +488,16 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     dlna: config.dlnaEnabled,
   }));
 
+  // Player health probe (issue #216). The SPA hits this to decide whether
+  // to render the /admin/player route. Today the Player code runs in-process
+  // with the Hub so this is always 200; once Phase 5 (#220) lifts Player
+  // into a separate plugin/process, an absent or 404 response will turn the
+  // Player admin destination into a "not deployed on this host" placeholder.
+  app.get("/player/health", async () => ({
+    status: "ok",
+    appVersion: APP_VERSION,
+  }));
+
   // Health check (issue #178). Always HTTP 200 so the federation handshake
   // can read peer versions even when Navidrome is briefly down; consumers
   // key on `body.status`. See docs/hub-internals.md route table.

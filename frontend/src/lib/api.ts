@@ -433,6 +433,33 @@ export function getCapabilities() {
   return apiFetch<Capabilities>(`/api/capabilities`);
 }
 
+// ── Player health probe (issue #216) ────────────────────────────────────────
+//
+// Drives the SPA's /admin/player route gate. Today the Player code runs in
+// the same process as the Hub, so this always returns 200. Once Phase 5
+// (#220) lifts Player into its own plugin/deploy, a 404 here means the
+// route renders a "Player not deployed on this host" placeholder instead.
+//
+// Unlike `/api/health` this is a no-auth probe (matches the Hub-side
+// implementation in `hub/src/server.ts`); we wrap it in `fetch` directly
+// to avoid the JWT refresh dance on a route the user may not be logged
+// in to use yet.
+
+export interface PlayerHealth {
+  status: "ok";
+  appVersion: string;
+}
+
+export async function getPlayerHealth(): Promise<PlayerHealth | null> {
+  try {
+    const res = await fetch("/player/health");
+    if (!res.ok) return null;
+    return (await res.json()) as PlayerHealth;
+  } catch {
+    return null;
+  }
+}
+
 export interface SonosDevice {
   id: string;
   room: string;
