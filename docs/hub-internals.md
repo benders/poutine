@@ -242,8 +242,9 @@ docker network connect --alias hub-a poutine-local-cluster cd-rips-hub-1
 Optional sink for the player. Gated by the `sonos_enabled` setting (admin
 toggle, #184). SSDP discovery
 of `ZonePlayer:1` on UDP 1900; SOAP control (AVTransport + RenderingControl)
-on each device's `:1400`. Sonos fetches `/cast/stream/:trackId` via short-lived
-HMAC tokens — no Subsonic credential leak. Full reference: [sonos.md](sonos.md).
+on each device's `:1400`. Sonos fetches `${lan_url}/rest/stream.view?id=…&castToken=…`
+directly from the Hub Subsonic endpoint (#218) — short-lived HMAC token replaces
+Subsonic credentials. Full reference: [sonos.md](sonos.md).
 
 ## DLNA MediaServer (issue #175)
 

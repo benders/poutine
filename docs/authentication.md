@@ -8,7 +8,7 @@ Poutine has three authentication mechanisms, each scoped to a different API surf
 |-------------------|-----------------|---------------------------------------------------------------------------------------|
 | Admin             | `/admin/*`      | JWT (cookie + `Authorization: Bearer` header)                                         |
 | Subsonic (JSON)   | `/rest/*`       | Subsonic `u+p` (plaintext / `enc:<hex>`) **or** `u+t+s` (MD5 token+salt)              |
-| Subsonic (binary) | `/rest/stream`, `/rest/getCoverArt` | Same as Subsonic JSON, but errors use HTTP status codes, not Subsonic envelopes |
+| Subsonic (binary) | `/rest/stream`, `/rest/getCoverArt` | Same as Subsonic JSON, but errors use HTTP status codes, not Subsonic envelopes. `/rest/stream(.view)` also accepts a `castToken=` query param (#218) as an alternate auth for non-Subsonic clients (Sonos devices, DLNA renderers) — see "Cast tokens" below |
 | Proxy             | `/proxy/*`      | Unified: Ed25519 (peers) → JWT (SPA) → Subsonic `u+p` / `u+t+s`, tried in order     |
 | Federation        | `/federation/*` | Ed25519-signed HTTP (see [federation-api.md](federation-api.md))                      |
 | Health            | `/api/health`   | None                                                                                  |
@@ -102,6 +102,19 @@ Setting a different `POUTINE_OWNER_PASSWORD` in env never overwrites a non-empty
 3. **Subsonic `u+p` or `u+t+s`** — same logic as `/rest/*`. `request.proxyAuth.kind = "subsonic"`.
 
 Returns `401` if all three fail. The forwarded request always uses fresh Navidrome `u+t+s` credentials — the incoming auth is consumed at the proxy tier and never forwarded.
+
+## Cast tokens (`/rest/stream.view?castToken=…`)
+
+Short-lived HMAC tokens for non-Subsonic clients that can't compute `u+t+s` — Sonos devices on the LAN, DLNA renderers. Introduced #108 (`/cast/stream/:trackId`), promoted #218 to a first-class auth mode on the Subsonic stream endpoint itself; the old relay routes (`/cast/stream`, `/dlna/stream`) are deleted.
+
+- **Secret:** HMAC-SHA-256 key persisted in `player.db.player_settings.cast_signing_key`; first boot under #215 derives from the Ed25519 private key to preserve continuity. Decorated on the Fastify app as `app.castSecret`.
+- **Format:** `<base64url(hmac)>.<exp>.<base64url(username)>`. Signed message is `trackId|exp|username`. Default TTL 1 h.
+- **Binding:** token is valid only for the *exact* trackId it was issued against. The Subsonic stream handler decodes the `id` query param (strip `t` prefix), then `verifyCastToken` compares.
+- **Endpoint scope:** the verifier in `requireSubsonicAuthBinary` accepts `castToken=` ONLY on URLs ending in `/stream` or `/stream.view`. `/rest/getCoverArt` and every Subsonic JSON route still require `u+p` or `u+t+s` — no auth surface widening from #218.
+- **Attribution:** the carried username travels into `request.subsonicUser` after a `users` table lookup. Stream-tracking activity is tagged `kind="cast"` (Sonos) or `kind="dlna"` (DLNA — detected via the `dlna=1` URL flag).
+- **Mint sites:** `routes/sonos.ts` (`/api/sonos/devices/:id/play`, `/next`) and `services/dlna-objects.ts` (DIDL `res@uri` in `Browse` responses). Both go through `buildStreamUrl()` in `services/cast-tokens.ts` — single helper, single token shape.
+
+A cast token compromise is bounded — it grants single-track stream access for at most the TTL window, against the originating user's source-selection (no library traversal, no other Subsonic operations).
 
 ## Federation auth
 
