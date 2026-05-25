@@ -342,7 +342,27 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(cookie);
 
   // Routes
+  //
+  // Admin API namespaces (#220, Phase 6 of #212). The same plugin is
+  // mounted at three prefixes:
+  //   /admin/*               — historical path; kept for backward
+  //                            compatibility (auth cookies are bound to
+  //                            `/admin/refresh`, so this also keeps
+  //                            existing browser sessions working across
+  //                            the upgrade).
+  //   /api/admin/hub/*       — Hub-owned admin (users, peers, sync, cache,
+  //                            activity, art-cache settings). What the
+  //                            Hub-admin SPA section calls.
+  //   /api/admin/player/*    — Player-owned admin (Sonos / DLNA / LAN URL
+  //                            settings). What the Player-admin SPA
+  //                            section calls.
+  //
+  // The route handlers are identical at all three mounts; partition
+  // enforcement (per-endpoint allowlist on which namespace serves which
+  // path) lands with the ESLint `no-restricted-paths` rule in #221.
   await app.register(adminRoutes, { prefix: "/admin" });
+  await app.register(adminRoutes, { prefix: "/api/admin/hub" });
+  await app.register(adminRoutes, { prefix: "/api/admin/player" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
   await app.register(federationRoutes, { prefix: "/federation" });
 
