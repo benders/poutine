@@ -479,7 +479,36 @@ export async function buildApp(configOverrides?: Partial<Config>) {
       uuidFromInstanceId(config.poutineInstanceId || "poutine"),
     );
     app.decorate("dlnaUuid", uuid);
-    app.decorate("dlnaObjects", new DlnaObjectService(db));
+
+    // #219: DLNA ContentDirectory talks to the Hub Subsonic API over
+    // in-process loopback (`app.inject`) — no direct DB access from the
+    // DLNA service. Auth is the owner's u+p; the Subsonic `f=json` path is
+    // the only one DLNA browses, and the owner is the only user guaranteed
+    // to exist at boot. A future split-deploy swaps the caller for a real
+    // loopback fetch without touching the service itself.
+    const subsonicCaller = {
+      async call(endpoint: string, params: Record<string, string>) {
+        const qs = new URLSearchParams({
+          u: config.poutineOwnerUsername || "",
+          p: config.poutineOwnerPassword || "",
+          f: "json",
+          v: "1.16.1",
+          c: "poutine-dlna",
+          ...params,
+        });
+        const res = await app.inject({
+          method: "GET",
+          url: `${endpoint}?${qs.toString()}`,
+        });
+        if (res.statusCode !== 200) {
+          throw new Error(`${endpoint} → ${res.statusCode}`);
+        }
+        return res.json() as {
+          "subsonic-response": Record<string, unknown> & { status: "ok" | "failed" };
+        };
+      },
+    };
+    app.decorate("dlnaObjects", new DlnaObjectService(subsonicCaller));
 
     await app.register(dlnaRoutes, { prefix: "/dlna" });
 

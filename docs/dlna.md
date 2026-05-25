@@ -32,7 +32,7 @@ Specs to keep open while changing this code:
 | Path                                 | Role                                                                                                         |
 |--------------------------------------|--------------------------------------------------------------------------------------------------------------|
 | `services/ssdp-advertiser.ts`        | UDP `239.255.255.250:1900`. Periodic NOTIFY `ssdp:alive`, `ssdp:byebye` on shutdown, M-SEARCH responder.     |
-| `services/dlna-objects.ts`           | Object-ID encoder/decoder + `Browse` implementation over `unified_*` tables.                                 |
+| `services/dlna-objects.ts`           | Object-ID encoder/decoder + `Browse`/`Search` implementation. Reads via Subsonic HTTP only (no DB access); the caller is an `app.inject()`-backed `SubsonicCaller` wired in `server.ts` (#219). |
 | `services/didl.ts`                   | Shared with Sonos. `wrapDidl`, `buildContainer`, `buildAudioItem`, `buildDidlLiteTrack`.                     |
 | `services/soap.ts`                   | Shared with Sonos. Envelope/response builders, `parseSoapAction`, `pickXmlTag`, duration helpers.            |
 | `routes/dlna.ts`                     | `device.xml`, SCPDs, ContentDirectory + ConnectionManager SOAP. (#218 — `/dlna/stream/:trackId` deleted; DIDL `res@uri` points at `/rest/stream.view` with an embedded cast token.) |
@@ -56,13 +56,54 @@ can cache them across hub restarts.
 └─ 0/music
    ├─ 0/music/artists       → 0/music/artist/<unified_artist_id>
    │                          └─ release groups for that artist
-   ├─ 0/music/albums        → 0/music/album/<unified_release_group_id>
-   │                          └─ tracks across all releases in the group
-   └─ 0/music/tracks        → all tracks
+   └─ 0/music/albums        → 0/music/album/<unified_release_group_id>
+                              └─ tracks across all releases in the group
 ```
 
 Release-level (edition) browsing is not exposed — `unified_release_groups`
 is the natural "album" object for DLNA clients.
+
+### "All Tracks" container — dropped (#219)
+
+`0/music/tracks` (a global flat track enumeration) used to live alongside
+Artists and Albums. It was removed in #219 when DLNA was rewritten on top
+of Subsonic HTTP: there is no `getTracks` endpoint in Subsonic, and the
+only synthesis path is `getAlbumList2 + getAlbum` per album — an
+unavoidable N+1 fan-out that's expensive at the project's 50k-tracks-per-hub
+scale envelope. UPnP browsers (WMP, Kodi, VLC, BubbleUPnP) all default to
+entering Artists or Albums anyway, so the loss is cosmetic. A future
+OpenSubsonic `getSongs` extension (#214 survey) would let us add it back
+cheaply if a real client need surfaces.
+
+### Source — Subsonic HTTP, no DB (#219)
+
+The service is constructed with a `SubsonicCaller` (a thin
+`(endpoint, params) → JSON` interface). Production wires it to an
+`app.inject()`-backed call against the hub's own `/rest/*` endpoints —
+zero TCP, zero DB access from `dlna-objects.ts`. The owner's u+p is used
+for the loopback browse calls; DIDL output is identical to the pre-#219
+DB path modulo XML attribute order. The interface is HTTP-shaped so a
+future split deploy (Player as a separate process) swaps the caller for
+a real loopback `fetch` without touching the service.
+
+DLNA op → Subsonic mapping:
+
+| DLNA op                          | Subsonic call(s)                                     | Round-trips |
+|----------------------------------|------------------------------------------------------|-------------|
+| `Browse(root / music)`           | static                                               | 0           |
+| `Browse(artists)`                | `getArtists`                                         | 1           |
+| `Browse(albums)`                 | `getAlbumList2?type=alphabeticalByName`              | 1           |
+| `Browse(artist/<id>)`            | `getArtist`                                          | 1           |
+| `Browse(album/<id>)`             | `getAlbum`                                           | 1           |
+| `BrowseMetadata(artist/<id>)`    | `getArtist`                                          | 1           |
+| `BrowseMetadata(album/<id>)`     | `getAlbum`                                           | 1           |
+| `Search`                         | `search3`                                            | 1           |
+
+`getAlbumList2` does not return a total count; `totalMatches` is `-1` for
+the global Albums browse and UPnP clients walk the pager until they get
+a short page. `childCount` on the static Artists/Albums containers is also
+`-1` (unknown) to avoid the round-trips Subsonic would need to compute
+exact counts.
 
 ### Artist list filtering
 
@@ -153,7 +194,7 @@ Sink is empty — we don't render.
 | `node-upnp` (devDep)     | Real UPnP control point: device description + SOAP Browse | Quirk: `parseSOAPResponse` walks `Array.from(argumentList.argument)`, which silently returns `[]` for single-argument actions because fast-xml-parser emits an object (not an array) for a single child. Single-output SOAP actions come back as `{}`. Worked around with raw fetch. |
 | Node `dgram` (built-in)  | SSDP M-SEARCH + reply parsing                  | Direct and reliable. No library needed.                                                                          |
 | Node `fetch` (built-in)  | Raw HTTP for stream headers + LAN-gate assertions + single-output SOAP | Already in tree.                                                                                                 |
-| `better-sqlite3` (dep)   | In-memory schema seeded with fixtures          | Backs the `dlna-objects` Browse unit tests.                                                                      |
+| `better-sqlite3` (dep)   | In-memory schema seeded with fixtures          | Used by the `dlna-objects` unit tests only to *seed* `unified_*` rows; the service itself reads via `app.inject()`-driven Subsonic calls (#219). |
 
 ### Why not `@achingbrain/ssdp`
 
@@ -180,7 +221,7 @@ Raw `dgram` gives a packet-level assertion in a few dozen lines.
 |-------------------------------------|---------------------------------------------------------------------------------|
 | `test/soap.test.ts`                 | xmlEscape, envelope/response builders, SOAPACTION parsing, pickXmlTag, duration |
 | `test/ssdp-advertiser.test.ts`      | NOTIFY alive/byebye + M-SEARCH-reply packet construction, target matching       |
-| `test/dlna-objects.test.ts`         | Object-ID parse/encode, Browse against a seeded in-memory SQLite                |
+| `test/dlna-objects.test.ts`         | Object-ID parse/encode, Browse + Search via `app.inject()` Subsonic caller against seeded `unified_*` fixtures (#219) |
 | `test/lan-only.test.ts`             | `requireLan` preHandler against a synthetic Fastify app                         |
 | `test/dlna-stream.test.ts`          | Cast-token handoff at `/rest/stream.view?…&dlna=1` (#218) against a fake Navidrome — DLNA response headers, Range forwarding, token-vs-trackId binding |
 
