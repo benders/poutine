@@ -1,14 +1,16 @@
 /**
- * Positive-path test for /dlna/stream/:trackId. Pairs the existing
- * fake-Navidrome harness from stream.test.ts with a buildApp that has
- * DLNA_ENABLED=true. Locks in:
+ * #218 — DLNA stream handoff via Hub Subsonic. Replaces the deleted
+ * `/dlna/stream/:trackId` Player relay.
  *
- *  - 200 + audio bytes from the upstream
- *  - Required DLNA response headers (`contentFeatures.dlna.org`,
- *    `transferMode.dlna.org`) — strict clients (WMP) reject responses
- *    missing these.
- *  - 503 (not 404) when the unified library knows the track but no source
- *    instance is currently advertising it.
+ * Validates that:
+ *  - `buildStreamUrl({ dlna: true })` produces a URL that authenticates
+ *    against `/rest/stream.view` via the cast token (no Subsonic
+ *    `u+t+s` / `u+p` required).
+ *  - The Subsonic stream handler emits DLNA-specific response headers
+ *    (`contentFeatures.dlna.org`, `transferMode.dlna.org`,
+ *    `accept-ranges: bytes`) when the URL carries `dlna=1`.
+ *  - Range forwarding still works on the new path.
+ *  - Unknown tokens / unknown tracks fail closed (401 / 404).
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
@@ -18,6 +20,7 @@ import type { AddressInfo } from "node:net";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/server.js";
 import { mergeLibraries } from "../src/library/merge.js";
+import { buildStreamUrl, signCastToken } from "../src/services/cast-tokens.js";
 
 const FAKE_AUDIO = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x11, 0x22, 0x33, 0x44]);
 
@@ -89,7 +92,16 @@ function seedLocalTrack(app: FastifyInstance) {
   mergeLibraries(app.db);
 }
 
-describe("/dlna/stream/:trackId — positive path", () => {
+/**
+ * Strip the host off a `buildStreamUrl` result so we can pass the rest
+ * straight to `app.inject`. lanUrl is irrelevant for in-process injection.
+ */
+function stripHost(absoluteUrl: string): string {
+  const u = new URL(absoluteUrl);
+  return `${u.pathname}${u.search}`;
+}
+
+describe("/rest/stream.view — DLNA cast-token handoff (#218)", () => {
   let app: FastifyInstance;
   let navidrome: http.Server;
 
@@ -109,8 +121,6 @@ describe("/dlna/stream/:trackId — positive path", () => {
       poutineOwnerUsername: "owner",
       poutineOwnerPassword: "secret",
       dlnaEnabled: true,
-      // lan_url unset → no SSDP advertiser. The stream route doesn't
-      // need it; res@uri construction happens in Browse, not here.
       initialLanUrl: undefined,
     });
     await app.ready();
@@ -121,22 +131,25 @@ describe("/dlna/stream/:trackId — positive path", () => {
     await new Promise<void>((resolve) => navidrome.close(() => resolve()));
   });
 
-  it("streams local audio and sets the required DLNA response headers", async () => {
+  it("streams local audio and emits DLNA response headers when dlna=1", async () => {
     seedLocalTrack(app);
     const track = app.db
       .prepare("SELECT id FROM unified_tracks LIMIT 1")
       .get() as { id: string };
 
-    const res = await app.inject({
-      method: "GET",
-      url: `/dlna/stream/${track.id}`,
+    const url = buildStreamUrl({
+      lanUrl: "http://test",
+      castSecret: app.castSecret,
+      unifiedTrackId: track.id,
+      username: "owner",
+      dlna: true,
     });
+
+    const res = await app.inject({ method: "GET", url: stripHost(url) });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toMatch(/audio\/mpeg/);
-    expect(res.headers["contentfeatures.dlna.org"]).toContain(
-      "DLNA.ORG_OP=01",
-    );
+    expect(res.headers["contentfeatures.dlna.org"]).toContain("DLNA.ORG_OP=01");
     expect(res.headers["transfermode.dlna.org"]).toBe("Streaming");
     expect(res.headers["accept-ranges"]).toBe("bytes");
     expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
@@ -148,9 +161,17 @@ describe("/dlna/stream/:trackId — positive path", () => {
       .prepare("SELECT id FROM unified_tracks LIMIT 1")
       .get() as { id: string };
 
+    const url = buildStreamUrl({
+      lanUrl: "http://test",
+      castSecret: app.castSecret,
+      unifiedTrackId: track.id,
+      username: "owner",
+      dlna: true,
+    });
+
     const res = await app.inject({
       method: "GET",
-      url: `/dlna/stream/${track.id}`,
+      url: stripHost(url),
       headers: { "transfermode.dlna.org": "Interactive" },
     });
 
@@ -164,9 +185,17 @@ describe("/dlna/stream/:trackId — positive path", () => {
       .prepare("SELECT id FROM unified_tracks LIMIT 1")
       .get() as { id: string };
 
+    const url = buildStreamUrl({
+      lanUrl: "http://test",
+      castSecret: app.castSecret,
+      unifiedTrackId: track.id,
+      username: "owner",
+      dlna: true,
+    });
+
     const res = await app.inject({
       method: "GET",
-      url: `/dlna/stream/${track.id}`,
+      url: stripHost(url),
       headers: { range: "bytes=2-5" },
     });
 
@@ -177,45 +206,41 @@ describe("/dlna/stream/:trackId — positive path", () => {
     expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO.subarray(2, 6));
   });
 
-  it("404 for an unknown trackId", async () => {
-    const res = await app.inject({
-      method: "GET",
-      url: `/dlna/stream/no-such-track`,
+  it("404 for an unknown trackId (token verifies, source absent)", async () => {
+    // Sign a token for a track id that doesn't exist in the unified library.
+    // The cast-token auth still passes (token is valid for that string), but
+    // source-selection inside the stream handler returns 404.
+    const badId = "no-such-track-uuid";
+    const token = signCastToken(app.castSecret, {
+      trackId: badId,
+      username: "owner",
     });
+    const url = `/rest/stream.view?id=${encodeURIComponent("t" + badId)}&castToken=${encodeURIComponent(token)}&dlna=1&u=owner&v=1.16.1&c=poutine-dlna`;
+    const res = await app.inject({ method: "GET", url });
     expect(res.statusCode).toBe(404);
   });
 
-  it("503 when the track exists but has no preferred source", async () => {
-    // Seed only the unified row, not instance_tracks / track_sources.
-    app.db
-      .prepare(
-        `INSERT INTO unified_artists (id, name, name_normalized)
-         VALUES ('ua-orphan', 'Orphan', 'orphan')`,
-      )
-      .run();
-    app.db
-      .prepare(
-        `INSERT INTO unified_release_groups (id, artist_id, name, name_normalized)
-         VALUES ('urg-orphan', 'ua-orphan', 'Orphan Album', 'orphan album')`,
-      )
-      .run();
-    app.db
-      .prepare(
-        `INSERT INTO unified_releases (id, release_group_id, name)
-         VALUES ('ur-orphan', 'urg-orphan', 'Orphan Release')`,
-      )
-      .run();
-    app.db
-      .prepare(
-        `INSERT INTO unified_tracks (id, artist_id, release_id, title, title_normalized, duration_ms)
-         VALUES ('ut-orphan', 'ua-orphan', 'ur-orphan', 'Orphan Track', 'orphan track', 1000)`,
-      )
-      .run();
+  it("401 when the cast token is invalid", async () => {
+    seedLocalTrack(app);
+    const track = app.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+    const url = `/rest/stream.view?id=${encodeURIComponent("t" + track.id)}&castToken=bogus&dlna=1`;
+    const res = await app.inject({ method: "GET", url });
+    expect(res.statusCode).toBe(401);
+  });
 
-    const res = await app.inject({
-      method: "GET",
-      url: `/dlna/stream/ut-orphan`,
+  it("401 when the cast token is bound to a different trackId", async () => {
+    seedLocalTrack(app);
+    const track = app.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+    const tokenForOtherTrack = signCastToken(app.castSecret, {
+      trackId: "some-other-id",
+      username: "owner",
     });
-    expect(res.statusCode).toBe(503);
+    const url = `/rest/stream.view?id=${encodeURIComponent("t" + track.id)}&castToken=${encodeURIComponent(tokenForOtherTrack)}&dlna=1`;
+    const res = await app.inject({ method: "GET", url });
+    expect(res.statusCode).toBe(401);
   });
 });

@@ -25,6 +25,7 @@
 import type Database from "better-sqlite3";
 import { buildAudioItem, buildContainer, wrapDidl } from "./didl.js";
 import { xmlEscape } from "./soap.js";
+import { buildStreamUrl } from "./cast-tokens.js";
 
 export const ROOT_ID = "0";
 export const MUSIC_ID = "0/music";
@@ -77,6 +78,25 @@ export interface BrowseOptions {
    * Must not have a trailing slash.
    */
   baseUrl: string;
+  /**
+   * Cast-token signer (#218). `res@uri` is now a self-contained
+   * `${baseUrl}/rest/stream.view?id=…&castToken=…&dlna=1` URL so the DLNA
+   * renderer pulls bytes directly from the Hub Subsonic endpoint. No
+   * Player relay, no per-renderer credentials.
+   */
+  castSecret: Buffer;
+  /**
+   * Pseudo-user the DLNA stream activity is attributed to (typically the
+   * owner). Travels embedded in the cast token.
+   */
+  username: string;
+  /**
+   * Cast-token TTL in seconds for DIDL-emitted URLs. Some renderers cache
+   * Browse responses for a while before fetching `res@uri`, so default
+   * generously. Falls back to the cast-token DEFAULT_TTL_SEC (1h) when
+   * omitted.
+   */
+  ttlSec?: number;
 }
 
 export interface BrowseResult {
@@ -139,8 +159,16 @@ function mimeForFormat(format: string | null | undefined): string {
   }
 }
 
-function streamUri(baseUrl: string, trackId: string): string {
-  return `${baseUrl}/dlna/stream/${encodeURIComponent(trackId)}`;
+function streamUri(opts: BrowseOptions, trackId: string): string {
+  return buildStreamUrl({
+    lanUrl: opts.baseUrl,
+    castSecret: opts.castSecret,
+    unifiedTrackId: trackId,
+    username: opts.username,
+    ttlSec: opts.ttlSec,
+    client: "poutine-dlna",
+    dlna: true,
+  });
 }
 
 function albumArtUriFor(baseUrl: string, encodedCoverArtId: string | null): string | null {
@@ -514,7 +542,7 @@ export class DlnaObjectService {
           albumArtUri: albumArtUriFor(opts.baseUrl, r.album_art),
           durationSec: Math.floor((r.duration_ms ?? 0) / 1000),
           mimeType: mimeForFormat(r.format),
-          streamUri: streamUri(opts.baseUrl, r.id),
+          streamUri: streamUri(opts, r.id),
           // DLNA.ORG_OP=01 indicates Range support; clients use it for seek.
           protocolInfoExtras: "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
         }),

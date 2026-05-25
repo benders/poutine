@@ -35,6 +35,7 @@ import {
   type BrowseResult,
 } from "./dlna-objects.js";
 import { buildAudioItem, buildContainer, wrapDidl } from "./didl.js";
+import { buildStreamUrl } from "./cast-tokens.js";
 
 /**
  * Minimal Subsonic JSON client surface the spike needs. Implementations
@@ -127,8 +128,16 @@ function mimeForContentType(ct: string | undefined): string {
   return ct && ct.length > 0 ? ct : "audio/mpeg";
 }
 
-function streamUri(baseUrl: string, unifiedTrackId: string): string {
-  return `${baseUrl}/dlna/stream/${encodeURIComponent(unifiedTrackId)}`;
+function streamUri(opts: BrowseOptions, unifiedTrackId: string): string {
+  return buildStreamUrl({
+    lanUrl: opts.baseUrl,
+    castSecret: opts.castSecret,
+    unifiedTrackId,
+    username: opts.username,
+    ttlSec: opts.ttlSec,
+    client: "poutine-dlna",
+    dlna: true,
+  });
 }
 
 function coverArtUri(baseUrl: string, coverArtId: string | undefined): string | null {
@@ -423,7 +432,7 @@ export class DlnaObjectServiceSubsonic {
           albumArtUri: coverArtUri(opts.baseUrl, s.coverArt),
           durationSec: s.duration ?? 0,
           mimeType: mimeForContentType(s.contentType),
-          streamUri: streamUri(opts.baseUrl, stripPrefix(s.id, "t")),
+          streamUri: streamUri(opts, stripPrefix(s.id, "t")),
           protocolInfoExtras:
             "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
         }),
@@ -478,7 +487,7 @@ export class DlnaObjectServiceSubsonic {
           albumArtUri: coverArtUri(opts.baseUrl, s.coverArt),
           durationSec: s.duration ?? 0,
           mimeType: mimeForContentType(s.contentType),
-          streamUri: streamUri(opts.baseUrl, stripPrefix(s.id, "t")),
+          streamUri: streamUri(opts, stripPrefix(s.id, "t")),
           protocolInfoExtras:
             "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
         }),
@@ -543,7 +552,7 @@ export class DlnaObjectServiceSubsonic {
           albumArtUri: coverArtUri(opts.baseUrl, s.coverArt),
           durationSec: s.duration ?? 0,
           mimeType: mimeForContentType(s.contentType),
-          streamUri: streamUri(opts.baseUrl, stripPrefix(s.id, "t")),
+          streamUri: streamUri(opts, stripPrefix(s.id, "t")),
           protocolInfoExtras:
             "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
         }),

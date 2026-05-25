@@ -226,7 +226,10 @@ describe("Sonos play route", () => {
     // Stream URL must force format=mp3 so the byte stream matches the
     // audio/mpeg DIDL mime type (regression: PR #162 mismatch broke FLAC).
     expect(call.uri).toContain("format=mp3");
-    expect(call.uri).toContain("/cast/stream/trk-1");
+    // #218: stream URL targets Hub's Subsonic endpoint with cast-token auth.
+    expect(call.uri).toContain("/rest/stream.view?");
+    expect(call.uri).toContain("id=ttrk-1");
+    expect(call.uri).toContain("castToken=");
     expect(call.uri).toMatch(/^http:\/\/hub\.lan:3000\//);
 
     // DIDL metadata must reflect data resolved via the two-hop join
@@ -251,7 +254,8 @@ describe("Sonos play route", () => {
     expect(res.statusCode).toBe(200);
     expect(setUriCalls).toHaveLength(1);
     const call = setUriCalls[0]!;
-    expect(call.uri).toContain("/cast/stream/trk-1?");
+    expect(call.uri).toContain("/rest/stream.view?id=ttrk-1");
+    expect(call.uri).toContain("castToken=");
     expect(call.meta.trackId).toBe("trk-1");
     expect(call.meta.title).toBe("Dancing Queen");
   });
@@ -270,9 +274,11 @@ describe("Sonos play route", () => {
     expect(setUriCalls).toHaveLength(1);
 
     const call = setUriCalls[0]!;
-    // Cast URL and token must use the unified UUID, not the Subsonic id —
-    // cast.ts /stream verifies the token against unified_tracks.
-    expect(call.uri).toContain("/cast/stream/trk-1?");
+    // #218: cast token verifies against the unified track ID (decoded from
+    // the `t`-prefixed Subsonic `id` query param). Subsonic remote_id from
+    // the SPA must NOT leak into the stream URL.
+    expect(call.uri).toContain("/rest/stream.view?id=ttrk-1");
+    expect(call.uri).toContain("castToken=");
     expect(call.uri).not.toContain(subsonicId);
     expect(call.meta.trackId).toBe("trk-1");
     expect(call.meta.title).toBe("Dancing Queen");
@@ -501,7 +507,8 @@ describe("Sonos play route", () => {
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ ok: true });
       expect(setNextUriCalls).toHaveLength(1);
-      expect(setNextUriCalls[0]!.uri).toContain("/cast/stream/trk-1?");
+      expect(setNextUriCalls[0]!.uri).toContain("/rest/stream.view?id=ttrk-1");
+      expect(setNextUriCalls[0]!.uri).toContain("castToken=");
       expect(setNextUriCalls[0]!.meta?.title).toBe("Dancing Queen");
       // Must NOT touch transport state or play — only pre-buffer.
       expect(setUriCalls).toHaveLength(0);

@@ -233,13 +233,12 @@ describe("SonosSettings (#184)", () => {
       expect(res.json()).toEqual({ error: "Sonos is disabled" });
     });
 
-    it("/cast/stream/:trackId returns 503 when disabled", async () => {
-      const res = await app.inject({
-        method: "GET",
-        url: "/cast/stream/foo?token=bar",
-      });
-      expect(res.statusCode).toBe(503);
-    });
+    // #218: /cast/stream/:trackId was deleted. Cast tokens now authenticate
+    // /rest/stream.view directly. The "Sonos is disabled" gate moves to
+    // the SPA control plane (/api/sonos/* already covered above) — the
+    // Subsonic stream endpoint stays open to any authenticated request
+    // (including cast tokens) so external Subsonic clients keep working
+    // when Sonos casting is toggled off.
 
     it("capabilities flips immediately after toggle", async () => {
       app.sonosSettings.setEnabled(true);

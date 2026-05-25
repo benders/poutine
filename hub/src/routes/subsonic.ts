@@ -1300,8 +1300,16 @@ try {
 
   if (trackRow) {
     const transcoded = streamParams.has("format") || (Number.isFinite(cap) && srcBr > cap);
+    // Cast-token-authed stream → tag activity with the appropriate kind
+    // (#218). `dlna=1` flag set by buildStreamUrl for DLNA renderers; cast
+    // token without the flag is from a Sonos device.
+    const streamKind: "subsonic" | "cast" | "dlna" = q.castToken
+      ? q.dlna === "1"
+        ? "dlna"
+        : "cast"
+      : "subsonic";
     streamOpId = app.streamTracking.start({
-      kind: "subsonic",
+      kind: streamKind,
       username: request.subsonicUser.username,
       trackId: trackRow.id,
       trackTitle: trackRow.title,
@@ -1379,8 +1387,21 @@ try {
   };
   const contentLength = response.headers.get("content-length");
   if (contentLength) headers["content-length"] = contentLength;
-  const acceptRanges = response.headers.get("accept-ranges");
+  // `dlna=1` flag (set by `buildStreamUrl` for DLNA renderers, #218):
+  // strict renderers (WMP, Xbox) require `transferMode.dlna.org` +
+  // `contentFeatures.dlna.org` on the byte response, and tolerate a
+  // forced `accept-ranges: bytes` even when upstream omits it.
+  const isDlna = q.dlna === "1";
+  const acceptRanges =
+    response.headers.get("accept-ranges") || (isDlna ? "bytes" : null);
   if (acceptRanges) headers["accept-ranges"] = acceptRanges;
+  if (isDlna) {
+    const reqHeaders = request.headers as Record<string, string | undefined>;
+    headers["transferMode.dlna.org"] =
+      reqHeaders["transfermode.dlna.org"] ?? "Streaming";
+    headers["contentFeatures.dlna.org"] =
+      "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000";
+  }
   const contentRange = response.headers.get("content-range");
   if (contentRange) headers["content-range"] = contentRange;
 

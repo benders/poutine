@@ -14,8 +14,8 @@ export interface PreferredSource {
  * (track exists in the unified library but every contributing instance
  * is offline / unmerged — operationally "object missing for streaming").
  *
- * Callers: `routes/sonos.ts` cast planner + `services/stream-relay.ts`
- * source picker. Both have to agree on the same row, hence one helper.
+ * Callers: `routes/sonos.ts` cast planner. Source selection during the
+ * actual byte stream lives inline in `routes/subsonic.ts#handleStream`.
  */
 export function getPreferredSource(
   db: Database.Database,
