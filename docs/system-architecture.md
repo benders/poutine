@@ -59,7 +59,15 @@ The admin SPA exposes **two distinct top-level destinations** that never co-exis
 
 Bounded directories may not cross-import. Tactical enforcement lives in `frontend/src/features/feature-boundaries.test.ts`; ESLint-level `no-restricted-paths` enforcement is #221. Shared pure-UI helpers live in `features/shared/`.
 
-Backend endpoint paths remain on `/admin/*` for this phase — namespacing those under `/api/admin/{hub,player}/*` is #220. The frontend boundary alone is enough to make the structural commitment of #212 visible to operators.
+Backend endpoint paths exposed under three mounts since #220:
+
+| Mount                | Owner    | What lives here                                                                                |
+|----------------------|----------|-----------------------------------------------------------------------------------------------|
+| `/admin/*`           | shared   | Backward-compat alias. Auth (`/admin/login`, `/admin/refresh`, `/admin/logout`, `/admin/me`) stays here permanently — the refresh cookie path is bound to `/admin/refresh`. |
+| `/api/admin/hub/*`   | Hub      | Users, peers, invitations, sync, cache, activity, instance, art-cache settings, activity retention. SPA's `features/hub-admin/` is the only frontend consumer. |
+| `/api/admin/player/*`| Player   | Sonos enable/volume-cap, LAN URL, future DLNA toggles. SPA's `features/player-admin/` is the only frontend consumer. |
+
+Today all three mounts serve identical handlers (one `adminRoutes` plugin registered three times). Partition enforcement (each namespace exclusively serves the matching endpoints) lands with the lint pass in #221.
 
 ## Federation
 
@@ -129,7 +137,7 @@ Phase 3 (#217) migrates Player-owned rows out of `hub.db.settings` into `player.
 
 Transcoding happens on the Navidrome that owns the bytes.
 
-**Sonos casting sink (issue #108):** optional alternative to local browser playback. Off by default; toggled at runtime from the Admin page (`sonos_enabled` setting, #184). When enabled, the player route mints a short-lived HMAC cast token bound to the unified track id + originating user, builds `${lan_url}/rest/stream.view?id=t<uuid>&castToken=…` (LAN URL is an admin setting, #209), and issues SOAP `SetAVTransportURI + Play` on the device. The Sonos device fetches the stream from the hub's Subsonic endpoint directly (no Player relay since #218), reusing the same source-selection + transcoding pipeline. See [hub-internals.md](hub-internals.md#sonos-integration-issue-108).
+**Sonos casting sink (issue #108):** optional alternative to local browser playback. Off by default; toggled at runtime from the Admin page (`sonos_enabled` setting, #184). When enabled, the player route mints a short-lived HMAC cast token bound to the unified track id + originating user, builds `${lan_url}/rest/stream.view?id=t<uuid>&castToken=…` (LAN URL is an admin setting, #209), and issues SOAP `SetAVTransportURI + Play` on the device. The Sonos device fetches the stream from the hub's Subsonic endpoint directly (no Player relay since #218), reusing the same source-selection + transcoding pipeline. Since #220, the cast planner resolves track metadata + source format via Hub Subsonic over an in-process loopback `app.inject()` call (the shared `HubSubsonicCaller` in `services/hub-subsonic-caller.ts`) — `routes/sonos.ts` no longer imports the in-process `SubsonicClient` adapter or queries `app.db` directly. See [hub-internals.md](hub-internals.md#sonos-integration-issue-108).
 
 **DLNA MediaServer (issue #175):** optional. When `DLNA_ENABLED=true`, Poutine advertises itself as a UPnP `MediaServer:1` on the LAN (SSDP + SOAP/ContentDirectory). Clients like Windows Media Player, Xbox, Kodi, VLC, and BubbleUPnP can browse the merged library. Since #218, DIDL `res@uri` points at `${lan_url}/rest/stream.view?id=t<uuid>&castToken=…&dlna=1`; renderers fetch bytes directly from the Hub Subsonic stream endpoint. Since #219, the ContentDirectory service reads via Subsonic HTTP only (in-process `app.inject()` to the hub's own `/rest/*`) — no direct DB access in `services/dlna-objects.ts`, so the Player side of the boundary is one step closer to splitting into its own process. DLNA has no user identity, so the embedded cast token is bound to a configurable pseudo-user — see [hub-internals.md](hub-internals.md#dlna-mediaserver-issue-175).
 

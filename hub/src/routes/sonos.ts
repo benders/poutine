@@ -10,8 +10,7 @@ import type { SonosDiscoveryService } from "../services/sonos-discovery.js";
 import type { SonosSettings } from "../services/sonos-settings.js";
 import { buildStreamUrl } from "../services/cast-tokens.js";
 import { requireAuth } from "../auth/middleware.js";
-import { SubsonicClient } from "../adapters/subsonic.js";
-import { getPreferredSource } from "../db/preferred-source.js";
+import type { HubSubsonicCaller } from "../services/hub-subsonic-caller.js";
 
 
 /**
@@ -28,7 +27,31 @@ declare module "fastify" {
     sonosDiscovery: SonosDiscoveryService;
     sonosControl: SonosControl;
     sonosSettings: SonosSettings;
+    /**
+     * #220: in-process Hub Subsonic caller for sonos route. All
+     * track-metadata + source-info reads go through this HTTP-shaped
+     * surface — no `SubsonicClient` adapter import, no direct `app.db`
+     * access. Wired in `server.ts`.
+     */
+    hubSubsonicSonos: HubSubsonicCaller;
   }
+}
+
+/**
+ * Minimal Subsonic `song` shape this route consumes. The Hub `/rest/getSong`
+ * response has many more fields; we only narrow the ones we use.
+ */
+interface SubsonicSongInfo {
+  id: string;
+  title: string;
+  artist: string;
+  album?: string;
+  duration?: number;
+  coverArt?: string;
+  suffix?: string;
+  bitRate?: number;
+  samplingRate?: number;
+  bitDepth?: number;
 }
 
 interface PlayBody {
@@ -70,39 +93,13 @@ interface VolumeBody {
 }
 
 export const sonosRoutes: FastifyPluginAsync = async (app) => {
-  // Cached `{samplingRate, bitDepth}` per Navidrome `remote_id` for the
-  // hi-res FLAC guard. Naturally static (audio properties don't change at
-  // runtime) and bounded by local library size. Lives on the plugin
-  // closure so each app instance gets its own — important for tests, and
-  // also drops on process restart for free. #199 will replace this with
-  // a `track_sources` schema column.
-  const hiResProbeCache = new Map<string, { sr: number; bd: number }>();
-  const probeHiResFlac = async (
-    remoteId: string,
-    unifiedTrackId: string,
-  ): Promise<{ sr: number; bd: number } | null> => {
-    const cached = hiResProbeCache.get(remoteId);
-    if (cached) return cached;
-    try {
-      const client = new SubsonicClient({
-        url: app.config.navidromeUrl,
-        username: app.config.navidromeUsername,
-        password: app.config.navidromePassword,
-      });
-      const song = await client.getSong(remoteId);
-      const result = { sr: song.samplingRate ?? 0, bd: song.bitDepth ?? 0 };
-      hiResProbeCache.set(remoteId, result);
-      return result;
-    } catch (err) {
-      // 16/44.1 is the overwhelming common case; Navidrome being
-      // unreachable is a louder problem the stream itself will surface.
-      app.log.warn(
-        { err, trackId: unifiedTrackId },
-        "Sonos: hi-res probe failed; proceeding with pass-through",
-      );
-      return null;
-    }
-  };
+  // #220: the hi-res FLAC guard (samplingRate / bitDepth probe) is dropped
+  // for now. Player code can no longer reach Navidrome directly, and Hub
+  // Subsonic `getSong` does not surface those fields (#199 adds the
+  // `track_sources` schema columns + sync wiring needed to restore the
+  // guard via the proper HTTP path). Documented regression: 24-bit / 96 kHz
+  // FLAC may silently fall back to STOPPED on older Sonos S2 zones until
+  // #199 lands. See `docs/pitfalls.md`.
 
   /**
    * Resolve any of the trackId shapes the /play route accepts to a
@@ -125,7 +122,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
 
   const buildCast = async (
     rawTrackId: string,
-    userId: string,
+    username: string,
     dev: { supportedMimes?: Set<string> | null },
     opts: { position?: number; ttlSec?: number } = {},
   ): Promise<CastBuild> => {
@@ -139,92 +136,69 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       };
     }
 
-    // Resolve the incoming trackId to a unified_tracks UUID. See /play
-    // handler comments for the accepted ID shapes; the same prefix-stripping
-    // ambiguity guard applies here.
-    const candidates =
-      rawTrackId.startsWith("t") && rawTrackId.length > 1
-        ? [rawTrackId, rawTrackId.slice(1)]
-        : [rawTrackId];
-
-    let unifiedTrackId: string | undefined;
-    const unifiedQ = app.db.prepare(
-      "SELECT id FROM unified_tracks WHERE id = ?",
-    );
-    for (const c of candidates) {
-      const row = unifiedQ.get(c) as { id: string } | undefined;
-      if (row) {
-        unifiedTrackId = row.id;
-        break;
+    // #220: Resolve track via Hub Subsonic `getSong` — no direct `app.db`
+    // access. The route accepts either `t<uuid>` (Subsonic id, what the SPA
+    // sends) or a bare `<uuid>` (historical). Bare ids get the `t` prefix
+    // added so `getSong` sees a well-formed Subsonic id.
+    //
+    // Bare Navidrome `remote_id` resolution was removed — the SPA has
+    // always sent the unified Subsonic id; the remote_id fallback was dead
+    // defensive code.
+    // Build candidate Subsonic IDs to probe via `getSong`. The SPA sends
+    // `t<uuid>` (Subsonic-encoded), so that's the primary form; the bare
+    // `<uuid>` fallback covers historical callers + tests. Dedupe.
+    const seen = new Set<string>();
+    const candidates: string[] = [];
+    const push = (s: string): void => {
+      if (!seen.has(s)) {
+        seen.add(s);
+        candidates.push(s);
       }
-    }
-    if (!unifiedTrackId) {
-      const sourceQ = app.db.prepare(
-        `SELECT ts.unified_track_id AS uid
-         FROM instance_tracks it
-         JOIN track_sources ts ON ts.instance_track_id = it.id
-         WHERE it.remote_id = ?
-         LIMIT 1`,
-      );
-      for (const c of candidates) {
-        const row = sourceQ.get(c) as { uid: string } | undefined;
-        if (row) {
-          unifiedTrackId = row.uid;
+    };
+    if (rawTrackId.startsWith("t")) push(rawTrackId);
+    push(`t${rawTrackId}`);
+
+    let song: SubsonicSongInfo | undefined;
+    let unifiedTrackId: string | undefined;
+    for (const candidate of candidates) {
+      try {
+        const body = await app.hubSubsonicSonos.call("/rest/getSong", {
+          id: candidate,
+        });
+        const sr = body["subsonic-response"];
+        if (sr.status === "ok" && sr.song) {
+          song = sr.song as SubsonicSongInfo;
+          // Strip the `t` prefix to recover the unified UUID — used in
+          // the cast token + stream URL.
+          unifiedTrackId = song.id.startsWith("t") ? song.id.slice(1) : song.id;
           break;
         }
+      } catch (err) {
+        app.log.debug(
+          { err, candidate, rawTrackId },
+          "Sonos: getSong probe failed for candidate id, trying next",
+        );
       }
     }
-    if (!unifiedTrackId) {
+
+    if (!song || !unifiedTrackId) {
       return { ok: false, status: 404, error: "Track not found" };
     }
 
-    const trackRow = app.db
-      .prepare(
-        `SELECT ut.title, ut.duration_ms, ua.name AS artist_name,
-                urg.name AS album_name, urg.image_url AS album_art,
-                u.username
-         FROM unified_tracks ut
-         JOIN unified_artists ua ON ua.id = ut.artist_id
-         LEFT JOIN unified_releases ur ON ur.id = ut.release_id
-         LEFT JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-         CROSS JOIN users u
-         WHERE ut.id = ? AND u.id = ?`,
-      )
-      .get(unifiedTrackId, userId) as
-      | {
-          title: string;
-          duration_ms: number | null;
-          artist_name: string;
-          album_name: string | null;
-          album_art: string | null;
-          username: string;
-        }
-      | undefined;
-    if (!trackRow) {
-      return { ok: false, status: 404, error: "Track not found" };
-    }
-
-    const source = getPreferredSource(app.db, unifiedTrackId);
-    let { mime, transcode } = chooseSonosCastFormat(
-      source?.format,
+    const { mime, transcode } = chooseSonosCastFormat(
+      song.suffix ?? null,
       dev.supportedMimes,
     );
 
-    if (
-      !transcode &&
-      source?.format?.toLowerCase() === "flac" &&
-      source.instance_id === "local"
-    ) {
-      const probe = await probeHiResFlac(source.remote_id, unifiedTrackId);
-      if (probe && (probe.sr > SONOS_MAX_SAMPLE_RATE_HZ || probe.bd > SONOS_MAX_BIT_DEPTH)) {
-        app.log.info(
-          { trackId: unifiedTrackId, samplingRate: probe.sr, bitDepth: probe.bd },
-          "Sonos: hi-res FLAC exceeds S2 ceiling — forcing MP3 transcode",
-        );
-        mime = "audio/mpeg";
-        transcode = true;
-      }
-    }
+    // #220: hi-res FLAC sample-rate / bit-depth guard removed. Hub Subsonic
+    // `getSong` does not return those fields today; #199 will add the
+    // backing `track_sources` columns + sync + Subsonic projection so this
+    // probe can be restored without Player code talking to Navidrome
+    // directly. Until then, hi-res FLAC sources may silently STOPPED on
+    // older Sonos S2 zones. Workaround: transcode by setting a lower
+    // bitrate in Navidrome.
+    void SONOS_MAX_SAMPLE_RATE_HZ;
+    void SONOS_MAX_BIT_DEPTH;
 
     const startAt =
       typeof opts.position === "number" && opts.position > 0
@@ -241,20 +215,31 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       lanUrl,
       castSecret: app.castSecret,
       unifiedTrackId,
-      username: trackRow.username,
+      username,
       ttlSec: opts.ttlSec,
       ...(transcode ? { format: "mp3" } : {}),
       ...(transcode && startAt > 0 ? { timeOffsetSec: startAt } : {}),
       client: "poutine-sonos",
     });
 
+    // Hub Subsonic returns `coverArt` as either a full external URL
+    // (federated `image_url`) or a Subsonic id that maps to
+    // `/rest/getCoverArt`. Sonos DIDL needs an absolute URL — pass full
+    // URLs through, wrap bare ids with the LAN-reachable Hub endpoint.
+    let albumArtUri: string | null = null;
+    if (song.coverArt) {
+      albumArtUri = /^https?:\/\//i.test(song.coverArt)
+        ? song.coverArt
+        : `${lanUrl}/rest/getCoverArt.view?id=${encodeURIComponent(song.coverArt)}`;
+    }
+
     const meta: TrackMetadata = {
       trackId: unifiedTrackId,
-      title: trackRow.title,
-      artist: trackRow.artist_name,
-      album: trackRow.album_name ?? "",
-      albumArtUri: trackRow.album_art ?? null,
-      durationSec: Math.max(0, Math.round((trackRow.duration_ms ?? 0) / 1000)),
+      title: song.title,
+      artist: song.artist,
+      album: song.album ?? "",
+      albumArtUri,
+      durationSec: Math.max(0, Math.round(song.duration ?? 0)),
       mimeType: mime,
     };
 
@@ -313,7 +298,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       // `timeOffset` into the cast URL (no Range — SOAP Seek past the
       // buffer drives STOPPED, see #182/#194), raw pass-through ignores
       // `timeOffset` and is seeked via SOAP `Seek` below.
-      const cast = await buildCast(trackId, req.userId, dev, { position });
+      const cast = await buildCast(trackId, req.username, dev, { position });
       if (!cast.ok) return reply.status(cast.status).send({ error: cast.error });
       const seekAfterPlay =
         !cast.transcoded && typeof position === "number" && position > 0
@@ -393,7 +378,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
-      const cast = await buildCast(trackId, req.userId, dev, { ttlSec });
+      const cast = await buildCast(trackId, req.username, dev, { ttlSec });
       if (!cast.ok) return reply.status(cast.status).send({ error: cast.error });
 
       try {

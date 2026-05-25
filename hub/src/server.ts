@@ -36,6 +36,7 @@ import { SubsonicClient } from "./adapters/subsonic.js";
 import { SsdpAdvertiser } from "./services/ssdp-advertiser.js";
 import { DlnaObjectService } from "./services/dlna-objects.js";
 import { dlnaRoutes } from "./routes/dlna.js";
+import { createHubSubsonicCaller } from "./services/hub-subsonic-caller.js";
 import { createHash } from "node:crypto";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
@@ -341,7 +342,27 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(cookie);
 
   // Routes
+  //
+  // Admin API namespaces (#220, Phase 6 of #212). The same plugin is
+  // mounted at three prefixes:
+  //   /admin/*               — historical path; kept for backward
+  //                            compatibility (auth cookies are bound to
+  //                            `/admin/refresh`, so this also keeps
+  //                            existing browser sessions working across
+  //                            the upgrade).
+  //   /api/admin/hub/*       — Hub-owned admin (users, peers, sync, cache,
+  //                            activity, art-cache settings). What the
+  //                            Hub-admin SPA section calls.
+  //   /api/admin/player/*    — Player-owned admin (Sonos / DLNA / LAN URL
+  //                            settings). What the Player-admin SPA
+  //                            section calls.
+  //
+  // The route handlers are identical at all three mounts; partition
+  // enforcement (per-endpoint allowlist on which namespace serves which
+  // path) lands with the ESLint `no-restricted-paths` rule in #221.
   await app.register(adminRoutes, { prefix: "/admin" });
+  await app.register(adminRoutes, { prefix: "/api/admin/hub" });
+  await app.register(adminRoutes, { prefix: "/api/admin/player" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
   await app.register(federationRoutes, { prefix: "/federation" });
 
@@ -380,6 +401,16 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const privDer = privateKey.export({ format: "der", type: "pkcs8" });
   const castSecret = playerSettings.getCastSecret(() => deriveCastSecret(privDer));
   app.decorate("castSecret", castSecret);
+
+  // #220: Sonos play planner reads track metadata + preferred-source info
+  // via the Hub Subsonic API over in-process loopback — no `SubsonicClient`
+  // adapter import, no direct `app.db` access. See
+  // `services/hub-subsonic-caller.ts` and `routes/sonos.ts`.
+  app.decorate(
+    "hubSubsonicSonos",
+    createHubSubsonicCaller(app, { client: "poutine-sonos" }),
+  );
+
   await app.register(sonosRoutes, { prefix: "/api/sonos" });
   // #218: /cast/stream was deleted. Sonos devices now fetch directly from
   // /rest/stream.view with an embedded cast token (see cast-tokens.ts).
@@ -486,29 +517,13 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     // the only one DLNA browses, and the owner is the only user guaranteed
     // to exist at boot. A future split-deploy swaps the caller for a real
     // loopback fetch without touching the service itself.
-    const subsonicCaller = {
-      async call(endpoint: string, params: Record<string, string>) {
-        const qs = new URLSearchParams({
-          u: config.poutineOwnerUsername || "",
-          p: config.poutineOwnerPassword || "",
-          f: "json",
-          v: "1.16.1",
-          c: "poutine-dlna",
-          ...params,
-        });
-        const res = await app.inject({
-          method: "GET",
-          url: `${endpoint}?${qs.toString()}`,
-        });
-        if (res.statusCode !== 200) {
-          throw new Error(`${endpoint} → ${res.statusCode}`);
-        }
-        return res.json() as {
-          "subsonic-response": Record<string, unknown> & { status: "ok" | "failed" };
-        };
-      },
-    };
-    app.decorate("dlnaObjects", new DlnaObjectService(subsonicCaller));
+    // #220: the caller is the shared `HubSubsonicCaller` — same instance
+    // used by sonos.ts so both Player-side consumers go through one HTTP-
+    // shaped surface.
+    const dlnaSubsonicCaller = createHubSubsonicCaller(app, {
+      client: "poutine-dlna",
+    });
+    app.decorate("dlnaObjects", new DlnaObjectService(dlnaSubsonicCaller));
 
     await app.register(dlnaRoutes, { prefix: "/dlna" });
 
