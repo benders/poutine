@@ -57,7 +57,7 @@ The admin SPA exposes **two distinct top-level destinations** that never co-exis
 
 `/admin/player` is gated on a `GET /player/health` probe (added in #216). When that probe is absent or non-200, the route renders a "Player not deployed on this host" placeholder and the sidebar destination hides — making the Hub/Player split visible to operators well before #220 lifts Player into its own plugin/process.
 
-Bounded directories may not cross-import. Tactical enforcement lives in `frontend/src/features/feature-boundaries.test.ts`; ESLint-level `no-restricted-paths` enforcement is #221. Shared pure-UI helpers live in `features/shared/`.
+Bounded directories may not cross-import. ESLint-level enforcement landed in #221 (`frontend/eslint.config.js` — `no-restricted-imports` between `features/hub-admin/`, `features/player-admin/`, and `features/player/`). The earlier tactical test in `frontend/src/features/feature-boundaries.test.ts` is kept as a belt-and-braces guard. Shared pure-UI helpers live in `features/shared/`.
 
 Backend endpoint paths exposed under three mounts since #220:
 
@@ -67,7 +67,21 @@ Backend endpoint paths exposed under three mounts since #220:
 | `/api/admin/hub/*`   | Hub      | Users, peers, invitations, sync, cache, activity, instance, art-cache settings, activity retention. SPA's `features/hub-admin/` is the only frontend consumer. |
 | `/api/admin/player/*`| Player   | Sonos enable/volume-cap, LAN URL, future DLNA toggles. SPA's `features/player-admin/` is the only frontend consumer. |
 
-Today all three mounts serve identical handlers (one `adminRoutes` plugin registered three times). Partition enforcement (each namespace exclusively serves the matching endpoints) lands with the lint pass in #221.
+Today all three mounts serve identical handlers (one `adminRoutes` plugin registered three times). Namespace-level handler partition is a future cleanup (the SPA already only calls the matching namespace per [hub-internals.md](hub-internals.md)).
+
+## Hub/Player boundary enforcement (#221)
+
+The directory boundary is mechanically enforced by ESLint, so a future PR cannot accidentally reintroduce the violations that phases #213–#220 removed.
+
+| Boundary                                                                                                                                          | Enforced by                                                                            |
+|---------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| Player BE files (`hub/src/routes/{sonos,dlna}.ts`, `hub/src/services/{sonos-*,dlna-*,cast-tokens,didl,soap,ssdp-advertiser,player-settings}.ts`) may not runtime-import `better-sqlite3`, the in-process `adapters/subsonic`, or hub DB modules (`db/preferred-source*`, `db/client*`, `db/schema*`). | `hub/eslint.config.js` (`no-restricted-imports`).                                      |
+| `hub/src/db/player-db.ts` carve-out: the Player DB opener is allowed to import `better-sqlite3`. Type-only imports (`import type Database from "better-sqlite3"`) are allowed everywhere because they erase at compile time. | Same config — `allowTypeImports: true` + per-file ignore.                              |
+| Frontend `features/hub-admin/**`, `features/player-admin/**`, and `features/player/**` may not cross-import. `features/shared/` is importable from any side. | `frontend/eslint.config.js` (`no-restricted-imports`).                                 |
+| CI: `pnpm lint:boundary` runs both configs (stripped down to just the boundary rules so unrelated lint noise can't drown out a regression). Also wired into `pnpm verify` and the GitHub Actions `unit` job. | `package.json` + `.github/workflows/ci.yml`.                                           |
+| Belt-and-braces: programmatic tests (`hub/test/boundary-lint.test.ts`, `frontend/src/features/boundary-lint.test.ts`) prove the rules fire on stub violating sources. | Vitest (`pnpm test`).                                                                  |
+
+If a new Player file is added (e.g. another route or service), extend the `playerFiles` glob in `hub/eslint.config.js`. If a new exception is unavoidable, document the carve-out inline in the config — do not silently relax the rule.
 
 ## Federation
 
