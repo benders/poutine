@@ -46,7 +46,8 @@ const CM = "urn:schemas-upnp-org:service:ConnectionManager:1";
 const SOAP_BODY_LIMIT = 64 * 1024;
 
 export const dlnaRoutes: FastifyPluginAsync = async (app) => {
-  const friendlyName = app.config.dlnaFriendlyName || "Poutine";
+  // Friendly name persists in player.db (#217); read on each device.xml
+  // request so an admin-side change takes effect on the next probe.
   const uuid = app.dlnaUuid;
 
   // SOAP requests come in as text/xml; fastify has no built-in parser for
@@ -68,6 +69,7 @@ export const dlnaRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", requireLan);
 
   app.get("/device.xml", async (_req, reply) => {
+    const friendlyName = app.sonosSettings.getDlnaFriendlyName();
     reply
       .header("content-type", 'text/xml; charset="utf-8"')
       .send(deviceDescription({ uuid, friendlyName }));

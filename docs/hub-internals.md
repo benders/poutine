@@ -41,10 +41,13 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `SONOS_DISCOVERY_INTERVAL_MS`| no       | `30000`                      | How often to re-issue SSDP M-SEARCH                              |
 
 Sonos casting itself is **not** env-gated. The enabled flag, volume cap, and
-LAN URL are runtime-configurable from the Admin page and persisted in
-`settings` (`sonos_enabled`, `sonos_volume_cap`, `lan_url`) — see [Sonos
-integration](#sonos-integration-issue-108) and
-[docs/sonos.md](sonos.md#runtime-toggle-184). `lan_url` (#209) is the
+LAN URL are runtime-configurable from the Admin page and — as of #217 —
+persisted in `player.db.player_settings` (keys `sonos_enabled`,
+`sonos_volume_cap`, `lan_url`, plus `dlna_enabled` and `dlna_friendly_name`).
+Pre-#217 deployments stored these in `hub.db.settings`; the values migrate
+to `player.db` on first boot under the new code (idempotent gap-fill via
+`PlayerSettings.migrateFromHubSettings`). See [Sonos integration](#sonos-integration-issue-108)
+and [docs/sonos.md](sonos.md#runtime-toggle-184). `lan_url` (#209) is the
 absolute LAN-reachable base URL devices fetch streams from; it is shared
 with the DLNA MediaServer.
 
@@ -198,7 +201,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 ## SQLite notes
 
-- **Two SQLite files (issue #215, Phase 1 of #212).** `hub.db` (catalog, users, peers, activity, cache, `settings`) and `player.db` (Player-private state — DLNA UDN, cast HMAC key today; more to follow in #217). Both open at `buildApp` time. **No `ATTACH`, no cross-joins.** Hub code MUST NOT import `db/player-db.ts` or read `player_settings`; Player code MUST NOT touch `hub.db`. Schemas: `hub/src/db/schema.sql` and `hub/src/db/player-schema.sql`. Both are picked up by the existing `hub/src/db/*.sql` Dockerfile copy rule.
+- **Two SQLite files (issue #215+#217, Phases 1+3 of #212).** `hub.db` (catalog, users, peers, activity, cache, Hub-only `settings`) and `player.db` (Player-private state — DLNA UDN, cast HMAC key, plus the Sonos/DLNA runtime settings migrated in #217: `sonos_enabled`, `sonos_volume_cap`, `lan_url`, `dlna_enabled`, `dlna_friendly_name`). Both open at `buildApp` time. **No `ATTACH`, no cross-joins.** Hub code MUST NOT import `db/player-db.ts` or read `player_settings`; Player code MUST NOT write to `hub.db` (it reads `hub.db.settings` exactly once, at boot, via `PlayerSettings.migrateFromHubSettings`, to copy any pre-#217 rows across). Schemas: `hub/src/db/schema.sql` and `hub/src/db/player-schema.sql`. Both are picked up by the existing `hub/src/db/*.sql` Dockerfile copy rule.
 - **`datetime('now')` has no timezone marker.** Output: `"2026-04-10 03:54:22"` (space separator, no `Z`). JavaScript `new Date()` parses this as local time, so users west of UTC see timestamps in the future — `formatTimeAgo` returns `"just now"` forever. **Always use `strftime('%Y-%m-%dT%H:%M:%SZ', col)`** in SELECTs that return timestamps to the frontend.
 - **`.sql` files are not copied by `tsc`.** The hub Dockerfile explicitly copies `hub/src/db/*.sql` → `hub/dist/db/` after `tsc`. Update the Dockerfile if new non-TS assets are added under `hub/src/`.
 - **Schema or merge-logic change → resync required.** Changes to unified-table storage only take effect after `syncAll()` + merge runs.

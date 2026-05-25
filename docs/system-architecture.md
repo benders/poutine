@@ -95,14 +95,16 @@ instance_tracks   ─┘              unified_release_groups
 
 `unified_*_sources` join tables back the "which peers own this" UI and the Subsonic MusicFolders mapping (one folder per peer).
 
-**Dual-DB split (issue #212, Phase 1 in #215).** Two SQLite files open side-by-side, no `ATTACH`, no cross-joins:
+**Dual-DB split (issue #212, Phases 1+3 in #215, #217).** Two SQLite files open side-by-side, no `ATTACH`, no cross-joins:
 
 | File         | Owner   | Path (default)            | Holds                                                                                                      |
 |--------------|---------|---------------------------|------------------------------------------------------------------------------------------------------------|
-| `hub.db`     | Hub BE  | `DATABASE_PATH`           | Users, peers, catalog (`instance_*`/`unified_*`), `settings` (incl. `sonos_*`, `lan_url`), activity, cache |
-| `player.db`  | Player  | sibling of `hub.db`       | `player_settings` (key/value): DLNA UDN + cast token HMAC key today; more in Phase 3 (#217)                |
+| `hub.db`     | Hub BE  | `DATABASE_PATH`           | Users, peers, catalog (`instance_*`/`unified_*`), `settings` (Hub-only: activity retention, art-cache cap, JWT secret), activity, cache |
+| `player.db`  | Player  | sibling of `hub.db`       | `player_settings` (key/value): DLNA UDN, cast token HMAC key, `sonos_enabled`, `sonos_volume_cap`, `lan_url`, `dlna_enabled`, `dlna_friendly_name` |
 
 Both handles are opened at entry-point boot (`buildApp` in `hub/src/server.ts`) and capability-injected into the owning code paths. Hub code holds zero references to `player.db`; Player code holds zero references to `hub.db`. Override `player.db` location via `PLAYER_DATABASE_PATH` env (default: `dirname(DATABASE_PATH)/player.db`).
+
+Phase 3 (#217) migrates Player-owned rows out of `hub.db.settings` into `player.db.player_settings` on first boot under the new code (idempotent gap-fill — never overwrites an existing player.db value). Legacy `sonos_*`/`lan_url` rows in `hub.db.settings` are left in place but are no longer the source of truth; cleanup of those rows lands in a later admin-SPA phase.
 
 | Table                                  | Purpose                                                         |
 |----------------------------------------|------------------------------------------------------------------|

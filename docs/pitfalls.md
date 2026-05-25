@@ -20,6 +20,7 @@ Every `unified_*` insert in `merge.ts` logs the offending row + prior `existingR
 | `ALTER TABLE … ADD COLUMN … UNIQUE` fails on SQLite                       | #123      | Add the column unconstrained, then create a `UNIQUE INDEX` in a separate migration step    |
 | Forgetting to read `hub/src/db/schema.sql` before writing queries          | recurring | Schema is authoritative — check it, then use `scripts/db-query.sh` for ad-hoc reads        |
 | `exec`-ing into the container to import `better-sqlite3` manually          | recurring | Always go through `scripts/db-query.sh`                                                    |
+| Reading Player settings (`sonos_enabled`, `sonos_volume_cap`, `lan_url`, `dlna_*`) from `hub.db.settings` | #217 | Source of truth is `player.db.player_settings` since #217. Pre-#217 rows in `hub.db.settings` are leftover dead data — go through `app.sonosSettings` (or `PlayerSettings.getRaw` for keys without a typed accessor). |
 
 ## Subsonic API compatibility
 
