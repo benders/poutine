@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import Database from "better-sqlite3";
 import {
   createPlayerSettings,
   generateDlnaUuid,
@@ -75,6 +76,65 @@ describe("player-settings (#215)", () => {
         throw new Error("must not derive on re-read");
       });
       expect(reread.equals(random)).toBe(true);
+    });
+  });
+
+  describe("migrateFromHubSettings (#217)", () => {
+    function hubDbWithSettings(rows: Record<string, string>): Database.Database {
+      const db = new Database(":memory:");
+      db.exec(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      );
+      const stmt = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
+      for (const [k, v] of Object.entries(rows)) stmt.run(k, v);
+      return db;
+    }
+
+    it("copies all migrated keys when player.db is empty", () => {
+      const playerDb = freshDb();
+      const ps = createPlayerSettings(playerDb);
+      const hubDb = hubDbWithSettings({
+        sonos_enabled: "true",
+        sonos_volume_cap: "33",
+        lan_url: "http://hub.lan:3000",
+        // unrelated row should be ignored
+        activity_history_max_events: "5000",
+      });
+      const copied = ps.migrateFromHubSettings(hubDb);
+      expect(copied.sort()).toEqual(
+        ["lan_url", "sonos_enabled", "sonos_volume_cap"].sort(),
+      );
+      expect(ps.getRaw("sonos_enabled")).toBe("true");
+      expect(ps.getRaw("sonos_volume_cap")).toBe("33");
+      expect(ps.getRaw("lan_url")).toBe("http://hub.lan:3000");
+      expect(ps.getRaw("activity_history_max_events")).toBeUndefined();
+    });
+
+    it("is idempotent — second run copies nothing", () => {
+      const playerDb = freshDb();
+      const ps = createPlayerSettings(playerDb);
+      const hubDb = hubDbWithSettings({ lan_url: "http://hub.lan:3000" });
+      ps.migrateFromHubSettings(hubDb);
+      const second = ps.migrateFromHubSettings(hubDb);
+      expect(second).toEqual([]);
+    });
+
+    it("never overwrites an existing player.db value", () => {
+      const playerDb = freshDb();
+      const ps = createPlayerSettings(playerDb);
+      ps.setRaw("lan_url", "http://operator.lan:3000");
+      const hubDb = hubDbWithSettings({ lan_url: "http://stale.lan" });
+      const copied = ps.migrateFromHubSettings(hubDb);
+      expect(copied).toEqual([]);
+      expect(ps.getRaw("lan_url")).toBe("http://operator.lan:3000");
+    });
+
+    it("tolerates absence of hub.db settings table (fresh install)", () => {
+      const playerDb = freshDb();
+      const ps = createPlayerSettings(playerDb);
+      const empty = new Database(":memory:");
+      const copied = ps.migrateFromHubSettings(empty);
+      expect(copied).toEqual([]);
     });
   });
 

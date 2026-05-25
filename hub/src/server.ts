@@ -164,6 +164,18 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const playerSettings = createPlayerSettings(playerDb);
   app.decorate("playerDb", playerDb);
   app.decorate("playerSettings", playerSettings);
+
+  // Phase 3 (#217): copy any Player-owned rows that still live in
+  // hub.db's `settings` table over to player.db. Idempotent — only
+  // fills the gap, never overwrites. After this runs, player.db is the
+  // source of truth for sonos/dlna runtime config.
+  const migrated = playerSettings.migrateFromHubSettings(db);
+  if (migrated.length > 0) {
+    app.log.info(
+      { keys: migrated },
+      "Player settings migrated from hub.db into player.db (#217)",
+    );
+  }
   app.addHook("onClose", async () => {
     try {
       playerDb.close();
@@ -343,9 +355,13 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // admin can flip the runtime `sonos_enabled` setting without a restart;
   // SSDP discovery only runs while enabled. Requires network_mode: host on
   // the docker compose side for multicast.
-  const sonosSettings = createSonosSettings(db, {
+  // #217: backed by player.db via the PlayerSettings KV. env vars supply
+  // first-boot seeds only — operator changes persist in player.db.
+  const sonosSettings = createSonosSettings(playerSettings, {
     initialEnabled: config.sonosEnabled,
     initialLanUrl: config.initialLanUrl,
+    initialDlnaEnabled: config.dlnaEnabled,
+    initialDlnaFriendlyName: config.dlnaFriendlyName,
   });
   const sonosControl = new SonosControl();
   const sonosDiscovery = new SonosDiscoveryService({
@@ -468,7 +484,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     await app.register(dlnaRoutes, { prefix: "/dlna" });
 
     await rebuildSsdp();
-    app.log.info(`DLNA MediaServer enabled (friendly name: ${config.dlnaFriendlyName})`);
+    app.log.info(
+      `DLNA MediaServer enabled (friendly name: ${sonosSettings.getDlnaFriendlyName()})`,
+    );
   }
 
   // Pick up runtime lan_url changes (#209): rebuild SSDP, log nothing else.
