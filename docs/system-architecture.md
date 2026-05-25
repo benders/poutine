@@ -46,6 +46,21 @@ Navidrome credentials live in env vars, not the DB. SPA + API on one port.
 
 **Navidrome** — private per hub. Driven entirely through Subsonic (`getArtists`, `getAlbum`, `stream`, `getCoverArt`, `getScanStatus`, `startScan`). Its native `/api/*` is unused.
 
+## SPA admin split (issue #216, Phase 2 of #212)
+
+The admin SPA exposes **two distinct top-level destinations** that never co-exist on the same page:
+
+| Route          | Bounded dir              | Owns                                                       |
+|----------------|--------------------------|------------------------------------------------------------|
+| `/admin/hub`   | `frontend/src/features/hub-admin/`   | Instance, peers, invitations, users, art cache, activity retention |
+| `/admin/player`| `frontend/src/features/player-admin/`| LAN URL, Sonos casting, DLNA (#217), cast device settings  |
+
+`/admin/player` is gated on a `GET /player/health` probe (added in #216). When that probe is absent or non-200, the route renders a "Player not deployed on this host" placeholder and the sidebar destination hides — making the Hub/Player split visible to operators well before #220 lifts Player into its own plugin/process.
+
+Bounded directories may not cross-import. Tactical enforcement lives in `frontend/src/features/feature-boundaries.test.ts`; ESLint-level `no-restricted-paths` enforcement is #221. Shared pure-UI helpers live in `features/shared/`.
+
+Backend endpoint paths remain on `/admin/*` for this phase — namespacing those under `/api/admin/{hub,player}/*` is #220. The frontend boundary alone is enough to make the structural commitment of #212 visible to operators.
+
 ## Federation
 
 Peers stored in `instances` (DB-authoritative since v0.5.0 / federation v5), authenticated by Ed25519 pubkey. Every `/federation/*` and `/proxy/*` request is signed.

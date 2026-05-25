@@ -27,6 +27,10 @@ Wrap in a fresh `QueryClient` (`retry: false`) and `MemoryRouter`. Mock the Subs
 
 Reject the mocked API with a `SubsonicError(message, code)` and assert on `getByRole("alert")` plus the rendered code/message. The shared `<ErrorMessage>` component is the single renderer for query errors.
 
+### Testing bounded directories (`features/`)
+
+`features/feature-boundaries.test.ts` walks `features/hub-admin/` and `features/player-admin/` at runtime and asserts neither side imports from the other. Tactical guard until #221 wires ESLint `no-restricted-paths`. Add new feature dirs here when you create them.
+
 ### Testing stores
 
 Zustand stores expose `setState` / `getState` directly — reset in `beforeEach` (`useToasts.setState({ toasts: [] })`). Use `vi.useFakeTimers()` for time-based behavior like toast auto-dismiss.
