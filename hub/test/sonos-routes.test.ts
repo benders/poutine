@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { buildApp } from "../src/server.js";
-import { setPassword } from "../src/auth/passwords.js";
 import { createAccessToken } from "../src/auth/jwt.js";
 import type { FastifyInstance } from "fastify";
 import type { Config } from "../src/config.js";
@@ -15,6 +14,11 @@ const testConfig: Partial<Config> = {
   jwtSecret: "test-secret-key-for-testing-purposes",
   sonosEnabled: true,
   initialLanUrl: "http://hub.lan:3000",
+  // #220: Sonos cast planner reads track metadata via Hub Subsonic over
+  // `app.inject()` using the owner's u+p. Wire the test owner to the
+  // same credentials the tests seed below.
+  poutineOwnerUsername: "tester",
+  poutineOwnerPassword: "secret",
 };
 
 const FAKE_DEVICE: SonosDevice = {
@@ -106,17 +110,21 @@ describe("Sonos play route", () => {
   let seekCalls: Array<{ device: SonosDevice; position: number }>;
   let setVolumeCalls: Array<{ device: SonosDevice; level: number }>;
   let currentVolume = 30;
+  let userId: string;
 
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
 
-    const enc = setPassword("secret", app.passwordKey);
-    app.db
-      .prepare(
-        "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 1)",
-      )
-      .run("user-1", "tester", enc);
+    // #220: seedOwner (run by buildApp because testConfig sets
+    // POUTINE_OWNER_*) inserts the `tester` user with an auto-generated
+    // id and the correct AES-encrypted password. We capture that id here
+    // for JWT minting instead of inserting our own (FK-fragile) row.
+    const row = app.db
+      .prepare("SELECT id FROM users WHERE username = ?")
+      .get("tester") as { id: string } | undefined;
+    if (!row) throw new Error("test owner user 'tester' not seeded by buildApp");
+    userId = row.id;
     seedTrack(app);
 
     // Stub discovery + control so the route exercises real DB + URL logic
@@ -184,25 +192,8 @@ describe("Sonos play route", () => {
     };
   }
 
-  // Stub global fetch so the route's runtime Navidrome `getSong` probe
-  // (hi-res FLAC guard, #180/#199) returns a deterministic response.
-  function stubGetSong(song: Record<string, unknown>) {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        if (String(url).includes("/rest/getSong")) {
-          return new Response(
-            JSON.stringify({ "subsonic-response": { status: "ok", song } }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        return new Response("not stubbed", { status: 404 });
-      }),
-    );
-  }
-
   async function authedPost(url: string, body: unknown) {
-    const token = await createAccessToken("user-1", app.config);
+    const token = await createAccessToken(userId, app.config);
     return app.inject({
       method: "POST",
       url,
@@ -260,28 +251,19 @@ describe("Sonos play route", () => {
     expect(call.meta.title).toBe("Dancing Queen");
   });
 
-  it("resolves Subsonic remote_id from the SPA to the unified track", async () => {
-    // This is what the frontend actually sends — SubsonicSong.id is the
-    // Subsonic remote_id, not the unified UUID. The play route must
-    // resolve via track_sources before looking up DIDL fields.
+  it("returns 404 for a bare Navidrome remote_id (#220 dropped the fallback)", async () => {
+    // Pre-#220 the play route also accepted bare Navidrome remote_ids by
+    // joining instance_tracks → track_sources in-process. That fallback
+    // was always dead defensive code — the SPA has only ever sent the
+    // Subsonic `t<uuid>` form — and is removed now that Player code can
+    // no longer touch app.db.
     const subsonicId = "7jwQomahCwKbSjrAxtelmw";
     seedSubsonicMapping(app, subsonicId);
 
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: subsonicId,
     });
-    expect(res.statusCode).toBe(200);
-    expect(setUriCalls).toHaveLength(1);
-
-    const call = setUriCalls[0]!;
-    // #218: cast token verifies against the unified track ID (decoded from
-    // the `t`-prefixed Subsonic `id` query param). Subsonic remote_id from
-    // the SPA must NOT leak into the stream URL.
-    expect(call.uri).toContain("/rest/stream.view?id=ttrk-1");
-    expect(call.uri).toContain("castToken=");
-    expect(call.uri).not.toContain(subsonicId);
-    expect(call.meta.trackId).toBe("trk-1");
-    expect(call.meta.title).toBe("Dancing Queen");
+    expect(res.statusCode).toBe(404);
   });
 
   it("returns 404 for unknown track id", async () => {
@@ -319,7 +301,7 @@ describe("Sonos play route", () => {
   });
 
   it("/state response includes volumeCap", async () => {
-    const token = await createAccessToken("user-1", app.config);
+    const token = await createAccessToken(userId, app.config);
     const res = await app.inject({
       method: "GET",
       url: `/api/sonos/devices/${FAKE_DEVICE.id}/state`,
@@ -366,7 +348,6 @@ describe("Sonos play route", () => {
 
   it("passes FLAC through verbatim when the device sinks accept audio/flac (#180)", async () => {
     seedTrackSource(app, "flac");
-    stubGetSong({ samplingRate: 44100, bitDepth: 16 });
     stubDeviceWithMimes(["audio/mpeg", "audio/flac", "audio/mp4"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
@@ -449,22 +430,15 @@ describe("Sonos play route", () => {
     expect(seekCalls).toHaveLength(0);
   });
 
-  it("forces MP3 transcode for hi-res FLAC (>48 kHz / >24-bit) on FLAC-capable device (#180/#199)", async () => {
+  it("passes FLAC through on a FLAC-capable device — hi-res guard dropped pending #199 (#220)", async () => {
+    // #220: the Navidrome `getSong` probe used to detect hi-res FLAC
+    // (>48 kHz / >24-bit) and force an MP3 transcode for Sonos S2 zones.
+    // That probe is gone — Player code can no longer reach Navidrome
+    // directly and Hub Subsonic `getSong` doesn't expose samplingRate /
+    // bitDepth. #199 will add the backing schema columns + sync so the
+    // guard can be restored via Hub Subsonic. Documented regression in
+    // docs/pitfalls.md.
     seedTrackSource(app, "flac");
-    stubGetSong({ samplingRate: 96000, bitDepth: 24 });
-    stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
-    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
-      trackId: "trk-1",
-    });
-    expect(res.statusCode).toBe(200);
-    const call = setUriCalls[0]!;
-    expect(call.uri).toContain("format=mp3");
-    expect(call.meta.mimeType).toBe("audio/mpeg");
-  });
-
-  it("passes 16/44.1 FLAC through (under the S2 ceiling)", async () => {
-    seedTrackSource(app, "flac");
-    stubGetSong({ samplingRate: 44100, bitDepth: 16 });
     stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",

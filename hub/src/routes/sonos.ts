@@ -144,10 +144,19 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     // Bare Navidrome `remote_id` resolution was removed — the SPA has
     // always sent the unified Subsonic id; the remote_id fallback was dead
     // defensive code.
-    const candidates =
-      rawTrackId.startsWith("t") && rawTrackId.length > 1
-        ? [rawTrackId, `t${rawTrackId}`]
-        : [`t${rawTrackId}`, rawTrackId];
+    // Build candidate Subsonic IDs to probe via `getSong`. The SPA sends
+    // `t<uuid>` (Subsonic-encoded), so that's the primary form; the bare
+    // `<uuid>` fallback covers historical callers + tests. Dedupe.
+    const seen = new Set<string>();
+    const candidates: string[] = [];
+    const push = (s: string): void => {
+      if (!seen.has(s)) {
+        seen.add(s);
+        candidates.push(s);
+      }
+    };
+    if (rawTrackId.startsWith("t")) push(rawTrackId);
+    push(`t${rawTrackId}`);
 
     let song: SubsonicSongInfo | undefined;
     let unifiedTrackId: string | undefined;
@@ -213,13 +222,16 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       client: "poutine-sonos",
     });
 
-    // Hub Subsonic `coverArt` is the unified release-group id; assemble
-    // the absolute URL the DLNA/Sonos renderer can fetch directly. (Sonos
-    // doesn't strictly need album art for the cast to succeed, but it
-    // surfaces in the now-playing display when DIDL includes it.)
-    const albumArtUri = song.coverArt
-      ? `${lanUrl}/rest/getCoverArt.view?id=${encodeURIComponent(song.coverArt)}`
-      : null;
+    // Hub Subsonic returns `coverArt` as either a full external URL
+    // (federated `image_url`) or a Subsonic id that maps to
+    // `/rest/getCoverArt`. Sonos DIDL needs an absolute URL — pass full
+    // URLs through, wrap bare ids with the LAN-reachable Hub endpoint.
+    let albumArtUri: string | null = null;
+    if (song.coverArt) {
+      albumArtUri = /^https?:\/\//i.test(song.coverArt)
+        ? song.coverArt
+        : `${lanUrl}/rest/getCoverArt.view?id=${encodeURIComponent(song.coverArt)}`;
+    }
 
     const meta: TrackMetadata = {
       trackId: unifiedTrackId,
