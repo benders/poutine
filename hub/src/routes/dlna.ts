@@ -128,7 +128,7 @@ export const dlnaRoutes: FastifyPluginAsync = async (app) => {
           10,
         );
 
-        const out = app.dlnaObjects.browse(objectId, browseFlag, {
+        const out = await app.dlnaObjects.browse(objectId, browseFlag, {
           startIndex: Number.isFinite(startIndex) ? startIndex : 0,
           requestedCount: Number.isFinite(requestedCount) ? requestedCount : 0,
           baseUrl,
