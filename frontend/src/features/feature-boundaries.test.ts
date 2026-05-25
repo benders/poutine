@@ -6,9 +6,12 @@ import { fileURLToPath } from "node:url";
 /**
  * Bounded directory enforcement (#216 — issue body and parent #212).
  *
- * Hub-admin and Player-admin must not import from each other. Full
- * ESLint `no-restricted-paths` enforcement is #221's job; this is the
- * tactical guard until then so a refactor can't silently cross the line.
+ * Hub-admin and Player-admin must not import from each other. ESLint
+ * `no-restricted-imports` is the source-of-truth enforcement since #221
+ * (`frontend/eslint.config.js`, also exposed via `pnpm lint:boundary`);
+ * this file remains as a belt-and-braces test guard that runs in `pnpm
+ * test` and gives a faster, focused failure than chasing a lint config
+ * regression.
  *
  * Shared utilities live in `features/shared/` and are intentionally
  * importable from either side.
