@@ -1,0 +1,15 @@
+{
+  "instances": {
+    "OLD": {
+      "base": "https://old-instance.example.com",
+      "username": "admin",
+      "password": "REPLACE_ME"
+    },
+    "NEW": {
+      "base": "https://new-instance.example.com",
+      "username": "admin",
+      "password": "REPLACE_ME"
+    }
+  },
+  "searchQuery": "love"
+}
