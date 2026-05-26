@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getActivitySettings, updateActivitySettings } from "@/lib/api";
 import { Activity } from "lucide-react";
@@ -12,12 +12,12 @@ export function ActivitySection() {
 
   const [maxEvents, setMaxEvents] = useState("");
   const [dirty, setDirty] = useState(false);
+  const [syncedFrom, setSyncedFrom] = useState(settings);
 
-  useEffect(() => {
-    if (settings && !dirty) {
-      setMaxEvents(String(settings.maxEvents));
-    }
-  }, [settings, dirty]);
+  if (settings !== syncedFrom && !dirty) {
+    setSyncedFrom(settings);
+    if (settings) setMaxEvents(String(settings.maxEvents));
+  }
 
   const saveMutation = useMutation({
     mutationFn: () => updateActivitySettings({ maxEvents: parseInt(maxEvents, 10) }),
