@@ -74,6 +74,32 @@ Either form authenticates a user identically. Unknown user and bad credentials b
 
 Routes register via `binaryRoute()` in `subsonic.ts` to get the binary variant.
 
+## Trusted in-process auth (`x-poutine-internal`)
+
+In-process Subsonic auth path used by `HubSubsonicCaller` (`hub/src/services/hub-subsonic-caller.ts`) when invoked with `{ asUser: <username> }`. Introduced #224 to remove Sonos cast's dependency on the `POUTINE_OWNER_*` credentials.
+
+**Headers (both required, both checked):**
+
+| Header                | Value                                          |
+|-----------------------|------------------------------------------------|
+| `x-poutine-internal`  | `app.internalAuthSecret` — per-boot 32-byte random, base64url-encoded |
+| `x-poutine-as-user`   | Hub username to authenticate as                |
+
+**Middleware behavior** (both `requireSubsonicAuth` and `requireSubsonicAuthBinary`):
+
+1. If neither header is present, fall through to standard `u+p` / `u+t+s` auth.
+2. If exactly one header is present, return Subsonic error 40 / HTTP 401. (No silent acceptance of half-complete trusted requests.)
+3. If both are present, `crypto.timingSafeEqual` the secret against `app.internalAuthSecret`. Mismatch → error 40 / 401.
+4. Look up the user by username. Missing → error 40 / 401. Password is not consulted.
+
+**Producer contract:**
+
+- The secret is in-process only — it must never appear in logs, in `app.config`, in env, on the wire to an external client, or in a JWT/cookie. `HubSubsonicCaller` is the only legitimate producer; new internal callers must go through it.
+- Routes calling `HubSubsonicCaller.call(endpoint, params, { asUser })` are responsible for verifying the user identity up front (e.g. Sonos routes run under `requireAuth` and pass `req.username`).
+- Paths without a user context (DLNA browse — LAN-gated, unauthenticated) omit `asUser` and fall through to the owner `u+p` path.
+
+**Why a separate secret (not `castSecret`):** cast tokens are presented by untrusted LAN clients; the internal secret is presented only by code inside the hub process. Conflating the two would let a leaked cast-token-signing key escalate into impersonation of any user. They have different blast radii — keep them separate.
+
 ## Frontend token management
 
 `frontend/src/lib/api.ts` handles client-side auth:

@@ -33,11 +33,26 @@ export interface SubsonicResponse {
   };
 }
 
+export interface HubSubsonicCallOptions {
+  /**
+   * When set, auth as this user via the in-process trusted-header path
+   * (#224) instead of using the owner u+p. The user must exist on the hub
+   * — the auth middleware looks them up by username. Use this for any path
+   * where the caller already has an authenticated user context (e.g. the
+   * Sonos cast planner runs under JWT auth and knows `req.username`).
+   *
+   * Omit for paths with no user context (DLNA browse is LAN-gated and
+   * unauthenticated — falls back to owner u+p).
+   */
+  asUser?: string;
+}
+
 export interface HubSubsonicCaller {
   /**
    * GET `endpoint` (e.g. `/rest/getSong`) with the supplied params merged
    * onto baseline auth params. Throws on non-200 HTTP, on Subsonic
-   * `failed` status, or on missing owner credentials.
+   * `failed` status, or on missing owner credentials (when `asUser` is not
+   * set).
    *
    * Caller is responsible for narrowing the response shape — this layer
    * is intentionally untyped above `Record<string, unknown>`.
@@ -45,6 +60,7 @@ export interface HubSubsonicCaller {
   call(
     endpoint: string,
     params: Record<string, string>,
+    opts?: HubSubsonicCallOptions,
   ): Promise<SubsonicResponse>;
 }
 
@@ -63,26 +79,41 @@ export function createHubSubsonicCaller(
   opts: CreateCallerOptions,
 ): HubSubsonicCaller {
   return {
-    async call(endpoint, params) {
-      const username = app.config.poutineOwnerUsername;
-      const password = app.config.poutineOwnerPassword;
-      if (!username || !password) {
-        throw new Error(
-          "Hub Subsonic caller: owner credentials not configured " +
-            "(POUTINE_OWNER_USERNAME / POUTINE_OWNER_PASSWORD)",
-        );
-      }
-      const qs = new URLSearchParams({
-        u: username,
-        p: password,
+    async call(endpoint, params, callOpts) {
+      const qsParams: Record<string, string> = {
         f: "json",
         v: "1.16.1",
         c: opts.client,
         ...params,
-      });
+      };
+      const headers: Record<string, string> = {};
+
+      if (callOpts?.asUser) {
+        // Trusted in-process auth (#224). Subsonic spec still requires
+        // `u=` to be present on the wire; the middleware ignores it once
+        // the trusted-header pair validates, but we set it to the
+        // identified user for log readability.
+        qsParams.u = callOpts.asUser;
+        headers["x-poutine-internal"] = app.internalAuthSecret;
+        headers["x-poutine-as-user"] = callOpts.asUser;
+      } else {
+        const username = app.config.poutineOwnerUsername;
+        const password = app.config.poutineOwnerPassword;
+        if (!username || !password) {
+          throw new Error(
+            "Hub Subsonic caller: owner credentials not configured " +
+              "(POUTINE_OWNER_USERNAME / POUTINE_OWNER_PASSWORD)",
+          );
+        }
+        qsParams.u = username;
+        qsParams.p = password;
+      }
+
+      const qs = new URLSearchParams(qsParams);
       const res = await app.inject({
         method: "GET",
         url: `${endpoint}?${qs.toString()}`,
+        headers,
       });
       if (res.statusCode !== 200) {
         throw new Error(`${endpoint} → ${res.statusCode}`);

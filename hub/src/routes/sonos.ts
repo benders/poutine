@@ -162,9 +162,15 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     let unifiedTrackId: string | undefined;
     for (const candidate of candidates) {
       try {
-        const body = await app.hubSubsonicSonos.call("/rest/getSong", {
-          id: candidate,
-        });
+        const body = await app.hubSubsonicSonos.call(
+          "/rest/getSong",
+          { id: candidate },
+          // #224: auth as the calling SPA user via the in-process trusted-
+          // header path. Eliminates the POUTINE_OWNER credential dependency
+          // on the cast hot-path (silent 404 when owner u+p didn't match a
+          // real hub user — see docs/pitfalls.md "Sonos cast").
+          { asUser: username },
+        );
         const sr = body["subsonic-response"];
         if (sr.status === "ok" && sr.song) {
           song = sr.song as SubsonicSongInfo;
