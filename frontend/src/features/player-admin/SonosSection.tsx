@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getSonosSettings, updateSonosSettings } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -15,18 +15,17 @@ export function SonosSection() {
   const [dirtyCap, setDirtyCap] = useState(false);
   const [lanUrl, setLanUrl] = useState("");
   const [dirtyLan, setDirtyLan] = useState(false);
+  const [capSyncedFrom, setCapSyncedFrom] = useState(settings);
+  const [lanSyncedFrom, setLanSyncedFrom] = useState(settings);
 
-  useEffect(() => {
-    if (settings && !dirtyCap) {
-      setVolumeCap(String(settings.volumeCap));
-    }
-  }, [settings, dirtyCap]);
-
-  useEffect(() => {
-    if (settings && !dirtyLan) {
-      setLanUrl(settings.lanUrl);
-    }
-  }, [settings, dirtyLan]);
+  if (settings !== capSyncedFrom && !dirtyCap) {
+    setCapSyncedFrom(settings);
+    if (settings) setVolumeCap(String(settings.volumeCap));
+  }
+  if (settings !== lanSyncedFrom && !dirtyLan) {
+    setLanSyncedFrom(settings);
+    if (settings) setLanUrl(settings.lanUrl);
+  }
 
   const toggleMutation = useMutation({
     mutationFn: (enabled: boolean) => updateSonosSettings({ enabled }),

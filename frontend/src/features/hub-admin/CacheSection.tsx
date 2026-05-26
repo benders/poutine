@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getCacheStats, updateCacheSettings, clearArtCache } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -20,12 +20,12 @@ export function CacheSection() {
 
   const [maxMb, setMaxMb] = useState("");
   const [dirty, setDirty] = useState(false);
+  const [syncedFrom, setSyncedFrom] = useState(stats);
 
-  useEffect(() => {
-    if (stats && !dirty) {
-      setMaxMb(String(Math.round(stats.artCacheMaxBytes / 1024 / 1024)));
-    }
-  }, [stats, dirty]);
+  if (stats !== syncedFrom && !dirty) {
+    setSyncedFrom(stats);
+    if (stats) setMaxMb(String(Math.round(stats.artCacheMaxBytes / 1024 / 1024)));
+  }
 
   const saveMutation = useMutation({
     mutationFn: () =>

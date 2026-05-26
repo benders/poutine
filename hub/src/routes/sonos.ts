@@ -1,8 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import {
   SonosControl,
-  SONOS_MAX_SAMPLE_RATE_HZ,
-  SONOS_MAX_BIT_DEPTH,
   chooseSonosCastFormat,
   type TrackMetadata,
 } from "../services/sonos-control.js";
@@ -11,6 +9,7 @@ import type { SonosSettings } from "../services/sonos-settings.js";
 import { buildStreamUrl } from "../services/cast-tokens.js";
 import { requireAuth } from "../auth/middleware.js";
 import type { HubSubsonicCaller } from "../services/hub-subsonic-caller.js";
+import { shouldForceMp3 } from "../services/sonos-capabilities.js";
 
 
 /**
@@ -52,6 +51,7 @@ interface SubsonicSongInfo {
   bitRate?: number;
   samplingRate?: number;
   bitDepth?: number;
+  channelCount?: number;
 }
 
 interface PlayBody {
@@ -93,13 +93,11 @@ interface VolumeBody {
 }
 
 export const sonosRoutes: FastifyPluginAsync = async (app) => {
-  // #220: the hi-res FLAC guard (samplingRate / bitDepth probe) is dropped
-  // for now. Player code can no longer reach Navidrome directly, and Hub
-  // Subsonic `getSong` does not surface those fields (#199 adds the
-  // `track_sources` schema columns + sync wiring needed to restore the
-  // guard via the proper HTTP path). Documented regression: 24-bit / 96 kHz
-  // FLAC may silently fall back to STOPPED on older Sonos S2 zones until
-  // #199 lands. See `docs/pitfalls.md`.
+  // #199: hi-res FLAC silently STOPs on Sonos when the FLAC header exceeds
+  // firmware ceilings (S2: 24/48/2-ch, S1: 16/48/2-ch). protocolInfo doesn't
+  // surface these — gate at cast time using model + Subsonic `getSong`'s
+  // samplingRate / bitDepth / channelCount, force MP3 when any exceed the
+  // ceiling. Pure logic lives in `services/sonos-capabilities.ts`.
 
   /**
    * Resolve any of the trackId shapes the /play route accepts to a
@@ -123,7 +121,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
   const buildCast = async (
     rawTrackId: string,
     username: string,
-    dev: { supportedMimes?: Set<string> | null },
+    dev: { model?: string; supportedMimes?: Set<string> | null },
     opts: { position?: number; ttlSec?: number } = {},
   ): Promise<CastBuild> => {
     const lanUrl = app.sonosSettings.getLanUrl();
@@ -191,20 +189,32 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
       return { ok: false, status: 404, error: "Track not found" };
     }
 
-    const { mime, transcode } = chooseSonosCastFormat(
-      song.suffix ?? null,
-      dev.supportedMimes,
+    const mimeChoice = chooseSonosCastFormat(song.suffix ?? null, dev.supportedMimes);
+    // #199: even when MIME pass-through is fine, force MP3 when the source
+    // exceeds the target Sonos line's firmware ceiling. OR'd with the MIME-
+    // mismatch transcode flag — either signal lands us in the MP3 path.
+    const forceMp3 = shouldForceMp3(
+      dev.model,
+      song.samplingRate,
+      song.bitDepth,
+      song.channelCount,
     );
-
-    // #220: hi-res FLAC sample-rate / bit-depth guard removed. Hub Subsonic
-    // `getSong` does not return those fields today; #199 will add the
-    // backing `track_sources` columns + sync + Subsonic projection so this
-    // probe can be restored without Player code talking to Navidrome
-    // directly. Until then, hi-res FLAC sources may silently STOPPED on
-    // older Sonos S2 zones. Workaround: transcode by setting a lower
-    // bitrate in Navidrome.
-    void SONOS_MAX_SAMPLE_RATE_HZ;
-    void SONOS_MAX_BIT_DEPTH;
+    const transcode = mimeChoice.transcode || forceMp3;
+    const mime = transcode ? "audio/mpeg" : mimeChoice.mime;
+    app.log.info(
+      {
+        trackId: unifiedTrackId,
+        model: dev.model,
+        suffix: song.suffix,
+        samplingRate: song.samplingRate,
+        bitDepth: song.bitDepth,
+        channelCount: song.channelCount,
+        mimeMismatch: mimeChoice.transcode,
+        hiresGate: forceMp3,
+        transcode,
+      },
+      "sonos cast format decision",
+    );
 
     const startAt =
       typeof opts.position === "number" && opts.position > 0

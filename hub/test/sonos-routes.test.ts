@@ -55,6 +55,7 @@ function seedTrackSource(
   app: FastifyInstance,
   format: string | null,
   id = "ts-fmt",
+  audio: { samplingRate?: number; bitDepth?: number; channelCount?: number } = {},
 ) {
   app.db
     .prepare(
@@ -70,10 +71,19 @@ function seedTrackSource(
     .run("local:fmt-track", "local", "fmt-track", "local:alb-1", "Dancing Queen", "ABBA");
   app.db
     .prepare(
-      `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, preferred)
-       VALUES (?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, sampling_rate, bit_depth, channel_count, preferred)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     )
-    .run(id, "trk-1", "local", "local:fmt-track", format);
+    .run(
+      id,
+      "trk-1",
+      "local",
+      "local:fmt-track",
+      format,
+      audio.samplingRate ?? null,
+      audio.bitDepth ?? null,
+      audio.channelCount ?? null,
+    );
 }
 
 function seedSubsonicMapping(app: FastifyInstance, remoteId: string) {
@@ -188,6 +198,19 @@ describe("Sonos play route", () => {
       get: (id) =>
         id === FAKE_DEVICE.id
           ? { ...FAKE_DEVICE, supportedMimes: new Set(mimes) }
+          : undefined,
+    };
+  }
+
+  // #199: override discovery with a specific model + sink MIMEs. Used by the
+  // hi-res capability gate tests to drive different Sonos lines (S2 / S1).
+  function stubDeviceModel(model: string, mimes: string[]) {
+    (app as unknown as {
+      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
+    }).sonosDiscovery = {
+      get: (id) =>
+        id === FAKE_DEVICE.id
+          ? { ...FAKE_DEVICE, model, supportedMimes: new Set(mimes) }
           : undefined,
     };
   }
@@ -347,7 +370,11 @@ describe("Sonos play route", () => {
   });
 
   it("passes FLAC through verbatim when the device sinks accept audio/flac (#180)", async () => {
-    seedTrackSource(app, "flac");
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 44100,
+      bitDepth: 16,
+      channelCount: 2,
+    });
     stubDeviceWithMimes(["audio/mpeg", "audio/flac", "audio/mp4"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
@@ -356,6 +383,73 @@ describe("Sonos play route", () => {
     const call = setUriCalls[0]!;
     expect(call.uri).not.toContain("format=mp3");
     expect(call.meta.mimeType).toBe("audio/flac");
+  });
+
+  // #199: hi-res capability gate. Sonos firmware silently STOPs FLAC that
+  // exceeds the line's ceiling (S2: 24/48/2-ch, S1: 16/48/2-ch). Even when
+  // protocolInfo accepts audio/flac, the cast must force MP3 transcode.
+  it("transcodes 24/96 FLAC to MP3 on an S2 Sonos (over sample-rate ceiling, #199)", async () => {
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 96000,
+      bitDepth: 24,
+      channelCount: 2,
+    });
+    stubDeviceModel("Sonos Era 100", ["audio/mpeg", "audio/flac", "audio/mp4"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
+  });
+
+  it("transcodes 24/48 FLAC to MP3 on an S1 Sonos (over bit-depth ceiling, #199)", async () => {
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 48000,
+      bitDepth: 24,
+      channelCount: 2,
+    });
+    stubDeviceModel("Sonos PLAY:1", ["audio/mpeg", "audio/flac"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
+  });
+
+  it("passes 16/44.1 FLAC through on an S2 Sonos — gate doesn't over-trigger (#199)", async () => {
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 44100,
+      bitDepth: 16,
+      channelCount: 2,
+    });
+    stubDeviceModel("Sonos Era 100", ["audio/mpeg", "audio/flac", "audio/mp4"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).not.toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/flac");
+  });
+
+  it("transcodes multi-channel FLAC to MP3 on every Sonos line (#199)", async () => {
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 48000,
+      bitDepth: 16,
+      channelCount: 6,
+    });
+    stubDeviceModel("Sonos Era 100", ["audio/mpeg", "audio/flac", "audio/mp4"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
   });
 
   it("transcodes OGG sources to MP3 (no native Sonos support)", async () => {
@@ -384,7 +478,13 @@ describe("Sonos play route", () => {
   });
 
   it("passes MP3 sources through without re-transcoding", async () => {
-    seedTrackSource(app, "mp3");
+    // bitDepth=0 is Navidrome's signal for lossy formats; sample rate is
+    // still required for the #199 fail-safe gate to allow pass-through.
+    seedTrackSource(app, "mp3", "ts-fmt", {
+      samplingRate: 44100,
+      bitDepth: 0,
+      channelCount: 2,
+    });
     stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
@@ -399,7 +499,11 @@ describe("Sonos play route", () => {
     // Local→Sonos mid-track switch on a pass-through source: Subsonic
     // ignores `timeOffset` on raw streams, so the position has to be
     // applied with a SOAP Seek once the device has loaded the URI.
-    seedTrackSource(app, "mp3");
+    seedTrackSource(app, "mp3", "ts-fmt", {
+      samplingRate: 44100,
+      bitDepth: 0,
+      channelCount: 2,
+    });
     stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
@@ -430,14 +534,11 @@ describe("Sonos play route", () => {
     expect(seekCalls).toHaveLength(0);
   });
 
-  it("passes FLAC through on a FLAC-capable device — hi-res guard dropped pending #199 (#220)", async () => {
-    // #220: the Navidrome `getSong` probe used to detect hi-res FLAC
-    // (>48 kHz / >24-bit) and force an MP3 transcode for Sonos S2 zones.
-    // That probe is gone — Player code can no longer reach Navidrome
-    // directly and Hub Subsonic `getSong` doesn't expose samplingRate /
-    // bitDepth. #199 will add the backing schema columns + sync so the
-    // guard can be restored via Hub Subsonic. Documented regression in
-    // docs/pitfalls.md.
+  it("forces MP3 when audio metadata is missing — fail-safe default (#199)", async () => {
+    // Pre-#199 track_sources rows and peer tracks not yet re-synced have
+    // null sampling_rate / bit_depth / channel_count. Without all three we
+    // can't prove the source fits the line's ceiling, so transcode rather
+    // than risk a silent STOPPED on a hi-res track.
     seedTrackSource(app, "flac");
     stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
@@ -445,8 +546,8 @@ describe("Sonos play route", () => {
     });
     expect(res.statusCode).toBe(200);
     const call = setUriCalls[0]!;
-    expect(call.uri).not.toContain("format=mp3");
-    expect(call.meta.mimeType).toBe("audio/flac");
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
   });
 
   it("rejects unauthenticated requests", async () => {
