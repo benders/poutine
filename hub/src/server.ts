@@ -37,7 +37,7 @@ import { SsdpAdvertiser } from "./services/ssdp-advertiser.js";
 import { DlnaObjectService } from "./services/dlna-objects.js";
 import { dlnaRoutes } from "./routes/dlna.js";
 import { createHubSubsonicCaller } from "./services/hub-subsonic-caller.js";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -68,6 +68,15 @@ declare module "fastify" {
   lastFmClient: LastFmClient | null;
   fanartTvClient: FanartTvClient | null;
   navidromeClient: SubsonicClient;
+  /**
+   * Random 32-byte secret minted at boot. Used only for in-process trusted
+   * auth: requests carrying `x-poutine-internal: <secret>` + `x-poutine-as-
+   * user: <username>` bypass password verification on the Subsonic auth
+   * middleware. Never crosses the wire — `HubSubsonicCaller` (`asUser` mode)
+   * is the only producer; both ends read this same decorator. See
+   * `docs/authentication.md` and issue #224.
+   */
+  internalAuthSecret: string;
 }
 }
 
@@ -401,6 +410,11 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const privDer = privateKey.export({ format: "der", type: "pkcs8" });
   const castSecret = playerSettings.getCastSecret(() => deriveCastSecret(privDer));
   app.decorate("castSecret", castSecret);
+
+  // In-process Subsonic trusted-auth secret (#224). Random per-boot — the
+  // value never crosses the wire and there are no cross-restart consumers
+  // (HubSubsonicCaller reads it from the live app instance at call time).
+  app.decorate("internalAuthSecret", randomBytes(32).toString("base64url"));
 
   // #220: Sonos play planner reads track metadata + preferred-source info
   // via the Hub Subsonic API over in-process loopback — no `SubsonicClient`

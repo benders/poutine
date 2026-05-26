@@ -68,6 +68,8 @@ Full protocol: [federation-api.md](federation-api.md).
 | Accepting `castToken=` on Subsonic endpoints other than `/rest/stream(.view)`         | #218      | Cast tokens grant *single-track stream access only*. `requireSubsonicAuthBinary` path-gates the token branch — never widen it (especially not to `/rest/getCoverArt` or any JSON endpoint) |
 | Player code importing `SubsonicClient` from `hub/src/adapters/subsonic.js`            | #220      | Player BE (sonos / dlna / cast routes + services) must reach Hub Subsonic via HTTP only — use the shared `HubSubsonicCaller` (`services/hub-subsonic-caller.ts`). In-process `SubsonicClient` is Hub→Navidrome only (admin.ts, subsonic.ts, auto-sync.ts) |
 | Player code touching `app.db` directly                                                | #220      | Same boundary. `routes/sonos.ts` reads track metadata + source format via Hub `/rest/getSong` over `app.inject`; never re-add `app.db.prepare(...)` to Player files. `app.playerDb` (the player-owned SQLite file) is allowed via the typed `PlayerSettings` wrapper |
+| Logging or echoing `app.internalAuthSecret` (or the `x-poutine-internal` header value) | #224      | The trusted-header secret is in-process only — never log it, never put it in a JWT/cookie/response body. Only `HubSubsonicCaller` is allowed to read it; the auth middleware does a `timingSafeEqual` and discards |
+| Adding a new internal caller for Hub Subsonic that bypasses `HubSubsonicCaller`        | #224      | All in-process Subsonic calls must go through `services/hub-subsonic-caller.ts`. New routes use `{ asUser: req.username }` when running under `requireAuth`; only paths with no user context (DLNA browse) may omit `asUser` and fall back to owner u+p |
 
 Full flow: [authentication.md](authentication.md).
 
@@ -93,6 +95,7 @@ Full flow: [authentication.md](authentication.md).
 |------------------------------------------------------------------------------------------------------------|-----------|--------------------------------------------------------------------------------------------------|
 | Re-adding a runtime Navidrome `getSong` call from Player to detect hi-res FLAC                             | #220      | Player BE cannot reach Navidrome — boundary set by #212. Restore the hi-res guard via Hub Subsonic (#199 adds `track_sources.sampling_rate` / `bit_depth` columns + projects them into `/rest/getSong`) |
 | Assuming the SPA can send a bare Navidrome `remote_id` to `/api/sonos/devices/:id/play`                    | #220      | SPA has always sent `t<uuid>` (the Subsonic id). The remote_id fallback was dead defensive code and is removed |
+| Routing Sonos cast's internal `/rest/getSong` through `POUTINE_OWNER_USERNAME` / `POUTINE_OWNER_PASSWORD`  | #224      | The cast hot-path now authenticates as the calling SPA user via `HubSubsonicCaller`'s trusted-header mode (`{ asUser: req.username }`). Owner u+p was a hidden coupling — a hub deployed with mismatched owner creds silently 404'd every cast attempt because Subsonic returned `status:failed` and the route interpreted that as "track not found". See `docs/authentication.md#trusted-in-process-auth` |
 
 ## Frontend
 
