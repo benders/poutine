@@ -57,13 +57,22 @@ export function capabilityFor(model: string | undefined): SonosCapability {
  * True when the source exceeds the target's ceiling and must be transcoded
  * (currently → MP3 via Subsonic `format=mp3`).
  *
+ * Fail-safe default: any of `samplingRate`, `bitDepth`, `channelCount`
+ * being `undefined` forces MP3. We cannot prove the source fits the line's
+ * firmware ceiling without all three, and the cost of an unnecessary MP3
+ * transcode is small compared to a silent STOPPED on a hi-res track. This
+ * covers pre-#199 track_sources rows that haven't been re-synced, peer
+ * tracks that haven't been re-fetched after the migration, and any future
+ * source that omits OpenSubsonic audio metadata.
+ *
+ * Once all three are present:
  * - `bitDepth === 0` is treated as lossy (MP3/AAC report 0). Lossy never
- *   triggers a bit-depth transcode on its own.
- * - Missing samplingRate is treated as "no signal" → pass-through. We never
- *   transcode a track we can't reason about; worst case is the existing
- *   silent-STOP behaviour, which is what we already had pre-fix.
- * - `channelCount > 2` (any multi-channel source) → force MP3 on every Sonos
- *   line. No Sonos generation plays multi-channel FLAC locally.
+ *   triggers a bit-depth transcode on its own; the sample-rate gate still
+ *   applies.
+ * - `channelCount > cap.maxChannels` → force MP3. No Sonos generation
+ *   plays multi-channel FLAC locally.
+ * - `samplingRate > cap.maxSampleRate` → force MP3.
+ * - `bitDepth > cap.maxBitDepth` (with bitDepth > 0) → force MP3.
  */
 export function shouldForceMp3(
   model: string | undefined,
@@ -71,9 +80,16 @@ export function shouldForceMp3(
   bitDepth: number | undefined,
   channelCount: number | undefined,
 ): boolean {
+  if (
+    samplingRate === undefined ||
+    bitDepth === undefined ||
+    channelCount === undefined
+  ) {
+    return true;
+  }
   const cap = capabilityFor(model);
-  if (typeof channelCount === "number" && channelCount > cap.maxChannels) return true;
-  if (typeof samplingRate === "number" && samplingRate > cap.maxSampleRate) return true;
-  if (typeof bitDepth === "number" && bitDepth > 0 && bitDepth > cap.maxBitDepth) return true;
+  if (channelCount > cap.maxChannels) return true;
+  if (samplingRate > cap.maxSampleRate) return true;
+  if (bitDepth > 0 && bitDepth > cap.maxBitDepth) return true;
   return false;
 }

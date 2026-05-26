@@ -142,16 +142,29 @@ describe("shouldForceMp3", () => {
     expect(shouldForceMp3(undefined, 96000, 24, 2)).toBe(true);
   });
 
-  // Missing metadata — pass-through (no signal to act on)
-  it("missing samplingRate + missing bitDepth → pass-through", () => {
-    expect(shouldForceMp3("Sonos Era 100", undefined, undefined, 2)).toBe(false);
+  // Missing metadata — fail-safe to MP3 (#199). Pre-migration rows and peer
+  // tracks not yet re-synced may have null sampling_rate / bit_depth /
+  // channel_count; without all three we cannot prove the source fits the
+  // line's ceiling, so transcode.
+  it("missing samplingRate + missing bitDepth → MP3 (fail-safe)", () => {
+    expect(shouldForceMp3("Sonos Era 100", undefined, undefined, 2)).toBe(true);
   });
 
-  it("missing samplingRate alone → pass-through", () => {
-    expect(shouldForceMp3("Sonos Era 100", undefined, 24, 2)).toBe(false);
+  it("missing samplingRate alone → MP3 (fail-safe)", () => {
+    expect(shouldForceMp3("Sonos Era 100", undefined, 24, 2)).toBe(true);
   });
 
-  it("missing channelCount → don't trigger multi-channel gate", () => {
-    expect(shouldForceMp3("Sonos Era 100", 44100, 16, undefined)).toBe(false);
+  it("missing bitDepth alone → MP3 (fail-safe)", () => {
+    expect(shouldForceMp3("Sonos Era 100", 44100, undefined, 2)).toBe(true);
+  });
+
+  it("missing channelCount alone → MP3 (fail-safe)", () => {
+    expect(shouldForceMp3("Sonos Era 100", 44100, 16, undefined)).toBe(true);
+  });
+
+  it("all three missing → MP3 (fail-safe)", () => {
+    expect(shouldForceMp3("Sonos Era 100", undefined, undefined, undefined)).toBe(
+      true,
+    );
   });
 });

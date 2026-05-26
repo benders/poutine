@@ -497,8 +497,8 @@ export function mergeLibraries(db: Database.Database): void {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertTrackSource = db.prepare(`
-      INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, bitrate, size)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, bitrate, size, sampling_rate, bit_depth, channel_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     // Group tracks by release
@@ -599,6 +599,9 @@ export function mergeLibraries(db: Database.Database): void {
               track.format as string | null,
               track.bitrate as number | null,
               track.size as number | null,
+              track.sampling_rate as number | null,
+              track.bit_depth as number | null,
+              track.channel_count as number | null,
             );
           } catch (err) {
             const existing = db
@@ -653,6 +656,9 @@ export function mergeLibraries(db: Database.Database): void {
                 track.format as string | null,
                 track.bitrate as number | null,
                 track.size as number | null,
+                track.sampling_rate as number | null,
+                track.bit_depth as number | null,
+                track.channel_count as number | null,
               );
             } catch (err) {
               const prior = db
@@ -735,6 +741,9 @@ export function mergeLibraries(db: Database.Database): void {
               track.format as string | null,
               track.bitrate as number | null,
               track.size as number | null,
+              track.sampling_rate as number | null,
+              track.bit_depth as number | null,
+              track.channel_count as number | null,
             );
           } catch (err) {
             const prior = db

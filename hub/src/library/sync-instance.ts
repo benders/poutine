@@ -67,6 +67,12 @@ interface NavidromeSong {
   musicBrainzId?: string;
   year?: number;
   genre?: string;
+  // #199: Navidrome populates these on OpenSubsonic responses. Lossy formats
+  // (MP3/AAC) report bitDepth as 0; lossless reports 16 or 24. Missing on
+  // peer-federated tracks until federation v7 carries them.
+  samplingRate?: number;
+  bitDepth?: number;
+  channelCount?: number;
 }
 
 // ── Simple semaphore ──────────────────────────────────────────────────────────
@@ -252,8 +258,8 @@ export async function readNavidromeViaProxy(
   `);
 
   const upsertTrack = db.prepare(`
-    INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, bitrate, format, size, musicbrainz_id, year, genre)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, bitrate, format, size, musicbrainz_id, year, genre, sampling_rate, bit_depth, channel_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(instance_id, remote_id) DO UPDATE SET
       album_id = excluded.album_id,
       title = excluded.title,
@@ -266,7 +272,10 @@ export async function readNavidromeViaProxy(
       size = excluded.size,
       musicbrainz_id = excluded.musicbrainz_id,
       year = excluded.year,
-      genre = excluded.genre
+      genre = excluded.genre,
+      sampling_rate = excluded.sampling_rate,
+      bit_depth = excluded.bit_depth,
+      channel_count = excluded.channel_count
   `);
 
   // Track seen IDs for stale-data cleanup
@@ -453,6 +462,9 @@ export async function readNavidromeViaProxy(
               song.musicBrainzId ?? null,
               song.year ?? null,
               song.genre ?? null,
+              song.samplingRate ?? null,
+              song.bitDepth ?? null,
+              song.channelCount ?? null,
             );
             seenTrackRemoteIds.add(song.id);
             result.trackCount++;
