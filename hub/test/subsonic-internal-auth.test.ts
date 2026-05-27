@@ -88,11 +88,10 @@ describe("Subsonic auth — trusted in-process headers (#224)", () => {
   it("rejects when asUser does not match a real user", async () => {
     app = await boot();
     const caller = createHubSubsonicCaller(app, { client: "test" });
+    // #230: caller throws on Subsonic status=failed (auth error here).
     await expect(
       caller.call("/rest/ping", {}, { asUser: "ghost" }),
-    ).resolves.toMatchObject({
-      "subsonic-response": { status: "failed", error: { code: 40 } },
-    });
+    ).rejects.toThrow(/status=failed.*code=40/);
   });
 
   it("rejects when only one of the two headers is present", async () => {
@@ -123,8 +122,11 @@ describe("Subsonic auth — trusted in-process headers (#224)", () => {
     app.db
       .prepare("UPDATE users SET password_enc = '' WHERE username = ?")
       .run("nobody");
-    const broken = await caller.call("/rest/ping", {});
-    expect(broken["subsonic-response"].status).toBe("failed");
+    // #230: caller throws on Subsonic status=failed so the misconfig
+    // surfaces loudly instead of silently empty results downstream.
+    await expect(caller.call("/rest/ping", {})).rejects.toThrow(
+      /status=failed/,
+    );
   });
 
   it("uses a per-boot random secret (not derivable from config)", async () => {

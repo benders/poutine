@@ -118,10 +118,22 @@ export function createHubSubsonicCaller(
       if (res.statusCode !== 200) {
         throw new Error(`${endpoint} → ${res.statusCode}`);
       }
-      // Subsonic "failed" status is surfaced via the body — callers decide
-      // whether to treat it as fatal. DLNA browse tolerates empty / missing
-      // sub-objects; sonos cast must hard-fail when getSong fails.
-      return res.json() as SubsonicResponse;
+      const parsed = res.json() as SubsonicResponse;
+      // Honor the interface contract: Subsonic `status:"failed"` is fatal.
+      // Without this, an auth / config failure (e.g. owner password drift)
+      // surfaces as silent empty sub-objects at every caller. Callers that
+      // can recover (DLNA browse — UPnP has no way to surface auth errors
+      // to the renderer) catch and serve an empty container; callers that
+      // can't (sonos cast getSong) propagate. See #230.
+      const body = parsed["subsonic-response"];
+      if (body?.status === "failed") {
+        const code = body.error?.code ?? -1;
+        const message = body.error?.message ?? "unknown error";
+        throw new Error(
+          `${endpoint} → Subsonic status=failed (code=${code}): ${message}`,
+        );
+      }
+      return parsed;
     },
   };
 }

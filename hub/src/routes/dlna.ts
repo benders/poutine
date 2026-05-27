@@ -128,19 +128,33 @@ export const dlnaRoutes: FastifyPluginAsync = async (app) => {
           10,
         );
 
-        const out = await app.dlnaObjects.browse(objectId, browseFlag, {
-          startIndex: Number.isFinite(startIndex) ? startIndex : 0,
-          requestedCount: Number.isFinite(requestedCount) ? requestedCount : 0,
-          baseUrl,
-          // #218: DIDL `res@uri` is a self-contained Hub Subsonic URL with
-          // an embedded cast token. Devices fetch bytes directly — no
-          // Player-side relay.
-          castSecret: app.castSecret,
-          username:
-            app.config.dlnaPseudoUser ||
-            app.config.poutineOwnerUsername ||
-            "dlna",
-        });
+        // UPnP `Browse` has no slot for surfacing an upstream auth/config
+        // error to the renderer — strict clients treat a SOAP fault as a
+        // permanent device failure. We swallow + log instead, returning an
+        // empty container so the renderer just shows "nothing here". The
+        // hub log is the loud signal (#230).
+        let out: { result: string; numberReturned: number; totalMatches: number };
+        try {
+          out = await app.dlnaObjects.browse(objectId, browseFlag, {
+            startIndex: Number.isFinite(startIndex) ? startIndex : 0,
+            requestedCount: Number.isFinite(requestedCount) ? requestedCount : 0,
+            baseUrl,
+            // #218: DIDL `res@uri` is a self-contained Hub Subsonic URL with
+            // an embedded cast token. Devices fetch bytes directly — no
+            // Player-side relay.
+            castSecret: app.castSecret,
+            username:
+              app.config.dlnaPseudoUser ||
+              app.config.poutineOwnerUsername ||
+              "dlna",
+          });
+        } catch (err) {
+          req.log.warn(
+            { err, objectId, browseFlag },
+            "DLNA Browse failed against Hub Subsonic — serving empty container",
+          );
+          out = { result: "<DIDL-Lite/>", numberReturned: 0, totalMatches: 0 };
+        }
         return reply.send(
           buildSoapResponse(CD, "Browse", {
             Result: out.result,
