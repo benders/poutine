@@ -112,7 +112,7 @@ describe("admin — login", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("non-admin user → 403", async () => {
+  it("non-admin user → 200 with isAdmin=false (#232)", async () => {
     const enc = setPassword("guestpass1", app.passwordKey);
     app.db
       .prepare(
@@ -125,7 +125,8 @@ describe("admin — login", () => {
       url: "/admin/login",
       payload: { username: "guest", password: "guestpass1" },
     });
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().user).toMatchObject({ username: "guest", isAdmin: false });
   });
 
   it("unauthenticated request to protected endpoint → 401", async () => {

@@ -131,7 +131,7 @@ login_and_sync() {
   printf "  Waiting for %s local library..." "$label" >&2
   while true; do
     local sync_resp local_count
-    sync_resp=$(curl -sf -X POST "http://localhost:${port}/admin/sync" \
+    sync_resp=$(curl -sf -X POST "http://localhost:${port}/api/admin/hub/sync" \
       -H "Authorization: Bearer $jwt" 2>/dev/null || echo '{"local":{"trackCount":0}}')
     local_count=$(echo "$sync_resp" | python3 -c \
       "import sys,json; d=json.load(sys.stdin); print(d.get('local',{}).get('trackCount',0))" 2>/dev/null || echo "0")
@@ -175,13 +175,13 @@ admit() {
   in_jwt=$(login_only "$in_port")
   out_jwt=$(login_only "$out_port")
 
-  invite_resp=$(curl -sf -X POST "http://localhost:${in_port}/admin/peers/invite" \
+  invite_resp=$(curl -sf -X POST "http://localhost:${in_port}/api/admin/hub/peers/invite" \
     -H "Authorization: Bearer $in_jwt" \
     -H "Content-Type: application/json" \
     -d "{\"ourUrl\":\"${in_url}\",\"inviteeUrl\":\"${out_url}\",\"expiresInSec\":600}")
   invite=$(echo "$invite_resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['invitation'])")
 
-  accept_resp=$(curl -sf -X POST "http://localhost:${out_port}/admin/peers/accept" \
+  accept_resp=$(curl -sf -X POST "http://localhost:${out_port}/api/admin/hub/peers/accept" \
     -H "Authorization: Bearer $out_jwt" \
     -H "Content-Type: application/json" \
     -d "{\"invitation\":\"${invite}\",\"ourUrl\":\"${out_url}\"}")

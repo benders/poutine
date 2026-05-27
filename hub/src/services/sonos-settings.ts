@@ -26,6 +26,7 @@ export const SONOS_VOLUME_CAP_KEY = PLAYER_SETTINGS_KEYS.SONOS_VOLUME_CAP;
 export const LAN_URL_KEY = PLAYER_SETTINGS_KEYS.LAN_URL;
 export const DLNA_ENABLED_KEY = PLAYER_SETTINGS_KEYS.DLNA_ENABLED;
 export const DLNA_FRIENDLY_NAME_KEY = PLAYER_SETTINGS_KEYS.DLNA_FRIENDLY_NAME;
+export const SONOS_ALLOW_NON_ADMIN_KEY = PLAYER_SETTINGS_KEYS.SONOS_ALLOW_NON_ADMIN;
 
 /** Default cap when nothing is persisted. Conservative — see comment in
  *  setVolume on sonos-control.ts. */
@@ -40,6 +41,8 @@ export interface SonosSettingsSnapshot {
   lanUrl: string;
   dlnaEnabled: boolean;
   dlnaFriendlyName: string;
+  /** #232: when true, non-admin users can drive `/api/sonos/*`. Default false. */
+  allowNonAdmin: boolean;
 }
 
 export interface SonosSettings {
@@ -56,6 +59,9 @@ export interface SonosSettings {
   setDlnaEnabled(value: boolean): void;
   getDlnaFriendlyName(): string;
   setDlnaFriendlyName(value: string): void;
+  /** #232: opt-in flag — admins can let non-admin sessions cast to Sonos. */
+  getAllowNonAdmin(): boolean;
+  setAllowNonAdmin(value: boolean): void;
   onChange(listener: (snapshot: SonosSettingsSnapshot) => void): void;
 }
 
@@ -91,6 +97,8 @@ export function createSonosSettings(
   settings.seedRaw(LAN_URL_KEY, seedLanUrl);
   settings.seedRaw(DLNA_ENABLED_KEY, seedDlnaEnabled ? "true" : "false");
   settings.seedRaw(DLNA_FRIENDLY_NAME_KEY, seedDlnaFriendlyName);
+  // #232: default to admin-only. Operators flip via PUT /admin/settings/sonos.
+  settings.seedRaw(SONOS_ALLOW_NON_ADMIN_KEY, "false");
 
   const listeners: Array<(s: SonosSettingsSnapshot) => void> = [];
 
@@ -114,12 +122,16 @@ export function createSonosSettings(
     return raw && raw.trim() ? raw : DLNA_FRIENDLY_NAME_DEFAULT;
   };
 
+  const getAllowNonAdmin = (): boolean =>
+    settings.getRaw(SONOS_ALLOW_NON_ADMIN_KEY) === "true";
+
   const snapshot = (): SonosSettingsSnapshot => ({
     enabled: getEnabled(),
     volumeCap: getVolumeCap(),
     lanUrl: getLanUrl(),
     dlnaEnabled: getDlnaEnabled(),
     dlnaFriendlyName: getDlnaFriendlyName(),
+    allowNonAdmin: getAllowNonAdmin(),
   });
 
   const emit = () => {
@@ -158,6 +170,11 @@ export function createSonosSettings(
     setDlnaFriendlyName(value: string) {
       const trimmed = value.trim() || DLNA_FRIENDLY_NAME_DEFAULT;
       settings.setRaw(DLNA_FRIENDLY_NAME_KEY, trimmed);
+      emit();
+    },
+    getAllowNonAdmin,
+    setAllowNonAdmin(value: boolean) {
+      settings.setRaw(SONOS_ALLOW_NON_ADMIN_KEY, value ? "true" : "false");
       emit();
     },
     onChange(listener) {

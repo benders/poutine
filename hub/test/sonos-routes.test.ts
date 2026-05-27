@@ -628,4 +628,67 @@ describe("Sonos play route", () => {
       expect(res.statusCode).toBe(401);
     });
   });
+
+  // #232: Sonos speakers are shared LAN hardware — by default only admin
+  // sessions can drive `/api/sonos/*`. An admin can opt in to non-admin
+  // casting via the `sonos_allow_non_admin` Player setting; the gate reads
+  // the live setting on every request.
+  describe("admin-only gate (#232)", () => {
+    async function seedNonAdminUser(): Promise<string> {
+      const id = "user-nonadmin";
+      app.db
+        .prepare(
+          "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 0)",
+        )
+        .run(id, "regular", "");
+      return id;
+    }
+
+    it("returns 403 for a non-admin session on GET /devices when the opt-in is off", async () => {
+      const nonAdminId = await seedNonAdminUser();
+      const token = await createAccessToken(nonAdminId, app.config);
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/sonos/devices",
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it("returns 403 for a non-admin session on POST /play when the opt-in is off", async () => {
+      const nonAdminId = await seedNonAdminUser();
+      const token = await createAccessToken(nonAdminId, app.config);
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sonos/devices/${FAKE_DEVICE.id}/play`,
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        payload: { trackId: "trk-1" },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(setUriCalls).toHaveLength(0);
+      expect(playCalls).toHaveLength(0);
+    });
+
+    it("allows a non-admin session through when `sonos_allow_non_admin` is on", async () => {
+      app.sonosSettings.setAllowNonAdmin(true);
+      const nonAdminId = await seedNonAdminUser();
+      const token = await createAccessToken(nonAdminId, app.config);
+
+      const play = await app.inject({
+        method: "POST",
+        url: `/api/sonos/devices/${FAKE_DEVICE.id}/play`,
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        payload: { trackId: "trk-1" },
+      });
+      expect(play.statusCode).toBe(200);
+      expect(setUriCalls).toHaveLength(1);
+      expect(playCalls).toHaveLength(1);
+    });
+  });
 });

@@ -71,5 +71,3 @@ export async function requireAuth(
   }
 }
 
-// All users have admin permission — alias to requireAuth
-export const requireAdmin = requireAuth;

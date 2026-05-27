@@ -16,6 +16,7 @@ import {
 } from "../federation/invitations.js";
 import { randomUUID } from "node:crypto";
 import { normalizeLanUrl } from "../services/sonos-settings.js";
+import { requireAuth } from "../auth/middleware.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -91,9 +92,10 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(401).send({ error: "Invalid credentials" });
       }
 
-      if (user.is_admin !== 1) {
-        return reply.code(403).send({ error: "Admin access required" });
-      }
+      // #232: non-admins can now log in to the SPA — they get a regular
+      // session and the same Subsonic creds. Admin-only routes still 403
+      // them via `requireOwner` on every other endpoint.
+      const isAdmin = user.is_admin === 1;
 
       const accessToken = await createAccessToken(user.id, app.config);
       const refreshToken = await createRefreshToken(user.id, app.config);
@@ -116,7 +118,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       // (same threat surface as the JWT). See docs/authentication.md.
       const plaintext = getStoredPassword(user.password_enc, app.passwordKey);
       return {
-        user: { id: user.id, username: user.username, isAdmin: true },
+        user: { id: user.id, username: user.username, isAdmin },
         accessToken,
         subsonicCredentials: plaintext
           ? { username: user.username, password: plaintext }
@@ -134,9 +136,9 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     try {
       const { userId } = await verifyRefreshToken(refreshToken, app.config);
       const user = app.db
-        .prepare("SELECT id, is_admin FROM users WHERE id = ?")
-        .get(userId) as { id: string; is_admin: number } | undefined;
-      if (!user || user.is_admin !== 1) {
+        .prepare("SELECT id FROM users WHERE id = ?")
+        .get(userId) as { id: string } | undefined;
+      if (!user) {
         return reply.code(401).send({ error: "User not found" });
       }
       const accessToken = await createAccessToken(userId, app.config);
@@ -167,8 +169,9 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(204).send();
   });
 
-  // GET /admin/me
-  app.get("/me", { preHandler: requireOwner }, async (request) => {
+  // GET /admin/me — readable by any logged-in user (#232). The response
+  // includes `isAdmin` so the SPA can hide admin-only nav.
+  app.get("/me", { preHandler: requireAuth }, async (request) => {
     const user = app.db
       .prepare(
         "SELECT id, username, is_admin, created_at FROM users WHERE id = ?",
@@ -777,6 +780,7 @@ export const playerAdminRoutes: FastifyPluginAsync = async (app) => {
       enabled: app.sonosSettings.getEnabled(),
       volumeCap: app.sonosSettings.getVolumeCap(),
       lanUrl: app.sonosSettings.getLanUrl(),
+      allowNonAdmin: app.sonosSettings.getAllowNonAdmin(),
     };
   });
 
@@ -791,15 +795,20 @@ export const playerAdminRoutes: FastifyPluginAsync = async (app) => {
   // request can flip enable + lanUrl in one PUT — the post-payload lanUrl
   // is what matters.
   app.put<{
-    Body: { enabled?: boolean; volumeCap?: number; lanUrl?: string };
+    Body: { enabled?: boolean; volumeCap?: number; lanUrl?: string; allowNonAdmin?: boolean };
   }>(
     "/settings/sonos",
     { preHandler: requireOwner },
     async (request, reply) => {
-      const { enabled, volumeCap, lanUrl } = request.body ?? {};
+      const { enabled, volumeCap, lanUrl, allowNonAdmin } = request.body ?? {};
 
       if (enabled !== undefined && typeof enabled !== "boolean") {
         return reply.code(400).send({ error: "enabled must be a boolean" });
+      }
+      if (allowNonAdmin !== undefined && typeof allowNonAdmin !== "boolean") {
+        return reply
+          .code(400)
+          .send({ error: "allowNonAdmin must be a boolean" });
       }
       if (
         volumeCap !== undefined &&
@@ -855,12 +864,15 @@ export const playerAdminRoutes: FastifyPluginAsync = async (app) => {
         }
         if (volumeCap !== undefined) app.sonosSettings.setVolumeCap(volumeCap);
         if (enabled !== undefined) app.sonosSettings.setEnabled(enabled);
+        if (allowNonAdmin !== undefined)
+          app.sonosSettings.setAllowNonAdmin(allowNonAdmin);
       })();
 
       return {
         enabled: app.sonosSettings.getEnabled(),
         volumeCap: app.sonosSettings.getVolumeCap(),
         lanUrl: app.sonosSettings.getLanUrl(),
+        allowNonAdmin: app.sonosSettings.getAllowNonAdmin(),
       };
     },
   );

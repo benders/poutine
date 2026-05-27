@@ -43,6 +43,9 @@ const SONOS_VOLUME_CAP_KEY = "sonos_volume_cap";
 const LAN_URL_KEY = "lan_url";
 const DLNA_ENABLED_KEY = "dlna_enabled";
 const DLNA_FRIENDLY_NAME_KEY = "dlna_friendly_name";
+// #232: opt-in to let non-admin sessions drive `/api/sonos/*`. Default off —
+// shared LAN hardware is admin-gated unless an operator explicitly opens it.
+const SONOS_ALLOW_NON_ADMIN_KEY = "sonos_allow_non_admin";
 
 /** All keys that get migrated from hub.db's `settings` table on first boot. */
 const MIGRATED_KEYS = [
@@ -178,6 +181,7 @@ export const PLAYER_SETTINGS_KEYS = {
   LAN_URL: LAN_URL_KEY,
   DLNA_ENABLED: DLNA_ENABLED_KEY,
   DLNA_FRIENDLY_NAME: DLNA_FRIENDLY_NAME_KEY,
+  SONOS_ALLOW_NON_ADMIN: SONOS_ALLOW_NON_ADMIN_KEY,
 } as const;
 
 export const PLAYER_SETTINGS_MIGRATED_KEYS = MIGRATED_KEYS;

@@ -53,6 +53,17 @@ export function SonosSection() {
     },
   });
 
+  // #232: opt-in to non-admin casting. Invalidate capabilities so non-admin
+  // sessions get/lose the device picker on next refresh without restart.
+  const allowNonAdminMutation = useMutation({
+    mutationFn: (value: boolean) =>
+      updateSonosSettings({ allowNonAdmin: value }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-sonos-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["capabilities"] });
+    },
+  });
+
   if (isLoading || !settings) {
     return (
       <div className="bg-surface border border-border rounded-lg px-4 py-3">
@@ -173,10 +184,57 @@ export function SonosSection() {
         </button>
       </div>
 
-      {(toggleMutation.isError || capMutation.isError || lanMutation.isError) && (
+      <div className="flex items-center justify-between">
+        <div className="pr-4">
+          <p className="text-sm text-text-primary">
+            Allow all users to cast to Sonos:{" "}
+            <span
+              className={cn(
+                settings.allowNonAdmin ? "text-success" : "text-text-muted",
+              )}
+            >
+              {settings.allowNonAdmin ? "Enabled" : "Disabled"}
+            </span>
+          </p>
+          <p className="mt-1 text-xs text-text-muted">
+            By default only admins can drive Sonos speakers (shared LAN
+            hardware). Turn this on to let every signed-in user see the
+            device picker and start casts.
+          </p>
+        </div>
+        <button
+          onClick={() =>
+            allowNonAdminMutation.mutate(!settings.allowNonAdmin)
+          }
+          disabled={allowNonAdminMutation.isPending}
+          className={cn(
+            "px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50",
+            settings.allowNonAdmin
+              ? "bg-surface border border-border hover:bg-surface-hover text-text-primary"
+              : "bg-accent hover:bg-accent-hover text-white",
+          )}
+        >
+          {allowNonAdminMutation.isPending
+            ? "Saving..."
+            : settings.allowNonAdmin
+            ? "Disable"
+            : "Enable"}
+        </button>
+      </div>
+
+      {(toggleMutation.isError ||
+        capMutation.isError ||
+        lanMutation.isError ||
+        allowNonAdminMutation.isError) && (
         <p className="text-sm text-error">
-          {(toggleMutation.error || capMutation.error || lanMutation.error) instanceof Error
-            ? (toggleMutation.error || capMutation.error || lanMutation.error)!.message
+          {(toggleMutation.error ||
+            capMutation.error ||
+            lanMutation.error ||
+            allowNonAdminMutation.error) instanceof Error
+            ? (toggleMutation.error ||
+                capMutation.error ||
+                lanMutation.error ||
+                allowNonAdminMutation.error)!.message
             : "Failed to save"}
         </p>
       )}

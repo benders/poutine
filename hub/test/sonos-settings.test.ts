@@ -270,6 +270,7 @@ describe("SonosSettings (#184)", () => {
         enabled: false,
         volumeCap: 50,
         lanUrl: "http://hub.lan:3000",
+        allowNonAdmin: false,
       });
     });
 
@@ -293,6 +294,7 @@ describe("SonosSettings (#184)", () => {
         enabled: true,
         volumeCap: 33,
         lanUrl: "http://hub.lan:3000",
+        allowNonAdmin: false,
       });
       expect(app.sonosSettings.getEnabled()).toBe(true);
       expect(app.sonosSettings.getVolumeCap()).toBe(33);
@@ -319,6 +321,29 @@ describe("SonosSettings (#184)", () => {
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toMatch(/lanUrl/);
+    });
+
+    it("PUT toggles allowNonAdmin (#232)", async () => {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/admin/player/settings/sonos",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { allowNonAdmin: true },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().allowNonAdmin).toBe(true);
+      expect(app.sonosSettings.getAllowNonAdmin()).toBe(true);
+    });
+
+    it("PUT rejects allowNonAdmin with a non-boolean value", async () => {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/admin/player/settings/sonos",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { allowNonAdmin: "yes" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/allowNonAdmin/);
     });
 
     it("PUT accepts empty string to clear lanUrl", async () => {
