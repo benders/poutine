@@ -186,7 +186,16 @@ export function SonosSection() {
 
       <div className="flex items-center justify-between">
         <div className="pr-4">
-          <p className="text-sm text-text-primary">Allow all users to cast to Sonos</p>
+          <p className="text-sm text-text-primary">
+            Allow all users to cast to Sonos:{" "}
+            <span
+              className={cn(
+                settings.allowNonAdmin ? "text-success" : "text-text-muted",
+              )}
+            >
+              {settings.allowNonAdmin ? "Enabled" : "Disabled"}
+            </span>
+          </p>
           <p className="mt-1 text-xs text-text-muted">
             By default only admins can drive Sonos speakers (shared LAN
             hardware). Turn this on to let every signed-in user see the
@@ -208,8 +217,8 @@ export function SonosSection() {
           {allowNonAdminMutation.isPending
             ? "Saving..."
             : settings.allowNonAdmin
-            ? "Restrict to admins"
-            : "Allow all users"}
+            ? "Disable"
+            : "Enable"}
         </button>
       </div>
 
