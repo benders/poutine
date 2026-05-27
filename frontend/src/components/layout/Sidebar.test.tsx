@@ -74,9 +74,13 @@ describe("Sidebar Albums group", () => {
     expect(aliceLink).toHaveAttribute("href", "/library/folder-2");
   });
 
-  it("surfaces Hub and Player as distinct admin destinations when player-health is present", async () => {
+  it("surfaces Hub and Player as distinct admin destinations under Settings when player-health is present", async () => {
     vi.mocked(getMusicFolders).mockResolvedValue([]);
     renderSidebar();
+
+    // Settings group defaults closed — expand it.
+    const toggle = await screen.findByRole("button", { name: /Expand Settings/i });
+    fireEvent.click(toggle);
 
     await waitFor(() => {
       expect(screen.getByText("Player")).toBeInTheDocument();
@@ -90,6 +94,9 @@ describe("Sidebar Albums group", () => {
     vi.mocked(getPlayerHealth).mockResolvedValue(null);
     renderSidebar();
 
+    const toggle = await screen.findByRole("button", { name: /Expand Settings/i });
+    fireEvent.click(toggle);
+
     await waitFor(() => {
       expect(screen.getByText("Hub")).toBeInTheDocument();
     });
@@ -98,6 +105,24 @@ describe("Sidebar Albums group", () => {
     await waitFor(() => {
       expect(screen.queryByText("Player")).toBeNull();
     });
+  });
+
+  it("Settings group is collapsed by default and persists open/closed state", async () => {
+    vi.mocked(getMusicFolders).mockResolvedValue([]);
+    renderSidebar();
+
+    // Settings heading is visible; children are not.
+    expect(await screen.findByText("Settings")).toBeInTheDocument();
+    expect(screen.queryByText("Hub")).toBeNull();
+
+    const expand = screen.getByRole("button", { name: /Expand Settings/i });
+    fireEvent.click(expand);
+    expect(await screen.findByText("Hub")).toBeVisible();
+    expect(localStorage.getItem("sidebar:settings:open")).toBe("1");
+
+    fireEvent.click(screen.getByRole("button", { name: /Collapse Settings/i }));
+    expect(screen.queryByText("Hub")).toBeNull();
+    expect(localStorage.getItem("sidebar:settings:open")).toBe("0");
   });
 
   it("collapse/expand persists in localStorage", async () => {

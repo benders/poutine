@@ -118,38 +118,22 @@ export function Sidebar() {
         ))}
 
         {user && (
-          <>
-            <NavLink
-              to="/admin/hub"
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-                  isActive
-                    ? "bg-accent-muted text-accent"
-                    : "text-text-secondary hover:bg-surface-hover hover:text-text-primary",
-                )
-              }
-            >
-              <Settings className="w-4 h-4" />
-              Hub
-            </NavLink>
+          <NavGroup
+            label="Settings"
+            icon={Settings}
+            to="/admin/hub"
+            storageKey="sidebar:settings:open"
+            defaultOpen={false}
+          >
+            <NavGroupItem to="/admin/hub" label="Hub" icon={Server} />
             {playerHealth && (
-              <NavLink
+              <NavGroupItem
                 to="/admin/player"
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-                    isActive
-                      ? "bg-accent-muted text-accent"
-                      : "text-text-secondary hover:bg-surface-hover hover:text-text-primary",
-                  )
-                }
-              >
-                <Speaker className="w-4 h-4" />
-                Player
-              </NavLink>
+                label="Player"
+                icon={Speaker}
+              />
             )}
-          </>
+          </NavGroup>
         )}
       </nav>
 
