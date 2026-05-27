@@ -21,6 +21,7 @@ coverage/
 .pnpm-store
 test/local-cluster/
 scripts/fix-old-ideas-dates.sh
+scripts/parity-validate.config.json
 data-native/
 .hub-native.pid
 .hub-native.log

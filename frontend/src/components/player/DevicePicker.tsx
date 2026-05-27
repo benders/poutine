@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { Cast, MonitorSpeaker } from "lucide-react";
 import { usePlayer } from "@/stores/player";
 import { getSonosDevices, type SonosDevice } from "@/lib/api";
@@ -16,28 +16,32 @@ export function DevicePicker() {
   const [devices, setDevices] = useState<SonosDevice[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bump on each open; in-flight fetches with a stale id discard their result.
+  const requestId = useRef(0);
 
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
+  function toggle() {
+    if (open) {
+      setOpen(false);
+      requestId.current++;
+      return;
+    }
+    setOpen(true);
+    const id = ++requestId.current;
     setLoading(true);
     setError(null);
     getSonosDevices()
       .then((res) => {
-        if (cancelled) return;
+        if (id !== requestId.current) return;
         setDevices(res.devices);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (id !== requestId.current) return;
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (id === requestId.current) setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
+  }
 
   const active = sink !== "local";
   const label = sink === "local" ? "This browser" : sink.deviceName;
@@ -45,7 +49,7 @@ export function DevicePicker() {
   return (
     <div className="relative">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         title={`Playing on: ${label}`}
         className={cn(
           "p-1 transition-colors",

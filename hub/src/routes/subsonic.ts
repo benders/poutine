@@ -82,6 +82,11 @@ interface TrackRow {
   format: string | null;
   bitrate: number | null;
   size: number | null;
+  // #199: hi-res capability metadata; null for peer-federated tracks and
+  // for tracks synced before the schema added these columns.
+  sampling_rate: number | null;
+  bit_depth: number | null;
+  channel_count: number | null;
   instance_name: string | null;
   musicbrainz_id: string | null;
 }
@@ -107,6 +112,21 @@ const BEST_SOURCE_INSTANCE_SUBQUERY = `
    WHERE ts.unified_track_id = ?
    ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1)
 `;
+
+// #199: sampling_rate / bit_depth / channel_count from the best source row
+// (same ORDER BY as the legacy format/bitrate/size triplet above). Inlined
+// into every track-projecting SELECT — see comment above for why we haven't
+// CTE'd this yet. Substitute `?` for the unified_tracks id expression.
+const AUDIO_SOURCE_FIELDS_SUBQUERY = `
+      (SELECT ts.sampling_rate FROM track_sources ts WHERE ts.unified_track_id = ?
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS sampling_rate,
+      (SELECT ts.bit_depth FROM track_sources ts WHERE ts.unified_track_id = ?
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bit_depth,
+      (SELECT ts.channel_count FROM track_sources ts WHERE ts.unified_track_id = ?
+       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS channel_count,`;
+function audioSourceFields(idExpr: string): string {
+  return AUDIO_SOURCE_FIELDS_SUBQUERY.replace(/\?/g, idExpr);
+}
 
 // ── Share ID helpers ──────────────────────────────────────────────────────────
 // shareId is a raw `instance_*.remote_id` (typically a Navidrome 32-char hash).
@@ -172,6 +192,12 @@ function buildSong(row: TrackRow) {
     discNumber: row.disc_number ?? undefined,
     sourceInstance: row.instance_name ?? undefined,
     musicBrainzId: row.musicbrainz_id ?? undefined,
+    // #199: OpenSubsonic hi-res fields. `bitDepth: 0` is Navidrome's signal
+    // for lossy formats — preserved verbatim so the Sonos cast gate can
+    // distinguish "lossy" from "missing metadata".
+    samplingRate: row.sampling_rate ?? undefined,
+    bitDepth: row.bit_depth ?? undefined,
+    channelCount: row.channel_count ?? undefined,
   };
 }
 
@@ -291,6 +317,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
        ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
       (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
        ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+      ${audioSourceFields("ut.id")}
       (SELECT i.name FROM track_sources ts
        JOIN instances i ON i.id = ts.instance_id
        WHERE ts.unified_track_id = ut.id
@@ -822,6 +849,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
                ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
               (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
                ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+              ${audioSourceFields("ut.id")}
               ${BEST_SOURCE_INSTANCE_SUBQUERY.replace('?', 'ut.id')} AS instance_name
             FROM unified_tracks ut
             JOIN unified_artists ua ON ua.id = ut.artist_id
@@ -905,6 +933,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
           (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+          ${audioSourceFields("ut.id")}
           ${BEST_SOURCE_INSTANCE_SUBQUERY.replace('?', 'ut.id')} AS instance_name
         FROM unified_tracks ut
         JOIN unified_artists ua ON ua.id = ut.artist_id
@@ -1022,6 +1051,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
           (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
            ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
+          ${audioSourceFields("ut.id")}
           ${BEST_SOURCE_INSTANCE_SUBQUERY.replace('?', 'ut.id')} AS instance_name
         FROM unified_tracks ut
         JOIN unified_artists ua ON ua.id = ut.artist_id
@@ -1300,8 +1330,16 @@ try {
 
   if (trackRow) {
     const transcoded = streamParams.has("format") || (Number.isFinite(cap) && srcBr > cap);
+    // Cast-token-authed stream → tag activity with the appropriate kind
+    // (#218). `dlna=1` flag set by buildStreamUrl for DLNA renderers; cast
+    // token without the flag is from a Sonos device.
+    const streamKind: "subsonic" | "cast" | "dlna" = q.castToken
+      ? q.dlna === "1"
+        ? "dlna"
+        : "cast"
+      : "subsonic";
     streamOpId = app.streamTracking.start({
-      kind: "subsonic",
+      kind: streamKind,
       username: request.subsonicUser.username,
       trackId: trackRow.id,
       trackTitle: trackRow.title,
@@ -1379,8 +1417,21 @@ try {
   };
   const contentLength = response.headers.get("content-length");
   if (contentLength) headers["content-length"] = contentLength;
-  const acceptRanges = response.headers.get("accept-ranges");
+  // `dlna=1` flag (set by `buildStreamUrl` for DLNA renderers, #218):
+  // strict renderers (WMP, Xbox) require `transferMode.dlna.org` +
+  // `contentFeatures.dlna.org` on the byte response, and tolerate a
+  // forced `accept-ranges: bytes` even when upstream omits it.
+  const isDlna = q.dlna === "1";
+  const acceptRanges =
+    response.headers.get("accept-ranges") || (isDlna ? "bytes" : null);
   if (acceptRanges) headers["accept-ranges"] = acceptRanges;
+  if (isDlna) {
+    const reqHeaders = request.headers as Record<string, string | undefined>;
+    headers["transferMode.dlna.org"] =
+      reqHeaders["transfermode.dlna.org"] ?? "Streaming";
+    headers["contentFeatures.dlna.org"] =
+      "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000";
+  }
   const contentRange = response.headers.get("content-range");
   if (contentRange) headers["content-range"] = contentRange;
 

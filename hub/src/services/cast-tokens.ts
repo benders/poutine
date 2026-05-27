@@ -1,6 +1,18 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 /**
+ * Cast-token HMAC secret is attached to the Fastify app at boot (server.ts)
+ * and consumed by `signCastToken` / `verifyCastToken`. Declared here so the
+ * augmentation lives next to its consumers — sign on the Sonos route, verify
+ * on the Subsonic stream auth path.
+ */
+declare module "fastify" {
+  interface FastifyInstance {
+    castSecret: Buffer;
+  }
+}
+
+/**
  * Short-lived HMAC tokens that let an unauthenticated client (e.g. a Sonos
  * device on the LAN) fetch a stream from /cast/stream/:trackId without
  * Subsonic credentials.
@@ -85,6 +97,73 @@ export function verifyCastToken(
   if (provided.length !== expected.length) return null;
   if (!timingSafeEqual(provided, expected)) return null;
   return { username };
+}
+
+/**
+ * Build a self-contained Subsonic stream URL with an embedded cast token
+ * for handoff to non-Subsonic clients (Sonos devices, DLNA renderers).
+ *
+ * Replaces the deleted `/cast/stream/:trackId` and `/dlna/stream/:trackId`
+ * relays (#218): once the URL is in the device's hands the bytes flow
+ * directly from `/rest/stream.view` reusing the same source-selection +
+ * transcoding pipeline the SPA uses.
+ *
+ * The `id` query param is the Subsonic-encoded track id (`t<uuid>`); the
+ * cast token verifier compares the bound trackId against the *decoded*
+ * unified id, so the prefix is transparent.
+ */
+export interface BuildStreamUrlOptions {
+  /** Hub base URL reachable by the device on the LAN (admin setting). */
+  lanUrl: string;
+  /** HMAC secret (FastifyInstance.castSecret). */
+  castSecret: Buffer;
+  /** Unified track id (NOT the `t`-prefixed Subsonic id). */
+  unifiedTrackId: string;
+  /** Originating user — attribution + federated `asUser` routing. */
+  username: string;
+  /** Transcode target, e.g. `"mp3"`. Omit for raw pass-through. */
+  format?: string;
+  /** Subsonic `timeOffset` — only honored when transcoding. */
+  timeOffsetSec?: number;
+  /** Override token TTL. Defaults to 1h (cast-token DEFAULT_TTL_SEC). */
+  ttlSec?: number;
+  /**
+   * Subsonic protocol params clients normally send. Defaults baked in for
+   * a Poutine-issued URL — device fetches care about `c` for activity
+   * attribution.
+   */
+  client?: string;
+  protocolVersion?: string;
+  /**
+   * When set, the stream handler also emits DLNA-specific response headers
+   * (`transferMode.dlna.org`, `contentFeatures.dlna.org`, default
+   * `accept-ranges: bytes`). Drives the `dlna=1` flag on the URL.
+   */
+  dlna?: boolean;
+}
+
+export function buildStreamUrl(opts: BuildStreamUrlOptions): string {
+  const token = signCastToken(opts.castSecret, {
+    trackId: opts.unifiedTrackId,
+    username: opts.username,
+    ttlSec: opts.ttlSec,
+  });
+  const params = new URLSearchParams();
+  // Subsonic id encoding: track id is prefixed with `t`. The verifier
+  // strips it server-side, but the stream handler requires the prefix.
+  params.set("id", `t${opts.unifiedTrackId}`);
+  params.set("castToken", token);
+  // Required Subsonic params — handler reads `c`/`v` for stream-tracking.
+  params.set("u", opts.username);
+  params.set("v", opts.protocolVersion ?? "1.16.1");
+  params.set("c", opts.client ?? "poutine-cast");
+  if (opts.format) params.set("format", opts.format);
+  if (typeof opts.timeOffsetSec === "number" && opts.timeOffsetSec > 0) {
+    params.set("timeOffset", String(Math.floor(opts.timeOffsetSec)));
+  }
+  if (opts.dlna) params.set("dlna", "1");
+  const base = opts.lanUrl.replace(/\/+$/, "");
+  return `${base}/rest/stream.view?${params.toString()}`;
 }
 
 /**

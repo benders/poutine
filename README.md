@@ -38,9 +38,10 @@ Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static file
 | `pnpm build`                | Build hub + frontend                            |
 | `pnpm test`                 | Run hub unit tests (vitest)                     |
 | `pnpm test:federation`      | Three-hub federation integration test           |
-| `pnpm lint`                 | Lint both packages                              |
+| `pnpm lint`                 | Lint both packages (must report zero output)    |
+| `pnpm lint:boundary`        | Boundary-only lint subset (used by CI / verify) |
 | `pnpm typecheck`            | Typecheck both packages                         |
-| `pnpm verify`               | Typecheck + test (pre-commit gate)              |
+| `pnpm verify`               | Typecheck + lint:boundary + test (pre-commit gate) |
 | `pnpm hub:up`               | `docker compose up -d --build`                  |
 | `pnpm hub:up:fresh`         | Same, with `--force-recreate`                   |
 | `pnpm hub:logs`             | Follow hub container logs                       |

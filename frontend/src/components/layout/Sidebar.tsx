@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/stores/auth";
-import { peerDisplayName } from "@/lib/api";
+import { peerDisplayName, getPlayerHealth } from "@/lib/api";
 import { getMusicFolders } from "@/lib/subsonic";
 import {
   Library,
@@ -15,6 +15,7 @@ import {
   Activity,
   Star,
   ListMusic,
+  Speaker,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { APP_VERSION } from "@/version";
@@ -36,6 +37,18 @@ export function Sidebar() {
     retry: false,
     enabled: !!user,
     staleTime: 60_000,
+  });
+
+  // Player gate (#216). When the Player isn't deployed on this host
+  // (a future outcome of #220), hide the "Player" sidebar destination
+  // entirely — the route itself still renders a placeholder if someone
+  // navigates directly.
+  const { data: playerHealth } = useQuery({
+    queryKey: ["player-health"],
+    queryFn: getPlayerHealth,
+    retry: false,
+    enabled: !!user,
+    staleTime: 30_000,
   });
 
   const handleLogout = () => {
@@ -105,20 +118,38 @@ export function Sidebar() {
         ))}
 
         {user && (
-          <NavLink
-            to="/admin"
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-                isActive
-                  ? "bg-accent-muted text-accent"
-                  : "text-text-secondary hover:bg-surface-hover hover:text-text-primary",
-              )
-            }
-          >
-            <Settings className="w-4 h-4" />
-            Settings
-          </NavLink>
+          <>
+            <NavLink
+              to="/admin/hub"
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+                  isActive
+                    ? "bg-accent-muted text-accent"
+                    : "text-text-secondary hover:bg-surface-hover hover:text-text-primary",
+                )
+              }
+            >
+              <Settings className="w-4 h-4" />
+              Hub
+            </NavLink>
+            {playerHealth && (
+              <NavLink
+                to="/admin/player"
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+                    isActive
+                      ? "bg-accent-muted text-accent"
+                      : "text-text-secondary hover:bg-surface-hover hover:text-text-primary",
+                  )
+                }
+              >
+                <Speaker className="w-4 h-4" />
+                Player
+              </NavLink>
+            )}
+          </>
         )}
       </nav>
 

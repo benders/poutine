@@ -156,6 +156,31 @@ function ensureColumns(db: Database.Database): void {
       );
     `);
   }
+
+  // #199: hi-res metadata for Sonos cast-time capability gate. Three nullable
+  // columns each on instance_tracks and track_sources; populated by the next
+  // sync pass (no backfill — missing rows behave as pre-#199, i.e. silent
+  // pass-through, which is what the gate falls back to when unknown).
+  const instanceTrackCols = db
+    .prepare("PRAGMA table_info(instance_tracks)")
+    .all() as Array<{ name: string }>;
+  const instanceTrackColNames = new Set(instanceTrackCols.map((c) => c.name));
+  for (const col of ["sampling_rate", "bit_depth", "channel_count"] as const) {
+    if (!instanceTrackColNames.has(col)) {
+      logMigration(`Adding ${col} column to instance_tracks table`);
+      db.exec(`ALTER TABLE instance_tracks ADD COLUMN ${col} INTEGER`);
+    }
+  }
+  const trackSourceColsAfter = db
+    .prepare("PRAGMA table_info(track_sources)")
+    .all() as Array<{ name: string }>;
+  const trackSourceColNamesAfter = new Set(trackSourceColsAfter.map((c) => c.name));
+  for (const col of ["sampling_rate", "bit_depth", "channel_count"] as const) {
+    if (!trackSourceColNamesAfter.has(col)) {
+      logMigration(`Adding ${col} column to track_sources table`);
+      db.exec(`ALTER TABLE track_sources ADD COLUMN ${col} INTEGER`);
+    }
+  }
 }
 
 /**
@@ -185,6 +210,9 @@ function migrateTrackSources(db: Database.Database): void {
       format TEXT,
       bitrate INTEGER,
       size INTEGER,
+      sampling_rate INTEGER,
+      bit_depth INTEGER,
+      channel_count INTEGER,
       preferred INTEGER NOT NULL DEFAULT 0,
       UNIQUE(unified_track_id, instance_track_id)
     );

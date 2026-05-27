@@ -22,16 +22,6 @@ export type { TrackMetadata } from "./didl.js";
  */
 export const SONOS_VOLUME_CAP = 50;
 
-/**
- * Sonos S2 firmware caps locally-streamed FLAC at 24-bit / 48 kHz. Material
- * above this is accepted at the AVTransport URI but silently dropped to
- * STOPPED when the device parses the FLAC header. The play route uses
- * these to force MP3 transcode for hi-res sources until #199's schema
- * work lets the planner consult `track_sources` directly.
- */
-export const SONOS_MAX_SAMPLE_RATE_HZ = 48_000;
-export const SONOS_MAX_BIT_DEPTH = 24;
-
 type Service =
   | "AVTransport"
   | "RenderingControl"

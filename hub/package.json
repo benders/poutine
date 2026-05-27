@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "lint": "eslint src/",
+    "lint:boundary": "eslint --config eslint.boundary.config.js src/",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -8,10 +8,13 @@
  *   GET  /dlna/scpd/connection-manager.xml ConnectionManager service description
  *   POST /dlna/control/content-directory   ContentDirectory SOAP control
  *   POST /dlna/control/connection-manager  ConnectionManager SOAP control (stub)
- *   GET  /dlna/stream/:trackId             Audio stream (no auth — see notes)
  *
- * Auth model: DLNA has no user identity. The stream endpoint is open when
- * `DLNA_ENABLED=true` and attributes activity to a configurable pseudo-user
+ * Stream URLs (`res@uri` in DIDL) point at `/rest/stream.view` directly
+ * with an embedded cast token (#218). The Hub Subsonic stream handler
+ * applies DLNA-specific response headers when the URL carries `dlna=1`.
+ *
+ * Auth model: DLNA has no user identity. DIDL responses are open on the
+ * LAN; stream URLs embed a short-lived cast token bound to a pseudo-user
  * (defaults to the owner). Treat exposing the hub on the LAN as an
  * all-or-nothing decision — anyone on the LAN can browse and stream.
  */
@@ -23,7 +26,6 @@ import {
   pickXmlTag,
   xmlEscape,
 } from "../services/soap.js";
-import { relayTrackStream } from "../services/stream-relay.js";
 import { requireLan } from "../auth/lan-only.js";
 import { APP_VERSION } from "../version.js";
 
@@ -46,7 +48,8 @@ const CM = "urn:schemas-upnp-org:service:ConnectionManager:1";
 const SOAP_BODY_LIMIT = 64 * 1024;
 
 export const dlnaRoutes: FastifyPluginAsync = async (app) => {
-  const friendlyName = app.config.dlnaFriendlyName || "Poutine";
+  // Friendly name persists in player.db (#217); read on each device.xml
+  // request so an admin-side change takes effect on the next probe.
   const uuid = app.dlnaUuid;
 
   // SOAP requests come in as text/xml; fastify has no built-in parser for
@@ -68,6 +71,7 @@ export const dlnaRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", requireLan);
 
   app.get("/device.xml", async (_req, reply) => {
+    const friendlyName = app.sonosSettings.getDlnaFriendlyName();
     reply
       .header("content-type", 'text/xml; charset="utf-8"')
       .send(deviceDescription({ uuid, friendlyName }));
@@ -124,11 +128,33 @@ export const dlnaRoutes: FastifyPluginAsync = async (app) => {
           10,
         );
 
-        const out = app.dlnaObjects.browse(objectId, browseFlag, {
-          startIndex: Number.isFinite(startIndex) ? startIndex : 0,
-          requestedCount: Number.isFinite(requestedCount) ? requestedCount : 0,
-          baseUrl,
-        });
+        // UPnP `Browse` has no slot for surfacing an upstream auth/config
+        // error to the renderer — strict clients treat a SOAP fault as a
+        // permanent device failure. We swallow + log instead, returning an
+        // empty container so the renderer just shows "nothing here". The
+        // hub log is the loud signal (#230).
+        let out: { result: string; numberReturned: number; totalMatches: number };
+        try {
+          out = await app.dlnaObjects.browse(objectId, browseFlag, {
+            startIndex: Number.isFinite(startIndex) ? startIndex : 0,
+            requestedCount: Number.isFinite(requestedCount) ? requestedCount : 0,
+            baseUrl,
+            // #218: DIDL `res@uri` is a self-contained Hub Subsonic URL with
+            // an embedded cast token. Devices fetch bytes directly — no
+            // Player-side relay.
+            castSecret: app.castSecret,
+            username:
+              app.config.dlnaPseudoUser ||
+              app.config.poutineOwnerUsername ||
+              "dlna",
+          });
+        } catch (err) {
+          req.log.warn(
+            { err, objectId, browseFlag },
+            "DLNA Browse failed against Hub Subsonic — serving empty container",
+          );
+          out = { result: "<DIDL-Lite/>", numberReturned: 0, totalMatches: 0 };
+        }
         return reply.send(
           buildSoapResponse(CD, "Browse", {
             Result: out.result,
@@ -199,36 +225,12 @@ export const dlnaRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get<{ Params: { trackId: string }; Querystring: Record<string, string> }>(
-    "/stream/:trackId",
-    async (request, reply) => {
-      // DLNA streaming response headers. `transferMode.dlna.org: Streaming`
-      // tells the renderer this is a real-time audio stream (not a
-      // download). `contentFeatures.dlna.org` mirrors the protocolInfo 4th
-      // field from the DIDL `res@protocolInfo` — strict clients (WMP)
-      // reject responses missing this.
-      const transferMode =
-        (request.headers["transfermode.dlna.org"] as string | undefined) ||
-        "Streaming";
-      const extraResponseHeaders: Record<string, string> = {
-        "transferMode.dlna.org": transferMode,
-        "contentFeatures.dlna.org":
-          "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
-      };
-
-      await relayTrackStream(app, request, reply, {
-        trackId: request.params.trackId,
-        kind: "dlna",
-        username:
-          app.config.dlnaPseudoUser ||
-          app.config.poutineOwnerUsername ||
-          "dlna",
-        clientName: "dlna",
-        defaultAcceptRanges: "bytes",
-        extraResponseHeaders,
-      });
-    },
-  );
+  // #218: /dlna/stream/:trackId removed. DIDL `res@uri` now points at
+  // /rest/stream.view with an embedded cast token; renderers fetch bytes
+  // directly from the Hub Subsonic endpoint. DLNA-specific response
+  // headers (`transferMode.dlna.org`, `contentFeatures.dlna.org`,
+  // `accept-ranges: bytes` default) are emitted by the Subsonic stream
+  // handler when the cast-token URL carries `dlna=1`.
 };
 
 function deviceDescription(opts: { uuid: string; friendlyName: string }): string {

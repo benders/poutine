@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { buildApp } from "../src/server.js";
-import { setPassword } from "../src/auth/passwords.js";
 import { createAccessToken } from "../src/auth/jwt.js";
 import type { FastifyInstance } from "fastify";
 import type { Config } from "../src/config.js";
@@ -15,6 +14,11 @@ const testConfig: Partial<Config> = {
   jwtSecret: "test-secret-key-for-testing-purposes",
   sonosEnabled: true,
   initialLanUrl: "http://hub.lan:3000",
+  // #220: Sonos cast planner reads track metadata via Hub Subsonic over
+  // `app.inject()` using the owner's u+p. Wire the test owner to the
+  // same credentials the tests seed below.
+  poutineOwnerUsername: "tester",
+  poutineOwnerPassword: "secret",
 };
 
 const FAKE_DEVICE: SonosDevice = {
@@ -51,6 +55,7 @@ function seedTrackSource(
   app: FastifyInstance,
   format: string | null,
   id = "ts-fmt",
+  audio: { samplingRate?: number; bitDepth?: number; channelCount?: number } = {},
 ) {
   app.db
     .prepare(
@@ -66,10 +71,19 @@ function seedTrackSource(
     .run("local:fmt-track", "local", "fmt-track", "local:alb-1", "Dancing Queen", "ABBA");
   app.db
     .prepare(
-      `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, preferred)
-       VALUES (?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, sampling_rate, bit_depth, channel_count, preferred)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     )
-    .run(id, "trk-1", "local", "local:fmt-track", format);
+    .run(
+      id,
+      "trk-1",
+      "local",
+      "local:fmt-track",
+      format,
+      audio.samplingRate ?? null,
+      audio.bitDepth ?? null,
+      audio.channelCount ?? null,
+    );
 }
 
 function seedSubsonicMapping(app: FastifyInstance, remoteId: string) {
@@ -106,17 +120,21 @@ describe("Sonos play route", () => {
   let seekCalls: Array<{ device: SonosDevice; position: number }>;
   let setVolumeCalls: Array<{ device: SonosDevice; level: number }>;
   let currentVolume = 30;
+  let userId: string;
 
   beforeEach(async () => {
     app = await buildApp(testConfig);
     await app.ready();
 
-    const enc = setPassword("secret", app.passwordKey);
-    app.db
-      .prepare(
-        "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 1)",
-      )
-      .run("user-1", "tester", enc);
+    // #220: seedOwner (run by buildApp because testConfig sets
+    // POUTINE_OWNER_*) inserts the `tester` user with an auto-generated
+    // id and the correct AES-encrypted password. We capture that id here
+    // for JWT minting instead of inserting our own (FK-fragile) row.
+    const row = app.db
+      .prepare("SELECT id FROM users WHERE username = ?")
+      .get("tester") as { id: string } | undefined;
+    if (!row) throw new Error("test owner user 'tester' not seeded by buildApp");
+    userId = row.id;
     seedTrack(app);
 
     // Stub discovery + control so the route exercises real DB + URL logic
@@ -184,25 +202,21 @@ describe("Sonos play route", () => {
     };
   }
 
-  // Stub global fetch so the route's runtime Navidrome `getSong` probe
-  // (hi-res FLAC guard, #180/#199) returns a deterministic response.
-  function stubGetSong(song: Record<string, unknown>) {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        if (String(url).includes("/rest/getSong")) {
-          return new Response(
-            JSON.stringify({ "subsonic-response": { status: "ok", song } }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        return new Response("not stubbed", { status: 404 });
-      }),
-    );
+  // #199: override discovery with a specific model + sink MIMEs. Used by the
+  // hi-res capability gate tests to drive different Sonos lines (S2 / S1).
+  function stubDeviceModel(model: string, mimes: string[]) {
+    (app as unknown as {
+      sonosDiscovery: { get: (id: string) => SonosDevice | undefined };
+    }).sonosDiscovery = {
+      get: (id) =>
+        id === FAKE_DEVICE.id
+          ? { ...FAKE_DEVICE, model, supportedMimes: new Set(mimes) }
+          : undefined,
+    };
   }
 
   async function authedPost(url: string, body: unknown) {
-    const token = await createAccessToken("user-1", app.config);
+    const token = await createAccessToken(userId, app.config);
     return app.inject({
       method: "POST",
       url,
@@ -226,7 +240,10 @@ describe("Sonos play route", () => {
     // Stream URL must force format=mp3 so the byte stream matches the
     // audio/mpeg DIDL mime type (regression: PR #162 mismatch broke FLAC).
     expect(call.uri).toContain("format=mp3");
-    expect(call.uri).toContain("/cast/stream/trk-1");
+    // #218: stream URL targets Hub's Subsonic endpoint with cast-token auth.
+    expect(call.uri).toContain("/rest/stream.view?");
+    expect(call.uri).toContain("id=ttrk-1");
+    expect(call.uri).toContain("castToken=");
     expect(call.uri).toMatch(/^http:\/\/hub\.lan:3000\//);
 
     // DIDL metadata must reflect data resolved via the two-hop join
@@ -251,31 +268,25 @@ describe("Sonos play route", () => {
     expect(res.statusCode).toBe(200);
     expect(setUriCalls).toHaveLength(1);
     const call = setUriCalls[0]!;
-    expect(call.uri).toContain("/cast/stream/trk-1?");
+    expect(call.uri).toContain("/rest/stream.view?id=ttrk-1");
+    expect(call.uri).toContain("castToken=");
     expect(call.meta.trackId).toBe("trk-1");
     expect(call.meta.title).toBe("Dancing Queen");
   });
 
-  it("resolves Subsonic remote_id from the SPA to the unified track", async () => {
-    // This is what the frontend actually sends — SubsonicSong.id is the
-    // Subsonic remote_id, not the unified UUID. The play route must
-    // resolve via track_sources before looking up DIDL fields.
+  it("returns 404 for a bare Navidrome remote_id (#220 dropped the fallback)", async () => {
+    // Pre-#220 the play route also accepted bare Navidrome remote_ids by
+    // joining instance_tracks → track_sources in-process. That fallback
+    // was always dead defensive code — the SPA has only ever sent the
+    // Subsonic `t<uuid>` form — and is removed now that Player code can
+    // no longer touch app.db.
     const subsonicId = "7jwQomahCwKbSjrAxtelmw";
     seedSubsonicMapping(app, subsonicId);
 
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: subsonicId,
     });
-    expect(res.statusCode).toBe(200);
-    expect(setUriCalls).toHaveLength(1);
-
-    const call = setUriCalls[0]!;
-    // Cast URL and token must use the unified UUID, not the Subsonic id —
-    // cast.ts /stream verifies the token against unified_tracks.
-    expect(call.uri).toContain("/cast/stream/trk-1?");
-    expect(call.uri).not.toContain(subsonicId);
-    expect(call.meta.trackId).toBe("trk-1");
-    expect(call.meta.title).toBe("Dancing Queen");
+    expect(res.statusCode).toBe(404);
   });
 
   it("returns 404 for unknown track id", async () => {
@@ -313,7 +324,7 @@ describe("Sonos play route", () => {
   });
 
   it("/state response includes volumeCap", async () => {
-    const token = await createAccessToken("user-1", app.config);
+    const token = await createAccessToken(userId, app.config);
     const res = await app.inject({
       method: "GET",
       url: `/api/sonos/devices/${FAKE_DEVICE.id}/state`,
@@ -359,8 +370,11 @@ describe("Sonos play route", () => {
   });
 
   it("passes FLAC through verbatim when the device sinks accept audio/flac (#180)", async () => {
-    seedTrackSource(app, "flac");
-    stubGetSong({ samplingRate: 44100, bitDepth: 16 });
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 44100,
+      bitDepth: 16,
+      channelCount: 2,
+    });
     stubDeviceWithMimes(["audio/mpeg", "audio/flac", "audio/mp4"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
@@ -369,6 +383,73 @@ describe("Sonos play route", () => {
     const call = setUriCalls[0]!;
     expect(call.uri).not.toContain("format=mp3");
     expect(call.meta.mimeType).toBe("audio/flac");
+  });
+
+  // #199: hi-res capability gate. Sonos firmware silently STOPs FLAC that
+  // exceeds the line's ceiling (S2: 24/48/2-ch, S1: 16/48/2-ch). Even when
+  // protocolInfo accepts audio/flac, the cast must force MP3 transcode.
+  it("transcodes 24/96 FLAC to MP3 on an S2 Sonos (over sample-rate ceiling, #199)", async () => {
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 96000,
+      bitDepth: 24,
+      channelCount: 2,
+    });
+    stubDeviceModel("Sonos Era 100", ["audio/mpeg", "audio/flac", "audio/mp4"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
+  });
+
+  it("transcodes 24/48 FLAC to MP3 on an S1 Sonos (over bit-depth ceiling, #199)", async () => {
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 48000,
+      bitDepth: 24,
+      channelCount: 2,
+    });
+    stubDeviceModel("Sonos PLAY:1", ["audio/mpeg", "audio/flac"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
+  });
+
+  it("passes 16/44.1 FLAC through on an S2 Sonos — gate doesn't over-trigger (#199)", async () => {
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 44100,
+      bitDepth: 16,
+      channelCount: 2,
+    });
+    stubDeviceModel("Sonos Era 100", ["audio/mpeg", "audio/flac", "audio/mp4"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).not.toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/flac");
+  });
+
+  it("transcodes multi-channel FLAC to MP3 on every Sonos line (#199)", async () => {
+    seedTrackSource(app, "flac", "ts-fmt", {
+      samplingRate: 48000,
+      bitDepth: 16,
+      channelCount: 6,
+    });
+    stubDeviceModel("Sonos Era 100", ["audio/mpeg", "audio/flac", "audio/mp4"]);
+    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
+      trackId: "trk-1",
+    });
+    expect(res.statusCode).toBe(200);
+    const call = setUriCalls[0]!;
+    expect(call.uri).toContain("format=mp3");
+    expect(call.meta.mimeType).toBe("audio/mpeg");
   });
 
   it("transcodes OGG sources to MP3 (no native Sonos support)", async () => {
@@ -397,7 +478,13 @@ describe("Sonos play route", () => {
   });
 
   it("passes MP3 sources through without re-transcoding", async () => {
-    seedTrackSource(app, "mp3");
+    // bitDepth=0 is Navidrome's signal for lossy formats; sample rate is
+    // still required for the #199 fail-safe gate to allow pass-through.
+    seedTrackSource(app, "mp3", "ts-fmt", {
+      samplingRate: 44100,
+      bitDepth: 0,
+      channelCount: 2,
+    });
     stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
@@ -412,7 +499,11 @@ describe("Sonos play route", () => {
     // Local→Sonos mid-track switch on a pass-through source: Subsonic
     // ignores `timeOffset` on raw streams, so the position has to be
     // applied with a SOAP Seek once the device has loaded the URI.
-    seedTrackSource(app, "mp3");
+    seedTrackSource(app, "mp3", "ts-fmt", {
+      samplingRate: 44100,
+      bitDepth: 0,
+      channelCount: 2,
+    });
     stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
@@ -443,9 +534,12 @@ describe("Sonos play route", () => {
     expect(seekCalls).toHaveLength(0);
   });
 
-  it("forces MP3 transcode for hi-res FLAC (>48 kHz / >24-bit) on FLAC-capable device (#180/#199)", async () => {
+  it("forces MP3 when audio metadata is missing — fail-safe default (#199)", async () => {
+    // Pre-#199 track_sources rows and peer tracks not yet re-synced have
+    // null sampling_rate / bit_depth / channel_count. Without all three we
+    // can't prove the source fits the line's ceiling, so transcode rather
+    // than risk a silent STOPPED on a hi-res track.
     seedTrackSource(app, "flac");
-    stubGetSong({ samplingRate: 96000, bitDepth: 24 });
     stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
     const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
       trackId: "trk-1",
@@ -454,19 +548,6 @@ describe("Sonos play route", () => {
     const call = setUriCalls[0]!;
     expect(call.uri).toContain("format=mp3");
     expect(call.meta.mimeType).toBe("audio/mpeg");
-  });
-
-  it("passes 16/44.1 FLAC through (under the S2 ceiling)", async () => {
-    seedTrackSource(app, "flac");
-    stubGetSong({ samplingRate: 44100, bitDepth: 16 });
-    stubDeviceWithMimes(["audio/mpeg", "audio/flac"]);
-    const res = await authedPost(`/api/sonos/devices/${FAKE_DEVICE.id}/play`, {
-      trackId: "trk-1",
-    });
-    expect(res.statusCode).toBe(200);
-    const call = setUriCalls[0]!;
-    expect(call.uri).not.toContain("format=mp3");
-    expect(call.meta.mimeType).toBe("audio/flac");
   });
 
   it("rejects unauthenticated requests", async () => {
@@ -501,7 +582,8 @@ describe("Sonos play route", () => {
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ ok: true });
       expect(setNextUriCalls).toHaveLength(1);
-      expect(setNextUriCalls[0]!.uri).toContain("/cast/stream/trk-1?");
+      expect(setNextUriCalls[0]!.uri).toContain("/rest/stream.view?id=ttrk-1");
+      expect(setNextUriCalls[0]!.uri).toContain("castToken=");
       expect(setNextUriCalls[0]!.meta?.title).toBe("Dancing Queen");
       // Must NOT touch transport state or play — only pre-buffer.
       expect(setUriCalls).toHaveLength(0);

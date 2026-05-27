@@ -2,6 +2,8 @@
 
 Poutine implements the [OpenSubsonic API](https://opensubsonic.netlify.app/) — a superset of the Subsonic REST API — at `/rest/*`. Third-party Subsonic/OpenSubsonic clients (DSub, Symfonium, etc.) connect here.
 
+For a forward-looking inventory of OpenSubsonic optional extensions worth adopting (Hub→Player boundary, DLNA, Sonos), see [opensubsonic-extensions-survey.md](opensubsonic-extensions-survey.md) (issue #214).
+
 ## Version claims
 
 | Field           | Value     | Source                                       |

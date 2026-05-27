@@ -15,13 +15,14 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 
 - **Hub uses ESM** (`"type": "module"`). Local imports must use `.js` extensions in source (e.g. `./config.js`).
 - **Frontend has `erasableSyntaxOnly` enabled.** No parameter properties in constructors, no enums, no other non-erasable TS syntax in `frontend/`. Hub has no such restriction.
-- **Runtime settings go in the `settings` SQLite table,** not env vars, when admins should be able to change them without a restart. See `hub/src/services/art-cache.ts` for the read-with-fallback pattern.
+- **Runtime settings go in SQLite, not env vars**, when admins should be able to change them without a restart. Hub-owned settings live in `hub.db.settings`; Player-owned settings (Sonos/DLNA toggles, `lan_url`, cast key, DLNA UDN) live in `player.db.player_settings` — see the dual-DB rules in [system-architecture.md](system-architecture.md#data-model). Read-with-fallback pattern: `hub/src/services/art-cache.ts`.
 
 ## Environment variables
 
 | Variable                     | Required | Default                      | Description                                                     |
 |------------------------------|----------|------------------------------|-----------------------------------------------------------------|
-| `DATABASE_PATH`              | no       | `./data/poutine.db`          | SQLite file path                                                |
+| `DATABASE_PATH`              | no       | `./data/poutine.db`          | Hub SQLite file (`hub.db`) path                                 |
+| `PLAYER_DATABASE_PATH`       | no       | sibling of `DATABASE_PATH`   | Player SQLite file (`player.db`) path — see #215, #212          |
 | `PORT` / `HOST`              | no       | `3000` / `0.0.0.0`           | Hub bind                                                        |
 | `NAVIDROME_URL`              | no       | `http://navidrome:4533`      | Internal Navidrome URL                                          |
 | `NAVIDROME_USERNAME`         | prod     | —                            | Navidrome admin user                                            |
@@ -39,15 +40,7 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `ART_CACHE_MAX_BYTES`        | no       | `100 MB` (104857600)         | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
 | `SONOS_DISCOVERY_INTERVAL_MS`| no       | `30000`                      | How often to re-issue SSDP M-SEARCH                              |
 
-Sonos casting itself is **not** env-gated. The enabled flag, volume cap, and
-LAN URL are runtime-configurable from the Admin page and persisted in
-`settings` (`sonos_enabled`, `sonos_volume_cap`, `lan_url`) — see [Sonos
-integration](#sonos-integration-issue-108) and
-[docs/sonos.md](sonos.md#runtime-toggle-184). `lan_url` (#209) is the
-absolute LAN-reachable base URL devices fetch streams from; it is shared
-with the DLNA MediaServer.
-
-`hub/src/config.ts` is the authoritative list.
+Sonos and DLNA are not env-gated — toggles, volume cap, `lan_url`, friendly name all live in `player.db.player_settings` and are runtime-mutable from the Admin page. Details: [sonos.md#runtime-toggle-184](sonos.md#runtime-toggle-184). `hub/src/config.ts` is the authoritative env-var list.
 
 ## API surface
 
@@ -56,7 +49,7 @@ with the DLNA MediaServer.
 | Subsonic          | `/rest/*`       | Subsonic `u+p` or `u+t+s` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art — see [opensubsonic.md](opensubsonic.md) for compatibility |
 | Proxy             | `/proxy/*`      | Ed25519, JWT, or Subsonic `u+p`/`u+t+s` (unified — see below)    | Authenticated transparent proxy to Navidrome |
 | Federation        | `/federation/*` | Ed25519-signed (see [federation-api.md](federation-api.md))      | Peer-to-peer only                         |
-| Admin             | `/admin/*`      | JWT (see [authentication.md](authentication.md))                 | Users CRUD, peers, sync, cache, instance  |
+| Admin             | `/admin/*`, `/api/admin/hub/*`, `/api/admin/player/*` | JWT (see [authentication.md](authentication.md))   | Three mounts of one handler set; namespace split is by SPA convention. Per-mount partition see [system-architecture.md](system-architecture.md#spa-admin-split-issue-216-phase-2-of-212) |
 | Health            | `/api/health`   | None                                                             | `{ status, appVersion, apiVersion, navidrome }` — see note below             |
 
 `/api/health` probes the local Navidrome via Subsonic `/rest/ping` (~1 s budget, `AbortSignal.timeout`) and reports `navidrome: "ok" | "unreachable"` plus a rolled-up `status: "ok" | "degraded"`. Always returns HTTP 200 so the federation handshake (which only reads `apiVersion` / `appVersion` from a peer's `/api/health`) keeps working when a peer's Navidrome is briefly down. Operators and LB / k8s probes must key on `body.status`, not the HTTP status (issue #178).
@@ -197,6 +190,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 ## SQLite notes
 
+- **Two SQLite files.** Dual-DB layout, opener locations, ownership rules and migration boundary are documented in [system-architecture.md#data-model](system-architecture.md#data-model). Boundary enforcement: [system-architecture.md#hub-player-boundary-enforcement-221](system-architecture.md#hub-player-boundary-enforcement-221). Schemas: `hub/src/db/schema.sql` and `hub/src/db/player-schema.sql` (both picked up by the Dockerfile `hub/src/db/*.sql` copy rule).
 - **`datetime('now')` has no timezone marker.** Output: `"2026-04-10 03:54:22"` (space separator, no `Z`). JavaScript `new Date()` parses this as local time, so users west of UTC see timestamps in the future — `formatTimeAgo` returns `"just now"` forever. **Always use `strftime('%Y-%m-%dT%H:%M:%SZ', col)`** in SELECTs that return timestamps to the frontend.
 - **`.sql` files are not copied by `tsc`.** The hub Dockerfile explicitly copies `hub/src/db/*.sql` → `hub/dist/db/` after `tsc`. Update the Dockerfile if new non-TS assets are added under `hub/src/`.
 - **Schema or merge-logic change → resync required.** Changes to unified-table storage only take effect after `syncAll()` + merge runs.
@@ -232,23 +226,12 @@ docker network connect --alias hub-a poutine-local-cluster cd-rips-hub-1
 # ...etc
 ```
 
-## Sonos casting (issue #108)
+## Sonos and DLNA
 
-Optional sink for the player. Gated by the `sonos_enabled` setting (admin
-toggle, #184). SSDP discovery
-of `ZonePlayer:1` on UDP 1900; SOAP control (AVTransport + RenderingControl)
-on each device's `:1400`. Sonos fetches `/cast/stream/:trackId` via short-lived
-HMAC tokens — no Subsonic credential leak. Full reference: [sonos.md](sonos.md).
+Both are optional Player sinks living under the Hub/Player boundary documented in [system-architecture.md](system-architecture.md). Implementation, protocol, runtime toggles and testing references are in their own docs — do not duplicate here.
 
-## DLNA MediaServer (issue #175)
-
-Optional UPnP `MediaServer:1` advertisement on the LAN. Gated by `DLNA_ENABLED=true`.
-Reuses the host-networking compose override and the `lan_url` admin setting
-(#209) — set it once in Admin → Sonos and DLNA picks it up too. Shares
-`services/didl.ts` + `services/soap.ts` with Sonos. DLNA has no user identity —
-every route under `/dlna/*` is unauthenticated when enabled; a `requireLan`
-preHandler keeps that openness off any public tunnel. Full reference:
-[dlna.md](dlna.md).
+- **Sonos casting** (#108) — [sonos.md](sonos.md).
+- **DLNA MediaServer** (#175) — [dlna.md](dlna.md).
 
 ## Testing notes
 

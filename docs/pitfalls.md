@@ -20,6 +20,7 @@ Every `unified_*` insert in `merge.ts` logs the offending row + prior `existingR
 | `ALTER TABLE … ADD COLUMN … UNIQUE` fails on SQLite                       | #123      | Add the column unconstrained, then create a `UNIQUE INDEX` in a separate migration step    |
 | Forgetting to read `hub/src/db/schema.sql` before writing queries          | recurring | Schema is authoritative — check it, then use `scripts/db-query.sh` for ad-hoc reads        |
 | `exec`-ing into the container to import `better-sqlite3` manually          | recurring | Always go through `scripts/db-query.sh`                                                    |
+| Reading Player settings (`sonos_enabled`, `sonos_volume_cap`, `lan_url`, `dlna_*`) from `hub.db.settings` | #217 | Source of truth is `player.db.player_settings` since #217. Pre-#217 rows in `hub.db.settings` are leftover dead data — go through `app.sonosSettings` (or `PlayerSettings.getRaw` for keys without a typed accessor). |
 
 ## Subsonic API compatibility
 
@@ -64,6 +65,11 @@ Full protocol: [federation-api.md](federation-api.md).
 | `reset-password.sh` calling a hash helper                                             | #114      | Reset must go through the AES path, same as user creation                                                     |
 | SPA `/login` route firing authenticated API calls before login completes              | memory    | Login page must not call any endpoint requiring a session — causes 401-self-redirect loops                    |
 | Missing salt validation on `u+t+s`                                                    | #112      | Salt is required, must be ≥ 6 hex chars; reject otherwise                                                     |
+| Accepting `castToken=` on Subsonic endpoints other than `/rest/stream(.view)`         | #218      | Cast tokens grant *single-track stream access only*. `requireSubsonicAuthBinary` path-gates the token branch — never widen it (especially not to `/rest/getCoverArt` or any JSON endpoint) |
+| Player code importing `SubsonicClient` from `hub/src/adapters/subsonic.js`            | #220      | Player BE (sonos / dlna / cast routes + services) must reach Hub Subsonic via HTTP only — use the shared `HubSubsonicCaller` (`services/hub-subsonic-caller.ts`). In-process `SubsonicClient` is Hub→Navidrome only (admin.ts, subsonic.ts, auto-sync.ts) |
+| Player code touching `app.db` directly                                                | #220      | Same boundary. `routes/sonos.ts` reads track metadata + source format via Hub `/rest/getSong` over `app.inject`; never re-add `app.db.prepare(...)` to Player files. `app.playerDb` (the player-owned SQLite file) is allowed via the typed `PlayerSettings` wrapper |
+| Logging or echoing `app.internalAuthSecret` (or the `x-poutine-internal` header value) | #224      | The trusted-header secret is in-process only — never log it, never put it in a JWT/cookie/response body. Only `HubSubsonicCaller` is allowed to read it; the auth middleware does a `timingSafeEqual` and discards |
+| Adding a new internal caller for Hub Subsonic that bypasses `HubSubsonicCaller`        | #224      | All in-process Subsonic calls must go through `services/hub-subsonic-caller.ts`. New routes use `{ asUser: req.username }` when running under `requireAuth`; only paths with no user context (DLNA browse) may omit `asUser` and fall back to owner u+p |
 
 Full flow: [authentication.md](authentication.md).
 
@@ -83,6 +89,14 @@ Full flow: [authentication.md](authentication.md).
 | Forgetting to log a warning when local `instance_tracks` count drops materially between syncs       | #159      | Early signal that the music volume disappeared — keep the warning if you touch sync metrics                                       |
 | Wiring k8s / LB probes to `/api/health` HTTP status                                                  | #178      | Always returns 200 (so federation handshake survives a Navidrome blip). Key probes on `body.status === "ok"` instead              |
 
+## Sonos cast
+
+| Trap                                                                                                       | Caught by | Rule                                                                                             |
+|------------------------------------------------------------------------------------------------------------|-----------|--------------------------------------------------------------------------------------------------|
+| Re-adding a runtime Navidrome `getSong` call from Player to detect hi-res FLAC                             | #220      | Player BE cannot reach Navidrome — boundary set by #212. Restore the hi-res guard via Hub Subsonic (#199 adds `track_sources.sampling_rate` / `bit_depth` columns + projects them into `/rest/getSong`) |
+| Assuming the SPA can send a bare Navidrome `remote_id` to `/api/sonos/devices/:id/play`                    | #220      | SPA has always sent `t<uuid>` (the Subsonic id). The remote_id fallback was dead defensive code and is removed |
+| Routing Sonos cast's internal `/rest/getSong` through `POUTINE_OWNER_USERNAME` / `POUTINE_OWNER_PASSWORD`  | #224      | The cast hot-path now authenticates as the calling SPA user via `HubSubsonicCaller`'s trusted-header mode (`{ asUser: req.username }`). Owner u+p was a hidden coupling — a hub deployed with mismatched owner creds silently 404'd every cast attempt because Subsonic returned `status:failed` and the route interpreted that as "track not found". See `docs/authentication.md#trusted-in-process-auth` |
+
 ## Frontend
 
 | Trap                                                              | Caught by | Rule                                                                                          |
@@ -93,10 +107,18 @@ Full flow: [authentication.md](authentication.md).
 | Calling `next()` on Sonos `PLAYING → STOPPED` as the EOT signal     | #202      | Gapless pre-load means the device auto-advances; use `TrackURI` change + cached `pendingNextRef` index. STOPPED-after-PLAYING is only the end-of-queue fallback. |
 | Calling `peekNext()` twice with shuffle on (returns different songs)| #202      | Cache the first result; reuse for both the `/next` POST and the post-advance `jumpTo`         |
 
+## Hub/Player boundary
+
+| Trap                                                                                            | Caught by | Rule                                                                                          |
+|-------------------------------------------------------------------------------------------------|-----------|-----------------------------------------------------------------------------------------------|
+| Player-side route/service grabbing `better-sqlite3`, `app.db`, the in-process `SubsonicClient`, or any `db/preferred-source*` / `db/client*` module | #213–#220 audit; #221 lint | Player code accesses Hub state only through `services/hub-subsonic-caller.ts` (HTTP-shaped `app.inject()` against `/rest/*`). Take a Database handle via capability injection for `player.db`; type-only `import type Database from "better-sqlite3"` is allowed. |
+| Adding a new Player route or service without extending the boundary lint glob                   | #221      | `playerFiles` lives in `hub/eslint.config.js`. Add the new file there. Negative tests live in `hub/test/boundary-lint.test.ts`. |
+| Cross-importing between `features/hub-admin/`, `features/player-admin/`, and `features/player/` | #221      | `frontend/eslint.config.js` blocks it. Lift shared helpers into `features/shared/` instead.  |
+
 ## Process
 
 | Trap                                                                | Caught by | Rule                                                                                          |
 |---------------------------------------------------------------------|-----------|-----------------------------------------------------------------------------------------------|
-| Broken tests landed on green CI                                     | #116      | CI runs `pnpm verify` (typecheck + test) on every PR                                          |
+| Broken tests landed on green CI                                     | #116      | CI runs `pnpm verify` (typecheck + lint:boundary + test) on every PR                          |
 | Stacked PRs                                                         | CLAUDE.md | Follow-ups go on the same feature branch — never branch off a draft PR                        |
 | Working without a GitHub issue                                      | AGENTS.md | No issue, no work. Reference the issue in the commit and close on merge                       |

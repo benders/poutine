@@ -27,6 +27,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
    - Architectural changes: update `docs/system-architecture.md` as part of the work.
 4. Write tests alongside code. Run `pnpm verify` (typecheck + test) before declaring done.
    - When querying the live database: check `hub/src/db/schema.sql` for the schema, then use `scripts/db-query.sh "SQL"`. Never exec into the container and try to import `better-sqlite3` manually.
+   - Run `pnpm lint` and resolve **all** errors AND warnings before declaring done — including pre-existing ones in files you didn't author. Zero lint output is the bar. If a warning is a deliberate false-positive, suppress it inline with a one-line rationale rather than leaving it noisy.
 5. Update documentation and check for any outdated or inconsistent information.
 6. Commit work in phases, when all tests are passing.
 7. Push branch to origin.

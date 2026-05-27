@@ -127,6 +127,9 @@ CREATE TABLE IF NOT EXISTS instance_tracks (
   musicbrainz_id TEXT,                -- Recording MBID
   year INTEGER,
   genre TEXT,
+  sampling_rate INTEGER,              -- Hz (44100, 48000, 96000, …) — #199 Sonos hi-res gate
+  bit_depth INTEGER,                  -- bits per sample (16, 24); lossy reports 0
+  channel_count INTEGER,              -- 1 (mono), 2 (stereo), 6 (5.1), …
   UNIQUE(instance_id, remote_id)
 );
 
@@ -216,6 +219,9 @@ CREATE TABLE IF NOT EXISTS track_sources (
   format TEXT,
   bitrate INTEGER,
   size INTEGER,
+  sampling_rate INTEGER,              -- Hz — #199 Sonos hi-res gate; copied from instance_tracks during merge
+  bit_depth INTEGER,                  -- bits per sample; copied from instance_tracks during merge
+  channel_count INTEGER,              -- copied from instance_tracks during merge
   preferred INTEGER NOT NULL DEFAULT 0,
   UNIQUE(unified_track_id, instance_track_id)
 );

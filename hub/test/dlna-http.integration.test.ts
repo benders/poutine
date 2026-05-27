@@ -170,8 +170,10 @@ describe("DLNA HTTP surface (integration)", () => {
     });
   });
 
-  describe("Stream endpoint headers", () => {
-    it("unknown track id returns 404", async () => {
+  describe("Stream endpoint (#218 — handed off to /rest/stream.view)", () => {
+    it("/dlna/stream/:trackId is no longer mounted (404)", async () => {
+      // Confirms the relay path was deleted. DLNA Browse responses now
+      // emit `/rest/stream.view?...&dlna=1` URIs with embedded cast tokens.
       const res = await fetch(`${baseUrl}/dlna/stream/no-such-track`);
       expect(res.status).toBe(404);
     });

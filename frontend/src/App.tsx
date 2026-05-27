@@ -8,9 +8,10 @@ import { ArtistsPage } from "@/pages/ArtistsPage";
 import { ArtistDetailPage } from "@/pages/ArtistDetailPage";
 import { ReleaseGroupPage } from "@/pages/ReleaseGroupPage";
 import { SearchPage } from "@/pages/SearchPage";
-import { AdminPage } from "@/pages/AdminPage";
 import { ActivityPage } from "@/pages/ActivityPage";
 import { PlaylistsPage } from "@/pages/PlaylistsPage";
+import { HubAdminPage } from "@/features/hub-admin/HubAdminPage";
+import { PlayerAdminPage } from "@/features/player-admin/PlayerAdminPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -57,7 +58,10 @@ export function App() {
         <Route path="albums/:id" element={<ReleaseGroupPage />} />
         <Route path="search" element={<SearchPage />} />
         <Route path="activity" element={<ActivityPage />} />
-        <Route path="admin" element={<AdminPage />} />
+        {/* Admin split (#216): two destinations that never share a page. */}
+        <Route path="admin" element={<Navigate to="/admin/hub" replace />} />
+        <Route path="admin/hub" element={<HubAdminPage />} />
+        <Route path="admin/player" element={<PlayerAdminPage />} />
       </Route>
     </Routes>
   );

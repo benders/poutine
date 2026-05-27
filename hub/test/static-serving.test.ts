@@ -111,6 +111,23 @@ describe("static serving — enabled (staticDir set)", () => {
     expect(res.body).toContain("SPA");
   });
 
+  // Regression: #227 — /admin/hub and /admin/player are SPA routes added
+  // by the #216 admin split. The bare /admin/ allowlist let them fall
+  // through to the API 404 branch.
+  it("SPA fallback: /admin/hub returns index.html", async () => {
+    const res = await app.inject({ method: "GET", url: "/admin/hub" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/text\/html/);
+    expect(res.body).toContain("SPA");
+  });
+
+  it("SPA fallback: /admin/player returns index.html", async () => {
+    const res = await app.inject({ method: "GET", url: "/admin/player" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/text\/html/);
+    expect(res.body).toContain("SPA");
+  });
+
   it("API route /api/health still works", async () => {
     const res = await app.inject({ method: "GET", url: "/api/health" });
     expect(res.statusCode).toBe(200);

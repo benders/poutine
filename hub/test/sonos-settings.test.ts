@@ -9,16 +9,9 @@ import {
   SONOS_ENABLED_KEY,
   SONOS_VOLUME_CAP_KEY,
 } from "../src/services/sonos-settings.js";
+import { createPlayerSettings } from "../src/services/player-settings.js";
+import { createPlayerDatabase } from "../src/db/player-db.js";
 import Database from "better-sqlite3";
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SCHEMA = readFileSync(
-  join(__dirname, "../src/db/schema.sql"),
-  "utf8",
-);
 
 const testConfig: Partial<Config> = {
   databasePath: ":memory:",
@@ -37,46 +30,45 @@ async function makeOwnerToken(app: FastifyInstance): Promise<string> {
 }
 
 describe("SonosSettings (#184)", () => {
-  describe("createSonosSettings — DB-backed", () => {
+  describe("createSonosSettings — player.db-backed (#217)", () => {
     let db: Database.Database;
+    let settings: ReturnType<typeof createPlayerSettings>;
     beforeEach(() => {
-      db = new Database(":memory:");
-      db.exec(SCHEMA);
+      db = createPlayerDatabase(":memory:");
+      settings = createPlayerSettings(db);
     });
     afterEach(() => db.close());
 
     it("seeds defaults on first call", () => {
-      const s = createSonosSettings(db);
+      const s = createSonosSettings(settings);
       expect(s.getEnabled()).toBe(false);
       expect(s.getVolumeCap()).toBe(50);
     });
 
     it("seeds initialEnabled=true when no row exists", () => {
-      const s = createSonosSettings(db, { initialEnabled: true });
+      const s = createSonosSettings(settings, { initialEnabled: true });
       expect(s.getEnabled()).toBe(true);
     });
 
     it("does not overwrite an existing operator-set value", () => {
-      db.prepare(
-        "INSERT INTO settings (key, value) VALUES (?, ?)",
-      ).run(SONOS_ENABLED_KEY, "true");
+      settings.setRaw(SONOS_ENABLED_KEY, "true");
       // initialEnabled=false would normally seed false, but the row exists.
-      const s = createSonosSettings(db, { initialEnabled: false });
+      const s = createSonosSettings(settings, { initialEnabled: false });
       expect(s.getEnabled()).toBe(true);
     });
 
-    it("setEnabled persists", () => {
-      const s = createSonosSettings(db);
+    it("setEnabled persists into player.db", () => {
+      const s = createSonosSettings(settings);
       s.setEnabled(true);
       const row = db
-        .prepare("SELECT value FROM settings WHERE key = ?")
+        .prepare("SELECT value FROM player_settings WHERE key = ?")
         .get(SONOS_ENABLED_KEY) as { value: string };
       expect(row.value).toBe("true");
       expect(s.getEnabled()).toBe(true);
     });
 
     it("clamps volume cap to 0..100", () => {
-      const s = createSonosSettings(db);
+      const s = createSonosSettings(settings);
       s.setVolumeCap(-10);
       expect(s.getVolumeCap()).toBe(0);
       s.setVolumeCap(150);
@@ -86,17 +78,17 @@ describe("SonosSettings (#184)", () => {
     });
 
     it("falls back to default when stored value is non-numeric", () => {
-      const s = createSonosSettings(db);
-      db.prepare(
-        `UPDATE settings SET value = 'garbage' WHERE key = ?`,
-      ).run(SONOS_VOLUME_CAP_KEY);
+      const s = createSonosSettings(settings);
+      settings.setRaw(SONOS_VOLUME_CAP_KEY, "garbage");
       expect(s.getVolumeCap()).toBe(50);
     });
 
     it("onChange fires after each setter", () => {
-      const s = createSonosSettings(db);
+      const s = createSonosSettings(settings);
       const seen: Array<{ enabled: boolean; volumeCap: number; lanUrl: string }> = [];
-      s.onChange((snap) => seen.push(snap));
+      s.onChange((snap) =>
+        seen.push({ enabled: snap.enabled, volumeCap: snap.volumeCap, lanUrl: snap.lanUrl }),
+      );
       s.setEnabled(true);
       s.setVolumeCap(75);
       s.setLanUrl("http://hub.lan:3000");
@@ -108,7 +100,7 @@ describe("SonosSettings (#184)", () => {
     });
 
     it("lan_url: empty by default, persists when set, strips trailing slash", () => {
-      const s = createSonosSettings(db);
+      const s = createSonosSettings(settings);
       expect(s.getLanUrl()).toBe("");
       s.setLanUrl("http://hub.lan:3000//");
       expect(s.getLanUrl()).toBe("http://hub.lan:3000");
@@ -117,7 +109,7 @@ describe("SonosSettings (#184)", () => {
     });
 
     it("lan_url: rejects garbage and non-http schemes", () => {
-      const s = createSonosSettings(db);
+      const s = createSonosSettings(settings);
       expect(() => s.setLanUrl("not a url")).toThrow();
       expect(() => s.setLanUrl("ftp://hub.lan")).toThrow();
       // failed sets must not persist
@@ -125,11 +117,93 @@ describe("SonosSettings (#184)", () => {
     });
 
     it("initialLanUrl seeds on first boot, ignored when row exists", () => {
-      const s1 = createSonosSettings(db, { initialLanUrl: "http://seed.lan:3000" });
+      const s1 = createSonosSettings(settings, { initialLanUrl: "http://seed.lan:3000" });
       expect(s1.getLanUrl()).toBe("http://seed.lan:3000");
       // second creation should not overwrite the persisted value
-      const s2 = createSonosSettings(db, { initialLanUrl: "http://other.lan:3000" });
+      const s2 = createSonosSettings(settings, { initialLanUrl: "http://other.lan:3000" });
       expect(s2.getLanUrl()).toBe("http://seed.lan:3000");
+    });
+
+    it("dlnaEnabled + dlnaFriendlyName persist + seed cleanly", () => {
+      const s = createSonosSettings(settings, {
+        initialDlnaEnabled: true,
+        initialDlnaFriendlyName: "Test Server",
+      });
+      expect(s.getDlnaEnabled()).toBe(true);
+      expect(s.getDlnaFriendlyName()).toBe("Test Server");
+      s.setDlnaEnabled(false);
+      s.setDlnaFriendlyName("Renamed");
+      expect(s.getDlnaEnabled()).toBe(false);
+      expect(s.getDlnaFriendlyName()).toBe("Renamed");
+    });
+
+    it("dlnaFriendlyName falls back to default for blank values", () => {
+      const s = createSonosSettings(settings);
+      expect(s.getDlnaFriendlyName()).toBe("Poutine");
+      s.setDlnaFriendlyName("   ");
+      expect(s.getDlnaFriendlyName()).toBe("Poutine");
+    });
+  });
+
+  describe("hub.db → player.db migration (#217)", () => {
+    let app: FastifyInstance;
+    afterEach(async () => {
+      if (app) await app.close();
+    });
+
+    it("copies pre-existing hub.db settings rows on first boot", async () => {
+      app = await buildApp({
+        ...testConfig,
+        // give the migration something to copy by seeding hub.db before
+        // PlayerSettings reads it.
+      });
+      // Stash a legacy `settings` row that does NOT exist in player.db, then
+      // re-run the migration step directly — buildApp already migrated once,
+      // but we want to assert the gap-fill semantics explicitly.
+      app.db
+        .prepare(
+          "INSERT OR REPLACE INTO settings (key, value) VALUES ('sonos_volume_cap', '77')",
+        )
+        .run();
+      // Wipe the player.db row so the next migration call has work to do.
+      app.playerDb
+        .prepare("DELETE FROM player_settings WHERE key = 'sonos_volume_cap'")
+        .run();
+      const copied = app.playerSettings.migrateFromHubSettings(app.db);
+      expect(copied).toContain("sonos_volume_cap");
+      const row = app.playerDb
+        .prepare("SELECT value FROM player_settings WHERE key = 'sonos_volume_cap'")
+        .get() as { value: string } | undefined;
+      expect(row?.value).toBe("77");
+    });
+
+    it("subsequent setVolumeCap writes land in player.db, not hub.db", async () => {
+      app = await buildApp(testConfig);
+      app.sonosSettings.setVolumeCap(42);
+      const playerRow = app.playerDb
+        .prepare("SELECT value FROM player_settings WHERE key = 'sonos_volume_cap'")
+        .get() as { value: string } | undefined;
+      expect(playerRow?.value).toBe("42");
+      // hub.db must not be the source of truth — even if a legacy row
+      // exists there with a different value, the read must return the
+      // player.db value.
+      app.db
+        .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('sonos_volume_cap', '99')")
+        .run();
+      expect(app.sonosSettings.getVolumeCap()).toBe(42);
+    });
+
+    it("never overwrites an existing player.db value during migration", async () => {
+      app = await buildApp(testConfig);
+      // pretend hub.db had a stale value
+      app.db
+        .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('lan_url', 'http://stale.lan')")
+        .run();
+      // player.db should already have the seeded testConfig value
+      const before = app.sonosSettings.getLanUrl();
+      const copied = app.playerSettings.migrateFromHubSettings(app.db);
+      expect(copied).not.toContain("lan_url");
+      expect(app.sonosSettings.getLanUrl()).toBe(before);
     });
   });
 
@@ -159,13 +233,12 @@ describe("SonosSettings (#184)", () => {
       expect(res.json()).toEqual({ error: "Sonos is disabled" });
     });
 
-    it("/cast/stream/:trackId returns 503 when disabled", async () => {
-      const res = await app.inject({
-        method: "GET",
-        url: "/cast/stream/foo?token=bar",
-      });
-      expect(res.statusCode).toBe(503);
-    });
+    // #218: /cast/stream/:trackId was deleted. Cast tokens now authenticate
+    // /rest/stream.view directly. The "Sonos is disabled" gate moves to
+    // the SPA control plane (/api/sonos/* already covered above) — the
+    // Subsonic stream endpoint stays open to any authenticated request
+    // (including cast tokens) so external Subsonic clients keep working
+    // when Sonos casting is toggled off.
 
     it("capabilities flips immediately after toggle", async () => {
       app.sonosSettings.setEnabled(true);

@@ -32,6 +32,9 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Boundary lint (Hub/Player directory boundary, #221)
+        run: pnpm lint:boundary
+
       - name: Unit tests
         run: pnpm test
 

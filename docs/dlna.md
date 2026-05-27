@@ -18,7 +18,7 @@ openness off the public tunnel.
 | Description     | UPnP-DA 1.1 §2 device + service descriptions      | `/dlna/device.xml`, `/dlna/scpd/*.xml`                   |
 | Control         | UPnP-DA 1.1 §3 SOAP-over-HTTP                     | ContentDirectory:1 + ConnectionManager:1                 |
 | Browse payload  | UPnP CDS:1 + DIDL-Lite (`metadata-1-0/DIDL-Lite/`) | `Browse` response `Result` argument                      |
-| Streaming       | Plain HTTP GET with Range + DLNA response headers | `/dlna/stream/:trackId`                                  |
+| Streaming       | Plain HTTP GET with Range + DLNA response headers | `/rest/stream.view?id=t<uuid>&castToken=…&dlna=1` (#218 — handed off to Hub Subsonic) |
 | Events (GENA)   | Not implemented — clients tolerate polling.       | —                                                        |
 
 Specs to keep open while changing this code:
@@ -32,10 +32,10 @@ Specs to keep open while changing this code:
 | Path                                 | Role                                                                                                         |
 |--------------------------------------|--------------------------------------------------------------------------------------------------------------|
 | `services/ssdp-advertiser.ts`        | UDP `239.255.255.250:1900`. Periodic NOTIFY `ssdp:alive`, `ssdp:byebye` on shutdown, M-SEARCH responder.     |
-| `services/dlna-objects.ts`           | Object-ID encoder/decoder + `Browse` implementation over `unified_*` tables.                                 |
+| `services/dlna-objects.ts`           | Object-ID encoder/decoder + `Browse`/`Search` implementation. Reads via Subsonic HTTP only (no DB access); the caller is an `app.inject()`-backed `SubsonicCaller` wired in `server.ts` (#219). |
 | `services/didl.ts`                   | Shared with Sonos. `wrapDidl`, `buildContainer`, `buildAudioItem`, `buildDidlLiteTrack`.                     |
 | `services/soap.ts`                   | Shared with Sonos. Envelope/response builders, `parseSoapAction`, `pickXmlTag`, duration helpers.            |
-| `routes/dlna.ts`                     | `device.xml`, SCPDs, ContentDirectory + ConnectionManager SOAP, `/dlna/stream/:trackId`.                     |
+| `routes/dlna.ts`                     | `device.xml`, SCPDs, ContentDirectory + ConnectionManager SOAP. (#218 — `/dlna/stream/:trackId` deleted; DIDL `res@uri` points at `/rest/stream.view` with an embedded cast token.) |
 | `auth/lan-only.ts`                   | `requireLan` preHandler — rejects requests carrying proxy-forwarding headers. Installed at the `/dlna` plugin scope. |
 
 `server.ts` wires the advertiser to the `onReady` / `onClose` hooks and
@@ -56,13 +56,59 @@ can cache them across hub restarts.
 └─ 0/music
    ├─ 0/music/artists       → 0/music/artist/<unified_artist_id>
    │                          └─ release groups for that artist
-   ├─ 0/music/albums        → 0/music/album/<unified_release_group_id>
-   │                          └─ tracks across all releases in the group
-   └─ 0/music/tracks        → all tracks
+   └─ 0/music/albums        → 0/music/album/<unified_release_group_id>
+                              └─ tracks across all releases in the group
 ```
 
 Release-level (edition) browsing is not exposed — `unified_release_groups`
 is the natural "album" object for DLNA clients.
+
+### "All Tracks" container — dropped (#219)
+
+`0/music/tracks` (a global flat track enumeration) used to live alongside
+Artists and Albums. It was removed in #219 when DLNA was rewritten on top
+of Subsonic HTTP: there is no `getTracks` endpoint in Subsonic, and the
+only synthesis path is `getAlbumList2 + getAlbum` per album — an
+unavoidable N+1 fan-out that's expensive at the project's 50k-tracks-per-hub
+scale envelope. UPnP browsers (WMP, Kodi, VLC, BubbleUPnP) all default to
+entering Artists or Albums anyway, so the loss is cosmetic. A future
+OpenSubsonic `getSongs` extension (#214 survey) would let us add it back
+cheaply if a real client need surfaces.
+
+### Source — Subsonic HTTP, no DB (#219)
+
+The service is constructed with a `SubsonicCaller` (a thin
+`(endpoint, params) → JSON` interface). Production wires it to an
+`app.inject()`-backed call against the hub's own `/rest/*` endpoints —
+zero TCP, zero DB access from `dlna-objects.ts`. The owner's u+p is used
+for the loopback browse calls; DIDL output is identical to the pre-#219
+DB path modulo XML attribute order. The interface is HTTP-shaped so a
+future split deploy (Player as a separate process) swaps the caller for
+a real loopback `fetch` without touching the service.
+
+DLNA op → Subsonic mapping:
+
+| DLNA op                          | Subsonic call(s)                                     | Round-trips |
+|----------------------------------|------------------------------------------------------|-------------|
+| `Browse(root / music)`           | static                                               | 0           |
+| `Browse(artists)`                | `getArtists`                                         | 1           |
+| `Browse(albums)`                 | `getAlbumList2?type=alphabeticalByName`              | 1           |
+| `Browse(artist/<id>)`            | `getArtist`                                          | 1           |
+| `Browse(album/<id>)`             | `getAlbum`                                           | 1           |
+| `BrowseMetadata(artist/<id>)`    | `getArtist`                                          | 1           |
+| `BrowseMetadata(album/<id>)`     | `getAlbum`                                           | 1           |
+| `Search`                         | `search3`                                            | 1           |
+
+`getAlbumList2` does not return a total count. UPnP CDS:1 §2.2.2 defines
+`TotalMatches` as `ui4` (unsigned), so returning `-1` is malformed —
+strict renderers (BubbleUPnP, Linn Kazoo) interpret it as a parse error
+and spin a tight Browse retry loop (#228). Instead: a short page
+(`numberReturned < requestedCount`) yields the known total
+(`startIndex + numberReturned`); a full page yields `0` (spec value for
+"unknown" — clients keep paging on `numberReturned > 0` regardless).
+`childCount` on the static Artists/Albums containers is reported as
+`-1` (UPnP signed type, "unknown") to avoid the round-trips Subsonic
+would need to compute exact counts.
 
 ### Artist list filtering
 
@@ -85,18 +131,25 @@ artist is an ingest concern, not a DLNA concern.
 `sha1("poutine/dlna/<POUTINE_INSTANCE_ID>")` reshaped as a UUID. Stable
 across restarts so clients don't re-add the server every boot.
 
-## Stream endpoint
+## Stream endpoint (#218)
 
-`GET /dlna/stream/:trackId` reuses the local/peer source-selection +
-transcoding pipeline from `/cast/stream`. Response headers:
+DIDL `res@uri` is built by `services/dlna-objects.ts#streamUri` via
+`buildStreamUrl({ dlna: true, … })` — a self-contained
+`${lan_url}/rest/stream.view?id=t<uuid>&castToken=…&dlna=1&…` URL.
+Renderers fetch bytes directly from the Hub Subsonic stream handler;
+there is no longer a Player-side relay route.
+
+The Subsonic stream handler detects the `dlna=1` query flag and emits
+the DLNA-specific response headers strict renderers require:
 
 - `Content-Type` — from upstream (mp3 → `audio/mpeg`, flac → `audio/flac`, …)
-- `Content-Length`, `Accept-Ranges`, `Content-Range` — passed through.
+- `Content-Length`, `Accept-Ranges`, `Content-Range` — passed through. Defaults `accept-ranges: bytes` when upstream omits it (DLNA needs an explicit value).
 - `transferMode.dlna.org: Streaming` (echoes the request header if set).
 - `contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000…` — required by strict clients (WMP).
 
 Stream activity is attributed to `DLNA_PSEUDO_USER` (defaults to the
-owner) in `stream_operations` with `kind='dlna'`.
+owner — embedded in the cast token at Browse time) in `stream_operations`
+with `kind='dlna'` (the handler distinguishes by the `dlna=1` flag).
 
 ## LAN gate (tunnel hardening)
 
@@ -110,8 +163,9 @@ returns 403 if any of these proxy headers is present:
 
 Real LAN clients (Sonos / WMP / Kodi / VLC) never set those. If you run a
 transparent LAN-side proxy you must strip them there or leave
-`DLNA_ENABLED=false`. The Subsonic API and `/cast/stream` are unaffected —
-both already require authentication.
+`DLNA_ENABLED=false`. The Subsonic API is unaffected — every endpoint
+there already requires authentication (Subsonic `u+p`/`u+t+s`, or the
+cast-token mode on the stream endpoint scoped to a single trackId).
 
 ## Compatibility notes
 
@@ -145,7 +199,7 @@ Sink is empty — we don't render.
 | `node-upnp` (devDep)     | Real UPnP control point: device description + SOAP Browse | Quirk: `parseSOAPResponse` walks `Array.from(argumentList.argument)`, which silently returns `[]` for single-argument actions because fast-xml-parser emits an object (not an array) for a single child. Single-output SOAP actions come back as `{}`. Worked around with raw fetch. |
 | Node `dgram` (built-in)  | SSDP M-SEARCH + reply parsing                  | Direct and reliable. No library needed.                                                                          |
 | Node `fetch` (built-in)  | Raw HTTP for stream headers + LAN-gate assertions + single-output SOAP | Already in tree.                                                                                                 |
-| `better-sqlite3` (dep)   | In-memory schema seeded with fixtures          | Backs the `dlna-objects` Browse unit tests.                                                                      |
+| `better-sqlite3` (dep)   | In-memory schema seeded with fixtures          | Used by the `dlna-objects` unit tests only to *seed* `unified_*` rows; the service itself reads via `app.inject()`-driven Subsonic calls (#219). |
 
 ### Why not `@achingbrain/ssdp`
 
@@ -172,9 +226,9 @@ Raw `dgram` gives a packet-level assertion in a few dozen lines.
 |-------------------------------------|---------------------------------------------------------------------------------|
 | `test/soap.test.ts`                 | xmlEscape, envelope/response builders, SOAPACTION parsing, pickXmlTag, duration |
 | `test/ssdp-advertiser.test.ts`      | NOTIFY alive/byebye + M-SEARCH-reply packet construction, target matching       |
-| `test/dlna-objects.test.ts`         | Object-ID parse/encode, Browse against a seeded in-memory SQLite                |
+| `test/dlna-objects.test.ts`         | Object-ID parse/encode, Browse + Search via `app.inject()` Subsonic caller against seeded `unified_*` fixtures (#219) |
 | `test/lan-only.test.ts`             | `requireLan` preHandler against a synthetic Fastify app                         |
-| `test/dlna-stream.test.ts`          | `/dlna/stream/:trackId` positive path against a fake Navidrome — DLNA response headers, Range forwarding, 404 unknown vs 503 no-source distinction |
+| `test/dlna-stream.test.ts`          | Cast-token handoff at `/rest/stream.view?…&dlna=1` (#218) against a fake Navidrome — DLNA response headers, Range forwarding, token-vs-trackId binding |
 
 ### Integration tests (`pnpm --filter hub test:integration`)
 
@@ -183,7 +237,8 @@ Run separately; require UDP multicast and a free UDP 1900 for the advertiser.
 | File                                  | Covers                                                                                                            |
 |---------------------------------------|-------------------------------------------------------------------------------------------------------------------|
 | `test/dlna-ssdp.integration.test.ts`  | Boots `SsdpAdvertiser`. Raw-dgram M-SEARCH for `MediaServer:1` (asserts USN/LOCATION/CACHE-CONTROL/SERVER on the unicast 200). M-SEARCH for `ssdp:all` (asserts all five advertised targets reply). Boots a second advertiser and listens for `NTS: ssdp:byebye` after `stop()` (asserts all five targets emit byebye before the socket closes). |
-| `test/dlna-http.integration.test.ts`  | Boots full hub via `buildApp()` on a random loopback port. `node-upnp` drives device-description fetch + Browse + ConnectionManager:GetProtocolInfo. Raw fetch covers single-output SOAP actions, `/dlna/stream/<unknown>` 404, and LAN-gate rejecting `x-forwarded-for` / `cf-connecting-ip`. |
+| `test/dlna-http.integration.test.ts`  | Boots full hub via `buildApp()` on a random loopback port. `node-upnp` drives device-description fetch + Browse + ConnectionManager:GetProtocolInfo. Raw fetch covers single-output SOAP actions, confirms `/dlna/stream/<id>` returns 404 (#218 — the relay route was deleted), and LAN-gate rejecting `x-forwarded-for` / `cf-connecting-ip`. |
+| `test/cast-token-stream.integration.test.ts` | #218 — end-to-end smoke that `buildStreamUrl` produces a URL whose bytes stream through Hub Subsonic; cross-track token rejection; getCoverArt refuses cast tokens. |
 
 > **Test constraint:** `dlna-http.integration.test.ts` leaves the
 > `lan_url` setting empty on purpose so its `buildApp()` does **not**

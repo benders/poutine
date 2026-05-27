@@ -208,34 +208,40 @@ export interface SyncResult {
   errors: string[];
 }
 
+// Hub-admin API surface (#220, Phase 6 of #212): users, peers, sync,
+// cache, instance, activity. All routed at `/api/admin/hub/*` — the
+// historical `/admin/*` paths still work (backward-compat alias), but
+// the SPA exclusively uses the namespaced form so the Hub/Player
+// frontend boundary is visible at the network layer.
+
 export function getInstanceInfo() {
-  return apiFetch<InstanceInfo>("/admin/instance");
+  return apiFetch<InstanceInfo>("/api/admin/hub/instance");
 }
 
 export function triggerNavidromeScan() {
   return apiFetch<{ scanning: boolean; count: number; folderCount: number; lastScan: string | null }>(
-    "/admin/instance/scan",
+    "/api/admin/hub/instance/scan",
     { method: "POST" },
   );
 }
 
 export function getUsers() {
-  return apiFetch<User[]>("/admin/users");
+  return apiFetch<User[]>("/api/admin/hub/users");
 }
 
 export function createUser(username: string, password: string) {
-  return apiFetch<User>("/admin/users", {
+  return apiFetch<User>("/api/admin/hub/users", {
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
 }
 
 export function deleteUser(id: string) {
-  return apiFetch(`/admin/users/${id}`, { method: "DELETE" });
+  return apiFetch(`/api/admin/hub/users/${id}`, { method: "DELETE" });
 }
 
 export function getPeers() {
-  return apiFetch<Peer[]>("/admin/peers");
+  return apiFetch<Peer[]>("/api/admin/hub/peers");
 }
 
 export interface PeerSummary {
@@ -246,7 +252,7 @@ export interface PeerSummary {
 }
 
 export function getPeersSummary() {
-  return apiFetch<PeerSummary[]>("/admin/peers/summary");
+  return apiFetch<PeerSummary[]>("/api/admin/hub/peers/summary");
 }
 
 /** Display name for a peer: drop anything from the first '.' onward. */
@@ -256,13 +262,13 @@ export function peerDisplayName(name: string): string {
 }
 
 export function triggerSync() {
-  return apiFetch<{ local: SyncResult; peers: SyncResult[] }>("/admin/sync", {
+  return apiFetch<{ local: SyncResult; peers: SyncResult[] }>("/api/admin/hub/sync", {
     method: "POST",
   });
 }
 
 export async function deletePeerData(): Promise<void> {
-  await apiFetch("/admin/peers/data", { method: "DELETE" });
+  await apiFetch("/api/admin/hub/peers/data", { method: "DELETE" });
 }
 
 export function generateInvitation(opts: {
@@ -270,7 +276,7 @@ export function generateInvitation(opts: {
   inviteeUrl?: string;
   expiresInSec?: number;
 }): Promise<{ invitation: string }> {
-  return apiFetch<{ invitation: string }>("/admin/peers/invite", {
+  return apiFetch<{ invitation: string }>("/api/admin/hub/peers/invite", {
     method: "POST",
     body: JSON.stringify(opts),
   });
@@ -281,7 +287,7 @@ export function acceptInvitation(opts: {
   ourUrl: string;
 }): Promise<{ ok: true; peerId: string; peerUrl: string }> {
   return apiFetch<{ ok: true; peerId: string; peerUrl: string }>(
-    "/admin/peers/accept",
+    "/api/admin/hub/peers/accept",
     {
       method: "POST",
       body: JSON.stringify(opts),
@@ -290,18 +296,18 @@ export function acceptInvitation(opts: {
 }
 
 export function getCacheStats() {
-  return apiFetch<CacheStats>("/admin/cache");
+  return apiFetch<CacheStats>("/api/admin/hub/cache");
 }
 
 export function updateCacheSettings(data: { artCacheMaxBytes?: number }) {
-  return apiFetch<CacheStats>("/admin/cache", {
+  return apiFetch<CacheStats>("/api/admin/hub/cache", {
     method: "PUT",
     body: JSON.stringify(data),
   });
 }
 
 export function clearArtCache() {
-  return apiFetch("/admin/cache", { method: "DELETE" });
+  return apiFetch("/api/admin/hub/cache", { method: "DELETE" });
 }
 // Activity API
 
@@ -369,7 +375,7 @@ export interface ActivityHistory {
 export type ActivityHistoryKind = "stream" | "sync";
 
 export function getActiveActivity() {
-  return apiFetch<ActiveActivity>(`/admin/activity/active`);
+  return apiFetch<ActiveActivity>(`/api/admin/hub/activity/active`);
 }
 
 export function getActivityHistory(kinds: ActivityHistoryKind[] = ["stream", "sync"], limit = 200) {
@@ -377,15 +383,15 @@ export function getActivityHistory(kinds: ActivityHistoryKind[] = ["stream", "sy
     kinds: kinds.join(","),
     limit: String(limit),
   });
-  return apiFetch<ActivityHistory>(`/admin/activity/history?${params.toString()}`);
+  return apiFetch<ActivityHistory>(`/api/admin/hub/activity/history?${params.toString()}`);
 }
 
 export function clearActivityHistory() {
-  return apiFetch<{ cleared: boolean }>(`/admin/activity`, { method: "DELETE" });
+  return apiFetch<{ cleared: boolean }>(`/api/admin/hub/activity`, { method: "DELETE" });
 }
 
 export function getActivitySummary() {
-  return apiFetch<ActivitySummary>(`/admin/activity/summary`);
+  return apiFetch<ActivitySummary>(`/api/admin/hub/activity/summary`);
 }
 
 export interface ActivitySettings {
@@ -393,11 +399,11 @@ export interface ActivitySettings {
 }
 
 export function getActivitySettings() {
-  return apiFetch<ActivitySettings>(`/admin/settings/activity`);
+  return apiFetch<ActivitySettings>(`/api/admin/hub/settings/activity`);
 }
 
 export function updateActivitySettings(settings: { maxEvents: number }) {
-  return apiFetch<ActivitySettings>(`/admin/settings/activity`, {
+  return apiFetch<ActivitySettings>(`/api/admin/hub/settings/activity`, {
     method: "PUT",
     body: JSON.stringify(settings),
   });
@@ -412,12 +418,16 @@ export interface SonosSettings {
   lanUrl: string;
 }
 
+// Player-admin API surface (#220): Sonos / LAN URL settings live under
+// `/api/admin/player/*`. Hub admin code never reads these; the SPA's
+// `features/player-admin/` section is the only consumer.
+
 export function getSonosSettings() {
-  return apiFetch<SonosSettings>(`/admin/settings/sonos`);
+  return apiFetch<SonosSettings>(`/api/admin/player/settings/sonos`);
 }
 
 export function updateSonosSettings(settings: Partial<SonosSettings>) {
-  return apiFetch<SonosSettings>(`/admin/settings/sonos`, {
+  return apiFetch<SonosSettings>(`/api/admin/player/settings/sonos`, {
     method: "PUT",
     body: JSON.stringify(settings),
   });
@@ -431,6 +441,33 @@ export interface Capabilities {
 
 export function getCapabilities() {
   return apiFetch<Capabilities>(`/api/capabilities`);
+}
+
+// ── Player health probe (issue #216) ────────────────────────────────────────
+//
+// Drives the SPA's /admin/player route gate. Today the Player code runs in
+// the same process as the Hub, so this always returns 200. Once Phase 5
+// (#220) lifts Player into its own plugin/deploy, a 404 here means the
+// route renders a "Player not deployed on this host" placeholder instead.
+//
+// Unlike `/api/health` this is a no-auth probe (matches the Hub-side
+// implementation in `hub/src/server.ts`); we wrap it in `fetch` directly
+// to avoid the JWT refresh dance on a route the user may not be logged
+// in to use yet.
+
+export interface PlayerHealth {
+  status: "ok";
+  appVersion: string;
+}
+
+export async function getPlayerHealth(): Promise<PlayerHealth | null> {
+  try {
+    const res = await fetch("/player/health");
+    if (!res.ok) return null;
+    return (await res.json()) as PlayerHealth;
+  } catch {
+    return null;
+  }
 }
 
 export interface SonosDevice {

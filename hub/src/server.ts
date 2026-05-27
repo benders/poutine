@@ -5,6 +5,11 @@ import fastifyStatic from "@fastify/static";
 import { loadConfig } from "./config.js";
 import { APP_VERSION, FEDERATION_API_VERSION } from "./version.js";
 import { createDatabase } from "./db/client.js";
+import { createPlayerDatabase, defaultPlayerDbPath } from "./db/player-db.js";
+import {
+  createPlayerSettings,
+  type PlayerSettings,
+} from "./services/player-settings.js";
 import { adminRoutes } from "./routes/admin.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
 import { proxyRoutes } from "./routes/proxy.js";
@@ -27,12 +32,12 @@ import { SonosControl } from "./services/sonos-control.js";
 import { createSonosSettings } from "./services/sonos-settings.js";
 import { deriveCastSecret } from "./services/cast-tokens.js";
 import { sonosRoutes } from "./routes/sonos.js";
-import { castRoutes } from "./routes/cast.js";
 import { SubsonicClient } from "./adapters/subsonic.js";
 import { SsdpAdvertiser } from "./services/ssdp-advertiser.js";
 import { DlnaObjectService } from "./services/dlna-objects.js";
 import { dlnaRoutes } from "./routes/dlna.js";
-import { createHash } from "node:crypto";
+import { createHubSubsonicCaller } from "./services/hub-subsonic-caller.js";
+import { createHash, randomBytes } from "node:crypto";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
@@ -44,6 +49,14 @@ declare module "fastify" {
   interface FastifyInstance {
     config: Config;
     db: Database.Database;
+    /**
+     * Player-owned SQLite database (`player.db`). Hub code MUST NOT read or
+     * write this — it is exposed only so Player BE modules (routes/dlna,
+     * routes/cast, services/player-settings) can be wired via capability
+     * injection. See issue #215 and `docs/system-architecture.md`.
+     */
+    playerDb: Database.Database;
+    playerSettings: PlayerSettings;
     artCache: ArtCache;
   peerRegistry: PeerRegistry;
   privateKey: KeyObject;
@@ -55,6 +68,15 @@ declare module "fastify" {
   lastFmClient: LastFmClient | null;
   fanartTvClient: FanartTvClient | null;
   navidromeClient: SubsonicClient;
+  /**
+   * Random 32-byte secret minted at boot. Used only for in-process trusted
+   * auth: requests carrying `x-poutine-internal: <secret>` + `x-poutine-as-
+   * user: <username>` bypass password verification on the Subsonic auth
+   * middleware. Never crosses the wire — `HubSubsonicCaller` (`asUser` mode)
+   * is the only producer; both ends read this same decorator. See
+   * `docs/authentication.md` and issue #224.
+   */
+  internalAuthSecret: string;
 }
 }
 
@@ -141,6 +163,35 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   }
   app.decorate("config", config);
   app.decorate("db", db);
+
+  // Player BE owns a separate SQLite file (`player.db`). Opened here so the
+  // entry point holds the capability and hands each owner (Hub vs Player)
+  // only the handle it needs. No ATTACH, no cross-joins. See issue #215.
+  const playerDbPath =
+    config.playerDatabasePath || defaultPlayerDbPath(config.databasePath);
+  const playerDb = createPlayerDatabase(playerDbPath);
+  const playerSettings = createPlayerSettings(playerDb);
+  app.decorate("playerDb", playerDb);
+  app.decorate("playerSettings", playerSettings);
+
+  // Phase 3 (#217): copy any Player-owned rows that still live in
+  // hub.db's `settings` table over to player.db. Idempotent — only
+  // fills the gap, never overwrites. After this runs, player.db is the
+  // source of truth for sonos/dlna runtime config.
+  const migrated = playerSettings.migrateFromHubSettings(db);
+  if (migrated.length > 0) {
+    app.log.info(
+      { keys: migrated },
+      "Player settings migrated from hub.db into player.db (#217)",
+    );
+  }
+  app.addHook("onClose", async () => {
+    try {
+      playerDb.close();
+    } catch {
+      // already closed — fine
+    }
+  });
 
   // Art cache — store cached images alongside the database
   const { dirname, join } = await import("node:path");
@@ -300,7 +351,27 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(cookie);
 
   // Routes
+  //
+  // Admin API namespaces (#220, Phase 6 of #212). The same plugin is
+  // mounted at three prefixes:
+  //   /admin/*               — historical path; kept for backward
+  //                            compatibility (auth cookies are bound to
+  //                            `/admin/refresh`, so this also keeps
+  //                            existing browser sessions working across
+  //                            the upgrade).
+  //   /api/admin/hub/*       — Hub-owned admin (users, peers, sync, cache,
+  //                            activity, art-cache settings). What the
+  //                            Hub-admin SPA section calls.
+  //   /api/admin/player/*    — Player-owned admin (Sonos / DLNA / LAN URL
+  //                            settings). What the Player-admin SPA
+  //                            section calls.
+  //
+  // The route handlers are identical at all three mounts; partition
+  // enforcement (per-endpoint allowlist on which namespace serves which
+  // path) lands with the ESLint `no-restricted-paths` rule in #221.
   await app.register(adminRoutes, { prefix: "/admin" });
+  await app.register(adminRoutes, { prefix: "/api/admin/hub" });
+  await app.register(adminRoutes, { prefix: "/api/admin/player" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
   await app.register(federationRoutes, { prefix: "/federation" });
 
@@ -313,9 +384,13 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // admin can flip the runtime `sonos_enabled` setting without a restart;
   // SSDP discovery only runs while enabled. Requires network_mode: host on
   // the docker compose side for multicast.
-  const sonosSettings = createSonosSettings(db, {
+  // #217: backed by player.db via the PlayerSettings KV. env vars supply
+  // first-boot seeds only — operator changes persist in player.db.
+  const sonosSettings = createSonosSettings(playerSettings, {
     initialEnabled: config.sonosEnabled,
     initialLanUrl: config.initialLanUrl,
+    initialDlnaEnabled: config.dlnaEnabled,
+    initialDlnaFriendlyName: config.dlnaFriendlyName,
   });
   const sonosControl = new SonosControl();
   const sonosDiscovery = new SonosDiscoveryService({
@@ -326,11 +401,33 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   app.decorate("sonosSettings", sonosSettings);
   app.decorate("sonosDiscovery", sonosDiscovery);
   app.decorate("sonosControl", sonosControl);
-  // HMAC secret for cast tokens, derived from the federation key.
+  // HMAC secret for cast tokens. Phase 1 of #212 persists this in player.db
+  // (#215) so it survives federation-key rotations. The fallback derives
+  // the previous value (HMAC over the Ed25519 private key) so existing
+  // deployments keep the same secret across this upgrade — first boot
+  // under the new code path migrates by writing the derived value into
+  // player.db.
   const privDer = privateKey.export({ format: "der", type: "pkcs8" });
-  app.decorate("castSecret", deriveCastSecret(privDer));
+  const castSecret = playerSettings.getCastSecret(() => deriveCastSecret(privDer));
+  app.decorate("castSecret", castSecret);
+
+  // In-process Subsonic trusted-auth secret (#224). Random per-boot — the
+  // value never crosses the wire and there are no cross-restart consumers
+  // (HubSubsonicCaller reads it from the live app instance at call time).
+  app.decorate("internalAuthSecret", randomBytes(32).toString("base64url"));
+
+  // #220: Sonos play planner reads track metadata + preferred-source info
+  // via the Hub Subsonic API over in-process loopback — no `SubsonicClient`
+  // adapter import, no direct `app.db` access. See
+  // `services/hub-subsonic-caller.ts` and `routes/sonos.ts`.
+  app.decorate(
+    "hubSubsonicSonos",
+    createHubSubsonicCaller(app, { client: "poutine-sonos" }),
+  );
+
   await app.register(sonosRoutes, { prefix: "/api/sonos" });
-  await app.register(castRoutes, { prefix: "/cast" });
+  // #218: /cast/stream was deleted. Sonos devices now fetch directly from
+  // /rest/stream.view with an embedded cast token (see cast-tokens.ts).
 
   if (sonosSettings.getEnabled() && !sonosSettings.getLanUrl()) {
     app.log.error(
@@ -418,16 +515,36 @@ export async function buildApp(configOverrides?: Partial<Config>) {
         "DLNA_ENABLED=true but the LAN URL setting is empty — clients cannot fetch the device description or streams. Set it from Admin → Sonos.",
       );
     }
-    // Stable per-instance UUID v5-ish — deterministic across restarts so
-    // WMP doesn't re-add the server every boot.
-    const uuid = uuidFromInstanceId(config.poutineInstanceId || "poutine");
+    // Stable per-instance UUID for the DLNA UDN. Phase 1 of #212 persists
+    // this in player.db so it survives across restarts AND across changes
+    // to POUTINE_INSTANCE_ID (#215). The fallback preserves the historical
+    // derivation (SHA1 of poutine/dlna/<instance-id>), so existing
+    // deployments migrate transparently on first boot under the new code.
+    const uuid = playerSettings.getDlnaUuid(() =>
+      uuidFromInstanceId(config.poutineInstanceId || "poutine"),
+    );
     app.decorate("dlnaUuid", uuid);
-    app.decorate("dlnaObjects", new DlnaObjectService(db));
+
+    // #219: DLNA ContentDirectory talks to the Hub Subsonic API over
+    // in-process loopback (`app.inject`) — no direct DB access from the
+    // DLNA service. Auth is the owner's u+p; the Subsonic `f=json` path is
+    // the only one DLNA browses, and the owner is the only user guaranteed
+    // to exist at boot. A future split-deploy swaps the caller for a real
+    // loopback fetch without touching the service itself.
+    // #220: the caller is the shared `HubSubsonicCaller` — same instance
+    // used by sonos.ts so both Player-side consumers go through one HTTP-
+    // shaped surface.
+    const dlnaSubsonicCaller = createHubSubsonicCaller(app, {
+      client: "poutine-dlna",
+    });
+    app.decorate("dlnaObjects", new DlnaObjectService(dlnaSubsonicCaller));
 
     await app.register(dlnaRoutes, { prefix: "/dlna" });
 
     await rebuildSsdp();
-    app.log.info(`DLNA MediaServer enabled (friendly name: ${config.dlnaFriendlyName})`);
+    app.log.info(
+      `DLNA MediaServer enabled (friendly name: ${sonosSettings.getDlnaFriendlyName()})`,
+    );
   }
 
   // Pick up runtime lan_url changes (#209): rebuild SSDP, log nothing else.
@@ -445,6 +562,16 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   app.get("/api/capabilities", async () => ({
     sonos: sonosSettings.getEnabled(),
     dlna: config.dlnaEnabled,
+  }));
+
+  // Player health probe (issue #216). The SPA hits this to decide whether
+  // to render the /admin/player route. Today the Player code runs in-process
+  // with the Hub so this is always 200; once Phase 5 (#220) lifts Player
+  // into a separate plugin/process, an absent or 404 response will turn the
+  // Player admin destination into a "not deployed on this host" placeholder.
+  app.get("/player/health", async () => ({
+    status: "ok",
+    appVersion: APP_VERSION,
   }));
 
   // Health check (issue #178). Always HTTP 200 so the federation handshake
@@ -477,12 +604,16 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     await app.register(fastifyStatic, { root, wildcard: false });
 
     // SPA fallback: serve index.html for any unmatched non-API route.
-    // /admin and /admin/ are SPA routes (the React admin page); only sub-paths
-    // like /admin/login are API. /rest/*, /api/*, /proxy/* are always API.
+    // SPA admin destinations: bare /admin and /admin/, plus the two
+    // post-#216 split destinations /admin/hub and /admin/player. Everything
+    // else under /admin/ (login, refresh, users, peers, sync, cache,
+    // activity, settings, …) is API. /rest/*, /api/*, /proxy/* are always
+    // API.
+    const SPA_ADMIN_PATHS = new Set(["/admin/", "/admin/hub", "/admin/player"]);
     app.setNotFoundHandler(async (req, reply) => {
       const urlPath = req.url.split("?")[0];
       const isApiRoute =
-        (urlPath.startsWith("/admin/") && urlPath !== "/admin/") ||
+        (urlPath.startsWith("/admin/") && !SPA_ADMIN_PATHS.has(urlPath)) ||
         urlPath.startsWith("/rest") ||
         urlPath.startsWith("/api") ||
         urlPath.startsWith("/proxy");
