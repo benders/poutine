@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, fireEvent, render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PlayerBar } from "./PlayerBar";
 import { usePlayer } from "@/stores/player";
 import { setSubsonicCreds } from "@/lib/api";
@@ -60,9 +61,9 @@ describe("PlayerBar render stability", () => {
 
     expect(() =>
       render(
-        <MemoryRouter>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
           <PlayerBar />
-        </MemoryRouter>,
+        </MemoryRouter></QueryClientProvider>,
       ),
     ).not.toThrow();
 
@@ -84,9 +85,9 @@ describe("PlayerBar render stability", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     const img = container.querySelector("img");
@@ -150,9 +151,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     const slider = findCastSlider(container);
@@ -179,9 +180,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     const slider = findCastSlider(container)!;
@@ -211,9 +212,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     await act(async () => {
@@ -231,9 +232,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     await act(async () => {
@@ -254,9 +255,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     await act(async () => {
@@ -281,9 +282,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     // Simulate next(): store resets currentTime to 0 and advances index.
@@ -307,9 +308,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     (api.sonosPlay as ReturnType<typeof vi.fn>).mockClear();
@@ -352,9 +353,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     // Wait for the initial sonosPlay resolve so castTranscodedRef updates.
@@ -398,9 +399,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     const stopCalls = (api.sonosCommand as ReturnType<typeof vi.fn>).mock.calls
@@ -424,9 +425,9 @@ describe("PlayerBar cast volume slider", () => {
     });
 
     const { container } = render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
         <PlayerBar />
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
 
     const slider = findCastSlider(container)!;

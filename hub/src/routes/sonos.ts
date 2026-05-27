@@ -282,7 +282,7 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", async (request, reply) => {
     if (request.isAdmin) return;
     if (app.sonosSettings.getAllowNonAdmin()) return;
-    reply.code(403).send({ error: "Admin access required" });
+    return reply.code(403).send({ error: "Admin access required" });
   });
 
   app.get("/devices", async () => {

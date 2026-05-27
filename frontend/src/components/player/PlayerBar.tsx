@@ -1,5 +1,6 @@
-import { useEffect, useRef, useCallback, useMemo, useState } from "react";
+import { useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { usePlayer } from "@/stores/player";
 import { useAuth } from "@/stores/auth";
 import { useToasts } from "@/stores/toast";
@@ -67,17 +68,20 @@ export function PlayerBar() {
 
   const isSonos = sink !== "local";
 
-  // Capabilities are static per backend boot; fetch once and stash. We use
-  // it to decide whether to render the DevicePicker. #232: non-admin sessions
-  // only see the picker when the admin has flipped `sonosAllowNonAdmin` — the
-  // API also enforces the rule, so hiding here just avoids a broken control.
+  // Capabilities drive whether the DevicePicker renders. Use `useQuery` so the
+  // admin flipping `sonosAllowNonAdmin` (SonosSection invalidates
+  // `["capabilities"]`) is reflected in non-admin sessions without a hard
+  // reload. #232: non-admins only see the picker when the opt-in is on; the
+  // API enforces the rule independently.
   const isAdmin = useAuth((s) => s.user?.isAdmin ?? false);
-  const [sonosAvailable, setSonosAvailable] = useState(false);
-  useEffect(() => {
-    getCapabilities()
-      .then((c) => setSonosAvailable(c.sonos && (isAdmin || c.sonosAllowNonAdmin)))
-      .catch(() => setSonosAvailable(false));
-  }, [isAdmin]);
+  const { data: capabilities } = useQuery({
+    queryKey: ["capabilities"],
+    queryFn: getCapabilities,
+    staleTime: 60_000,
+  });
+  const sonosAvailable = Boolean(
+    capabilities?.sonos && (isAdmin || capabilities.sonosAllowNonAdmin),
+  );
 
   // Base offset (seconds) for the current <audio> src. Non-zero when the
   // server was asked to start mid-track via Subsonic timeOffset. The browser
