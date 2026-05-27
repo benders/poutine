@@ -604,12 +604,16 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     await app.register(fastifyStatic, { root, wildcard: false });
 
     // SPA fallback: serve index.html for any unmatched non-API route.
-    // /admin and /admin/ are SPA routes (the React admin page); only sub-paths
-    // like /admin/login are API. /rest/*, /api/*, /proxy/* are always API.
+    // SPA admin destinations: bare /admin and /admin/, plus the two
+    // post-#216 split destinations /admin/hub and /admin/player. Everything
+    // else under /admin/ (login, refresh, users, peers, sync, cache,
+    // activity, settings, …) is API. /rest/*, /api/*, /proxy/* are always
+    // API.
+    const SPA_ADMIN_PATHS = new Set(["/admin/", "/admin/hub", "/admin/player"]);
     app.setNotFoundHandler(async (req, reply) => {
       const urlPath = req.url.split("?")[0];
       const isApiRoute =
-        (urlPath.startsWith("/admin/") && urlPath !== "/admin/") ||
+        (urlPath.startsWith("/admin/") && !SPA_ADMIN_PATHS.has(urlPath)) ||
         urlPath.startsWith("/rest") ||
         urlPath.startsWith("/api") ||
         urlPath.startsWith("/proxy");
