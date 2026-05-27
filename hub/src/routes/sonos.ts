@@ -273,10 +273,17 @@ export const sonosRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  // Every route under /api/sonos/* requires a logged-in user. The frontend
-  // already sends the JWT via `Authorization: Bearer ...`; without this
-  // gate, anyone on the LAN could enumerate Sonos rooms and blast audio.
+  // Every route under /api/sonos/* requires a logged-in user. Sonos speakers
+  // are shared LAN hardware — by default only admins can drive them (#232),
+  // but an admin can opt the install in to non-admin casting via the
+  // `sonos_allow_non_admin` Player setting. The gate reads the live setting
+  // on every request so a toggle takes effect immediately, no restart.
   app.addHook("preHandler", requireAuth);
+  app.addHook("preHandler", async (request, reply) => {
+    if (request.isAdmin) return;
+    if (app.sonosSettings.getAllowNonAdmin()) return;
+    reply.code(403).send({ error: "Admin access required" });
+  });
 
   app.get("/devices", async () => {
     return {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { usePlayer } from "@/stores/player";
+import { useAuth } from "@/stores/auth";
 import { useToasts } from "@/stores/toast";
 import { formatDuration } from "@/lib/format";
 import { streamUrl, artUrl, effectiveStream } from "@/lib/subsonic";
@@ -66,14 +67,17 @@ export function PlayerBar() {
 
   const isSonos = sink !== "local";
 
-  // Capabilities are static per backend boot; fetch once and stash. We only
-  // use this to decide whether to render the DevicePicker.
+  // Capabilities are static per backend boot; fetch once and stash. We use
+  // it to decide whether to render the DevicePicker. #232: non-admin sessions
+  // only see the picker when the admin has flipped `sonosAllowNonAdmin` — the
+  // API also enforces the rule, so hiding here just avoids a broken control.
+  const isAdmin = useAuth((s) => s.user?.isAdmin ?? false);
   const [sonosAvailable, setSonosAvailable] = useState(false);
   useEffect(() => {
     getCapabilities()
-      .then((c) => setSonosAvailable(c.sonos))
+      .then((c) => setSonosAvailable(c.sonos && (isAdmin || c.sonosAllowNonAdmin)))
       .catch(() => setSonosAvailable(false));
-  }, []);
+  }, [isAdmin]);
 
   // Base offset (seconds) for the current <audio> src. Non-zero when the
   // server was asked to start mid-track via Subsonic timeOffset. The browser

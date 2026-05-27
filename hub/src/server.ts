@@ -563,6 +563,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   app.get("/api/capabilities", async () => ({
     sonos: sonosSettings.getEnabled(),
     dlna: config.dlnaEnabled,
+    // #232: when false, the SPA hides the device picker for non-admin users
+    // (the API also enforces the rule independently).
+    sonosAllowNonAdmin: sonosSettings.getAllowNonAdmin(),
   }));
 
   // Player health probe (issue #216). The SPA hits this to decide whether

@@ -41,6 +41,7 @@ describe("PlayerAdminPage gate (#216)", () => {
       enabled: false,
       volumeCap: 80,
       lanUrl: "",
+      allowNonAdmin: false,
     });
 
     renderPage();

@@ -415,6 +415,9 @@ export interface SonosSettings {
    *  unset (Sonos casting + DLNA won't work until set). Shared with DLNA
    *  (#209). */
   lanUrl: string;
+  /** #232: when true, non-admin users can drive `/api/sonos/*` (and see the
+   *  device picker in the SPA). Default false — admin-only. */
+  allowNonAdmin: boolean;
 }
 
 // Player-admin API surface (#220): Sonos / LAN URL settings live under
@@ -436,6 +439,9 @@ export function updateSonosSettings(settings: Partial<SonosSettings>) {
 
 export interface Capabilities {
   sonos: boolean;
+  /** #232: when false, the SPA hides the Sonos device picker for non-admin
+   *  users. Admins always see it (subject to `sonos`). */
+  sonosAllowNonAdmin: boolean;
 }
 
 export function getCapabilities() {

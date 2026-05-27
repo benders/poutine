@@ -112,6 +112,7 @@ describe("PlayerBar cast volume slider", () => {
     vi.spyOn(api, "getCapabilities").mockResolvedValue({
       sonos: true,
       dlna: true,
+      sonosAllowNonAdmin: false,
     } as Awaited<ReturnType<typeof api.getCapabilities>>);
     vi.spyOn(api, "getSonosState").mockResolvedValue({
       state: "PLAYING",

@@ -28,6 +28,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// #232: admin-only routes redirect non-admin sessions back to the library.
+// Belt-and-suspenders with the API's own `requireOwner` gate.
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  if (!user?.isAdmin) return <Navigate to="/library/all" replace />;
+  return <>{children}</>;
+}
+
 export function App() {
   const { checkAuth } = useAuth();
 
@@ -57,11 +65,32 @@ export function App() {
         <Route path="artists/:id" element={<ArtistDetailPage />} />
         <Route path="albums/:id" element={<ReleaseGroupPage />} />
         <Route path="search" element={<SearchPage />} />
-        <Route path="activity" element={<ActivityPage />} />
+        <Route
+          path="activity"
+          element={
+            <AdminRoute>
+              <ActivityPage />
+            </AdminRoute>
+          }
+        />
         {/* Admin split (#216): two destinations that never share a page. */}
         <Route path="admin" element={<Navigate to="/admin/hub" replace />} />
-        <Route path="admin/hub" element={<HubAdminPage />} />
-        <Route path="admin/player" element={<PlayerAdminPage />} />
+        <Route
+          path="admin/hub"
+          element={
+            <AdminRoute>
+              <HubAdminPage />
+            </AdminRoute>
+          }
+        />
+        <Route
+          path="admin/player"
+          element={
+            <AdminRoute>
+              <PlayerAdminPage />
+            </AdminRoute>
+          }
+        />
       </Route>
     </Routes>
   );

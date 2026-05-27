@@ -21,10 +21,20 @@ import { cn } from "@/lib/cn";
 import { APP_VERSION } from "@/version";
 import { NavGroup, NavGroupItem } from "./NavGroup";
 
-const flatNav = [
+interface NavItem {
+  to: string;
+  icon: typeof Users;
+  label: string;
+  adminOnly?: boolean;
+}
+
+// #232: `/activity` is admin-only — the page renders fine for any logged-in
+// user but the data it consumes is admin-gated, so hide it for non-admins
+// rather than render a broken view.
+const flatNav: NavItem[] = [
   { to: "/artists", icon: Users, label: "Artists" },
   { to: "/search", icon: Search, label: "Search" },
-  { to: "/activity", icon: Activity, label: "Activity" },
+  { to: "/activity", icon: Activity, label: "Activity", adminOnly: true },
 ];
 
 export function Sidebar() {
@@ -99,7 +109,9 @@ export function Sidebar() {
           />
         </NavGroup>
 
-        {flatNav.map((item) => (
+        {flatNav
+          .filter((item) => !item.adminOnly || user?.isAdmin)
+          .map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -117,7 +129,7 @@ export function Sidebar() {
           </NavLink>
         ))}
 
-        {user && (
+        {user?.isAdmin && (
           <NavGroup
             label="Settings"
             icon={Settings}
