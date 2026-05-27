@@ -67,7 +67,7 @@ Backend endpoint paths exposed under three mounts since #220:
 | `/api/admin/hub/*`   | Hub      | Users, peers, invitations, sync, cache, activity, instance, art-cache settings, activity retention. SPA's `features/hub-admin/` is the only frontend consumer. |
 | `/api/admin/player/*`| Player   | Sonos enable/volume-cap, LAN URL, future DLNA toggles. SPA's `features/player-admin/` is the only frontend consumer. |
 
-Today all three mounts serve identical handlers (one `adminRoutes` plugin registered three times). Namespace-level handler partition is a future cleanup (the SPA already only calls the matching namespace per [hub-internals.md](hub-internals.md)).
+Today all three mounts serve identical handlers (one `adminRoutes` plugin registered three times). Namespace-level handler partition is a future cleanup; the SPA already only calls the matching namespace per side.
 
 ## Hub/Player boundary enforcement (#221)
 

@@ -29,7 +29,7 @@ Reject the mocked API with a `SubsonicError(message, code)` and assert on `getBy
 
 ### Testing bounded directories (`features/`)
 
-`features/feature-boundaries.test.ts` walks `features/hub-admin/` and `features/player-admin/` at runtime and asserts neither side imports from the other. Tactical guard until #221 wires ESLint `no-restricted-paths`. Add new feature dirs here when you create them.
+Primary enforcement is ESLint `no-restricted-imports` in `frontend/eslint.config.js` (#221), and the negative tests in `features/boundary-lint.test.ts` prove the rule fires on stub violators. The tactical runtime walker in `features/feature-boundaries.test.ts` is kept as a belt-and-braces guard. When you add a new feature dir, extend both: the eslint config glob and the walker's allowlist.
 
 ### Testing stores
 

@@ -7,8 +7,10 @@ and a LAN-reachable hub URL.
 
 ## Runtime toggle (#184)
 
-Enabled state and volume cap live in the `settings` table (keys
-`sonos_enabled`, `sonos_volume_cap`), not in env.
+Enabled state and volume cap live in `player.db.player_settings` (keys
+`sonos_enabled`, `sonos_volume_cap`) since #217 — not env, not
+`hub.db.settings`. See the dual-DB rules in
+[system-architecture.md](system-architecture.md#data-model).
 
 - `GET /admin/settings/sonos` → `{ enabled, volumeCap }`
 - `PUT /admin/settings/sonos` with `{ enabled?, volumeCap? }` (owner-only)
@@ -23,10 +25,9 @@ Enabled state and volume cap live in the `settings` table (keys
   on every SOAP write, and surfaced via `volumeCap` in
   `/api/sonos/devices/:id/state` so the SPA's slider can clamp too.
 
-No env var controls this — `Config.sonosEnabled` exists only as a
-first-boot seed for tests / programmatic builds; the seed uses
-`INSERT OR IGNORE` so an operator-set value survives redeploy. The
-same is true of `lan_url` (#209) — `Config.initialLanUrl` is seed-only.
+No env var controls this — `Config.sonosEnabled` and `Config.initialLanUrl`
+are first-boot seeds only (idempotent via `seedRaw` so an operator-set
+value survives redeploy).
 
 ## Protocol
 
@@ -293,7 +294,7 @@ Two distinct volume scales live in the system and must not be conflated:
 | Local SPA  | `volume`          | `0..1`           | quadratic | `localStorage`    |
 | Cast/Sonos | `castVolume`      | `0..volumeCap`   | linear    | session-only      |
 
-- **Cap.** `SONOS_VOLUME_CAP` in `hub/src/services/sonos-control.ts` (currently `50`). Re-clamped inside `SonosControl.setVolume()` so every code path — `/api/sonos/devices/:id/volume`, `/play` preflight, future schedulers — is uniformly safe. Surfaced to the SPA via `volumeCap` in `GET /api/sonos/devices/:id/state`. Making this user-configurable is tracked in #184.
+- **Cap.** Admin-configurable runtime value at `player.db.player_settings.sonos_volume_cap` (#184), default `50`. `SONOS_VOLUME_CAP` in `hub/src/services/sonos-control.ts` is a compile-time fallback used only when the row is missing. Re-clamped inside `SonosControl.setVolume()` so every code path — `/api/sonos/devices/:id/volume`, `/play` preflight, future schedulers — is uniformly safe. Surfaced to the SPA via `volumeCap` in `GET /api/sonos/devices/:id/state`.
 - **Cast-start preflight.** `/play` calls `getVolume` before `SetAVTransportURI`; if the device is above the cap (left blasting from the Sonos app), drops it to the cap. Below-cap settings are preserved.
 - **Slider sync while casting.** The 1.5s `/state` poll feeds `castVolume` into the SPA store. A drag-guard ref in `PlayerBar` suppresses poll-driven updates for ~1.5s after the user touches the slider, so an in-flight response can't snap the thumb back mid-drag.
 - **POST /volume.** Route validates `0..100` (request shape only); the real ceiling is the service-layer cap. Sending `80` succeeds and is silently clamped — the SPA's notion of the cap is allowed to lag a server change.
