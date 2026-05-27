@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { useNavigate, useParams, Navigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getAlbumList2, getMusicFolders, artUrl } from "@/lib/subsonic";
@@ -77,13 +77,15 @@ export function AlbumsPage() {
 
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortOption>("name");
-
   // Reset search/sort when changing tabs — feels cleaner than carrying a
-  // search across very different lists.
-  useEffect(() => {
+  // search across very different lists. Render-phase prev-value pattern
+  // avoids a cascading-render effect.
+  const [prevView, setPrevView] = useState(view);
+  if (view !== prevView) {
+    setPrevView(view);
     setSearch("");
-    setSort(view === "random" ? "name" : "name");
-  }, [view]);
+    setSort("name");
+  }
 
   const queryKey = ["albumList2", view] as const;
   const enabled = spec !== null;

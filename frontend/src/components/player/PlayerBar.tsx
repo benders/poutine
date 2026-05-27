@@ -97,6 +97,9 @@ export function PlayerBar() {
   // depth exceeded" (#185) the moment a track loads. See PlayerBar.test.tsx.
   const currentStreamUrl = useMemo(
     () => (currentTrack ? streamUrl(currentTrack.id) : null),
+    // Intentionally narrow dep: re-keying on the full `currentTrack` object
+    // re-runs streamUrl() (fresh salt per call) and re-triggers #185.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [currentTrack?.id],
   );
   // Same fresh-salt-per-call hazard for artUrl(): without memoization the
@@ -496,6 +499,10 @@ export function PlayerBar() {
       cancelled = true;
       window.clearInterval(id);
     };
+    // Intentionally narrow dep on `currentTrack?.id`: re-subscribing on every
+    // new track object (same id, new reference) would tear down the Sonos
+    // polling loop mid-tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     deviceId,
     currentTrack?.id,
