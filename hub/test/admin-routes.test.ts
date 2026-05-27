@@ -1,7 +1,10 @@
 /**
- * Tests for the /admin/* routes.
+ * Tests for the admin routes.
  *
- * Covers: login, me, users CRUD, peers list, sync trigger, cache stats/control.
+ * Auth (`/login`, `/me`) is served at `/admin/*` per the historical mount
+ * (#226 keeps the legacy prefix for the refresh-cookie path). Hub-owned
+ * endpoints (users, peers, sync, instance, cache) are reached at
+ * `/api/admin/hub/*`. Player-owned settings are tested in `sonos-settings.test.ts`.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
@@ -126,7 +129,7 @@ describe("admin — login", () => {
   });
 
   it("unauthenticated request to protected endpoint → 401", async () => {
-    const res = await app.inject({ method: "GET", url: "/admin/users" });
+    const res = await app.inject({ method: "GET", url: "/api/admin/hub/users" });
     expect(res.statusCode).toBe(401);
   });
 });
@@ -161,7 +164,7 @@ describe("admin — me", () => {
   });
 });
 
-// ── /admin/users ──────────────────────────────────────────────────────────────
+// ── /api/admin/hub/users ──────────────────────────────────────────────────────────────
 
 describe("admin — users CRUD", () => {
   let app: FastifyInstance;
@@ -178,10 +181,10 @@ describe("admin — users CRUD", () => {
     await app.close();
   });
 
-  it("GET /admin/users → lists users (excluding __system__)", async () => {
+  it("GET /api/admin/hub/users → lists users (excluding __system__)", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/admin/users",
+      url: "/api/admin/hub/users",
       headers: authHeader(token),
     });
     expect(res.statusCode).toBe(200);
@@ -191,10 +194,10 @@ describe("admin — users CRUD", () => {
     expect(users.some((u) => u.username === "__system__")).toBe(false);
   });
 
-  it("POST /admin/users → creates a guest user and returns 201", async () => {
+  it("POST /api/admin/hub/users → creates a guest user and returns 201", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/admin/users",
+      url: "/api/admin/hub/users",
       headers: authHeader(token),
       payload: { username: "newguest", password: "guestpass1" },
     });
@@ -205,37 +208,37 @@ describe("admin — users CRUD", () => {
     expect(typeof body.id).toBe("string");
   });
 
-  it("POST /admin/users with duplicate username → 409", async () => {
+  it("POST /api/admin/hub/users with duplicate username → 409", async () => {
     await app.inject({
       method: "POST",
-      url: "/admin/users",
+      url: "/api/admin/hub/users",
       headers: authHeader(token),
       payload: { username: "dupe", password: "password1" },
     });
     const res = await app.inject({
       method: "POST",
-      url: "/admin/users",
+      url: "/api/admin/hub/users",
       headers: authHeader(token),
       payload: { username: "dupe", password: "password2" },
     });
     expect(res.statusCode).toBe(409);
   });
 
-  it("POST /admin/users with short password → 400", async () => {
+  it("POST /api/admin/hub/users with short password → 400", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/admin/users",
+      url: "/api/admin/hub/users",
       headers: authHeader(token),
       payload: { username: "shortpw", password: "abc" },
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it("DELETE /admin/users/:id → removes the user and returns 204", async () => {
+  it("DELETE /api/admin/hub/users/:id → removes the user and returns 204", async () => {
     // Create a user to delete
     const create = await app.inject({
       method: "POST",
-      url: "/admin/users",
+      url: "/api/admin/hub/users",
       headers: authHeader(token),
       payload: { username: "todelete", password: "deletepass" },
     });
@@ -243,7 +246,7 @@ describe("admin — users CRUD", () => {
 
     const del = await app.inject({
       method: "DELETE",
-      url: `/admin/users/${id}`,
+      url: `/api/admin/hub/users/${id}`,
       headers: authHeader(token),
     });
     expect(del.statusCode).toBe(204);
@@ -251,17 +254,17 @@ describe("admin — users CRUD", () => {
     // Verify it's gone
     const list = await app.inject({
       method: "GET",
-      url: "/admin/users",
+      url: "/api/admin/hub/users",
       headers: authHeader(token),
     });
     const users = list.json() as Array<{ username: string }>;
     expect(users.some((u) => u.username === "todelete")).toBe(false);
   });
 
-  it("DELETE /admin/users/:id for unknown id → 404", async () => {
+  it("DELETE /api/admin/hub/users/:id for unknown id → 404", async () => {
     const res = await app.inject({
       method: "DELETE",
-      url: "/admin/users/nonexistent-id",
+      url: "/api/admin/hub/users/nonexistent-id",
       headers: authHeader(token),
     });
     expect(res.statusCode).toBe(404);
@@ -270,14 +273,14 @@ describe("admin — users CRUD", () => {
   it("DELETE own account → 400", async () => {
     const res = await app.inject({
       method: "DELETE",
-      url: "/admin/users/admin-1",
+      url: "/api/admin/hub/users/admin-1",
       headers: authHeader(token),
     });
     expect(res.statusCode).toBe(400);
   });
 });
 
-// ── /admin/peers ──────────────────────────────────────────────────────────────
+// ── /api/admin/hub/peers ──────────────────────────────────────────────────────────────
 
 describe("admin — peers", () => {
   let app: FastifyInstance;
@@ -294,10 +297,10 @@ describe("admin — peers", () => {
     await app.close();
   });
 
-  it("GET /admin/peers → returns an array (empty when no peers configured)", async () => {
+  it("GET /api/admin/hub/peers → returns an array (empty when no peers configured)", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/admin/peers",
+      url: "/api/admin/hub/peers",
       headers: authHeader(token),
     });
     expect(res.statusCode).toBe(200);
@@ -305,7 +308,7 @@ describe("admin — peers", () => {
   });
 });
 
-// ── /admin/peers/data ─────────────────────────────────────────────────────────
+// ── /api/admin/hub/peers/data ─────────────────────────────────────────────────────────
 
 describe("admin — delete peer data", () => {
   let app: FastifyInstance;
@@ -340,20 +343,20 @@ describe("admin — delete peer data", () => {
     await app.close();
   });
 
-  it("DELETE /admin/peers/data → returns 200 with { deleted: true }", async () => {
+  it("DELETE /api/admin/hub/peers/data → returns 200 with { deleted: true }", async () => {
     const res = await app.inject({
       method: "DELETE",
-      url: "/admin/peers/data",
+      url: "/api/admin/hub/peers/data",
       headers: authHeader(token),
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ deleted: true });
   });
 
-  it("DELETE /admin/peers/data → clears peer instance data and resets sync state", async () => {
+  it("DELETE /api/admin/hub/peers/data → clears peer instance data and resets sync state", async () => {
     await app.inject({
       method: "DELETE",
-      url: "/admin/peers/data",
+      url: "/api/admin/hub/peers/data",
       headers: authHeader(token),
     });
 
@@ -380,13 +383,13 @@ describe("admin — delete peer data", () => {
     expect(peer.status).toBe("offline");
   });
 
-  it("DELETE /admin/peers/data → 401 without auth", async () => {
-    const res = await app.inject({ method: "DELETE", url: "/admin/peers/data" });
+  it("DELETE /api/admin/hub/peers/data → 401 without auth", async () => {
+    const res = await app.inject({ method: "DELETE", url: "/api/admin/hub/peers/data" });
     expect(res.statusCode).toBe(401);
   });
 });
 
-// ── /admin/sync ───────────────────────────────────────────────────────────────
+// ── /api/admin/hub/sync ───────────────────────────────────────────────────────────────
 
 describe("admin — sync", () => {
   let app: FastifyInstance;
@@ -403,10 +406,10 @@ describe("admin — sync", () => {
     await app.close();
   });
 
-  it("POST /admin/sync → returns 200 with local + peers result shape", async () => {
+  it("POST /api/admin/hub/sync → returns 200 with local + peers result shape", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/admin/sync",
+      url: "/api/admin/hub/sync",
       headers: authHeader(token),
     });
     expect(res.statusCode).toBe(200);
@@ -419,7 +422,7 @@ describe("admin — sync", () => {
   });
 });
 
-// ── /admin/instance ───────────────────────────────────────────────────────────
+// ── /api/admin/hub/instance ───────────────────────────────────────────────────────────
 
 /** Wrap a value in a Subsonic JSON envelope. */
 function subsonicEnvelope(payload: Record<string, unknown>) {
@@ -448,7 +451,7 @@ describe("admin — instance", () => {
     await app.close();
   });
 
-  it("GET /admin/instance → returns instanceId, publicKey, and navidrome fields", async () => {
+  it("GET /api/admin/hub/instance → returns instanceId, publicKey, and navidrome fields", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         subsonicEnvelope({
@@ -460,7 +463,7 @@ describe("admin — instance", () => {
 
     const res = await app.inject({
       method: "GET",
-      url: "/admin/instance",
+      url: "/api/admin/hub/instance",
       headers: authHeader(token),
     });
 
@@ -481,12 +484,12 @@ describe("admin — instance", () => {
     expect(body.navidrome.status).toBe("online"); // seeded as online by seedSyntheticInstances
   });
 
-  it("GET /admin/instance → reachable=false when Navidrome is down", async () => {
+  it("GET /api/admin/hub/instance → reachable=false when Navidrome is down", async () => {
     fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
 
     const res = await app.inject({
       method: "GET",
-      url: "/admin/instance",
+      url: "/api/admin/hub/instance",
       headers: authHeader(token),
     });
 
@@ -498,12 +501,12 @@ describe("admin — instance", () => {
     expect(body.navidrome.folderCount).toBeNull();
   });
 
-  it("GET /admin/instance → 401 without auth", async () => {
-    const res = await app.inject({ method: "GET", url: "/admin/instance" });
+  it("GET /api/admin/hub/instance → 401 without auth", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/admin/hub/instance" });
     expect(res.statusCode).toBe(401);
   });
 
-  it("POST /admin/instance/scan → triggers scan and returns status", async () => {
+  it("POST /api/admin/hub/instance/scan → triggers scan and returns status", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         subsonicEnvelope({
@@ -515,7 +518,7 @@ describe("admin — instance", () => {
 
     const res = await app.inject({
       method: "POST",
-      url: "/admin/instance/scan",
+      url: "/api/admin/hub/instance/scan",
       headers: authHeader(token),
     });
 
@@ -528,12 +531,12 @@ describe("admin — instance", () => {
     expect(calledUrl.pathname).toBe("/rest/startScan");
   });
 
-  it("POST /admin/instance/scan → 502 when Navidrome is unreachable", async () => {
+  it("POST /api/admin/hub/instance/scan → 502 when Navidrome is unreachable", async () => {
     fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
 
     const res = await app.inject({
       method: "POST",
-      url: "/admin/instance/scan",
+      url: "/api/admin/hub/instance/scan",
       headers: authHeader(token),
     });
 
@@ -541,13 +544,13 @@ describe("admin — instance", () => {
     expect(res.json().error).toMatch(/unreachable/i);
   });
 
-  it("POST /admin/instance/scan → 401 without auth", async () => {
-    const res = await app.inject({ method: "POST", url: "/admin/instance/scan" });
+  it("POST /api/admin/hub/instance/scan → 401 without auth", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/admin/hub/instance/scan" });
     expect(res.statusCode).toBe(401);
   });
 });
 
-// ── /admin/cache ──────────────────────────────────────────────────────────────
+// ── /api/admin/hub/cache ──────────────────────────────────────────────────────────────
 
 describe("admin — cache", () => {
   let app: FastifyInstance;
@@ -564,10 +567,10 @@ describe("admin — cache", () => {
     await app.close();
   });
 
-  it("GET /admin/cache → returns cache stats with expected keys", async () => {
+  it("GET /api/admin/hub/cache → returns cache stats with expected keys", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/admin/cache",
+      url: "/api/admin/hub/cache",
       headers: authHeader(token),
     });
     expect(res.statusCode).toBe(200);
@@ -577,11 +580,11 @@ describe("admin — cache", () => {
     expect(typeof body.artCacheFileCount).toBe("number");
   });
 
-  it("PUT /admin/cache with artCacheMaxBytes → updates and returns new stats", async () => {
+  it("PUT /api/admin/hub/cache with artCacheMaxBytes → updates and returns new stats", async () => {
     const newMax = 50 * 1024 * 1024; // 50 MB
     const res = await app.inject({
       method: "PUT",
-      url: "/admin/cache",
+      url: "/api/admin/hub/cache",
       headers: authHeader(token),
       payload: { artCacheMaxBytes: newMax },
     });
@@ -590,20 +593,20 @@ describe("admin — cache", () => {
     expect(body.artCacheMaxBytes).toBe(newMax);
   });
 
-  it("PUT /admin/cache with negative value → 400", async () => {
+  it("PUT /api/admin/hub/cache with negative value → 400", async () => {
     const res = await app.inject({
       method: "PUT",
-      url: "/admin/cache",
+      url: "/api/admin/hub/cache",
       headers: authHeader(token),
       payload: { artCacheMaxBytes: -1 },
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it("DELETE /admin/cache → clears cache and returns 204", async () => {
+  it("DELETE /api/admin/hub/cache → clears cache and returns 204", async () => {
     const res = await app.inject({
       method: "DELETE",
-      url: "/admin/cache",
+      url: "/api/admin/hub/cache",
       headers: authHeader(token),
     });
     expect(res.statusCode).toBe(204);

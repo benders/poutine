@@ -1,12 +1,15 @@
 /**
- * Tests for the `/api/admin/{hub,player}/*` namespace aliases introduced
- * in #220 (Phase 6 of #212).
+ * Tests for the partitioned admin namespace mounts (#226, follow-up to #220).
  *
- * The same `adminRoutes` plugin is mounted at three prefixes — `/admin`
- * (historical), `/api/admin/hub` (Hub admin SPA), and `/api/admin/player`
- * (Player admin SPA). These tests pin that all three serve identical
- * handlers so the frontend partition is purely cosmetic + lint-enforced
- * (see #221) rather than a functional difference between the mounts.
+ * Three Fastify mounts, each scoped to the handlers that belong to its
+ * namespace:
+ *
+ *   /admin/*               — auth only (kept for the refresh-cookie path)
+ *   /api/admin/hub/*       — auth + Hub-owned admin
+ *   /api/admin/player/*    — auth + Player-owned admin
+ *
+ * These tests pin the partition: handlers exist only at their namespace's
+ * prefix, auth still reaches all three, and cross-namespace requests 404.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -31,7 +34,7 @@ async function login(app: FastifyInstance): Promise<string> {
   return res.json().accessToken as string;
 }
 
-describe("admin namespace aliases (#220)", () => {
+describe("admin namespace partition (#226)", () => {
   let app: FastifyInstance;
   let token: string;
 
@@ -52,9 +55,11 @@ describe("admin namespace aliases (#220)", () => {
   });
 
   it("Hub admin endpoints are reachable at /api/admin/hub/*", async () => {
-    // Pick a representative endpoint from each ownership concern: users
-    // (Hub-only), peers/summary (Hub-only), cache (Hub-only).
-    for (const path of ["/api/admin/hub/users", "/api/admin/hub/peers/summary", "/api/admin/hub/cache"]) {
+    for (const path of [
+      "/api/admin/hub/users",
+      "/api/admin/hub/peers/summary",
+      "/api/admin/hub/cache",
+    ]) {
       const res = await app.inject({
         method: "GET",
         url: path,
@@ -78,19 +83,74 @@ describe("admin namespace aliases (#220)", () => {
     });
   });
 
-  it("historical /admin/* paths still resolve (backward-compat alias)", async () => {
-    // #220 keeps the legacy mount so existing integrations + the
-    // auth-cookie path on /admin/refresh keep working. Boundary
-    // enforcement (which mount serves which endpoint) lands in #221.
-    const res = await app.inject({
-      method: "GET",
-      url: "/admin/users",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(res.statusCode).toBe(200);
+  it("auth endpoints are reachable at all three mounts", async () => {
+    for (const prefix of ["/admin", "/api/admin/hub", "/api/admin/player"]) {
+      const res = await app.inject({
+        method: "GET",
+        url: `${prefix}/me`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode, `${prefix}/me should be 200`).toBe(200);
+      expect(res.json().username).toBe("owner");
+    }
   });
 
-  it("PUT through /api/admin/player/settings/sonos mutates and round-trips", async () => {
+  it("Hub endpoints are NOT served at /admin/* (auth-only mount)", async () => {
+    for (const path of ["/admin/users", "/admin/cache", "/admin/sync"]) {
+      const res = await app.inject({
+        method: "GET",
+        url: path,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode, `${path} should be 404`).toBe(404);
+    }
+  });
+
+  it("Hub endpoints are NOT served at /api/admin/player/*", async () => {
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/player/users",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(list.statusCode).toBe(404);
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/admin/player/users",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { username: "evil", password: "evilpass1" },
+    });
+    expect(create.statusCode).toBe(404);
+
+    const cache = await app.inject({
+      method: "GET",
+      url: "/api/admin/player/cache",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(cache.statusCode).toBe(404);
+  });
+
+  it("Player endpoints are NOT served at /api/admin/hub/*", async () => {
+    const get = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/settings/sonos",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(get.statusCode).toBe(404);
+
+    const put = await app.inject({
+      method: "PUT",
+      url: "/api/admin/hub/settings/sonos",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      payload: { volumeCap: 99 },
+    });
+    expect(put.statusCode).toBe(404);
+  });
+
+  it("PUT through /api/admin/player/settings/sonos mutates and round-trips on its own mount", async () => {
     const put = await app.inject({
       method: "PUT",
       url: "/api/admin/player/settings/sonos",
@@ -102,11 +162,9 @@ describe("admin namespace aliases (#220)", () => {
     });
     expect(put.statusCode).toBe(200);
 
-    // Read back via the Hub mount as well — the same setting is reachable
-    // from every mount today (#221 will partition).
     const get = await app.inject({
       method: "GET",
-      url: "/admin/settings/sonos",
+      url: "/api/admin/player/settings/sonos",
       headers: { authorization: `Bearer ${token}` },
     });
     expect(get.statusCode).toBe(200);

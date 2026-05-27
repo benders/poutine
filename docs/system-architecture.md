@@ -13,7 +13,9 @@ One Docker Compose stack per participant. Two services: hub (Fastify + SQLite, s
 │    ├─ /rest/*         Subsonic API       │
 │    ├─ /proxy/*        Proxy tier         │
 │    ├─ /federation/*   Federation API     │
-│    ├─ /admin/*        Admin API          │
+│    ├─ /admin/*        Auth (#226)        │
+│    ├─ /api/admin/hub/*    Hub admin      │
+│    ├─ /api/admin/player/* Player admin   │
 │    ├─ /external-art/* fanart.tv/Last.fm  │
 │    ├─ SQLite hub.db    (data + art cache)│
 │    └─ SQLite player.db (DLNA UUID, cast) │
@@ -42,7 +44,7 @@ Navidrome credentials live in env vars, not the DB. SPA + API on one port.
 | Auto-sync      | `AutoSyncService`: trigger on Navidrome scan complete; fan out to peers per `SYNC_INTERVAL_MS` |
 | Stream/art     | Route to source's Navidrome via `/proxy/*` (local or peer)                                |
 | External art   | `/external-art/*`: fanart.tv (MBID) → Last.fm fallback → `art_cache`                      |
-| Admin          | `/admin/*` (owner-only): sync, peers, invitations, users, cache, identity                 |
+| Admin          | `/api/admin/hub/*` and `/api/admin/player/*` (owner-only). `/admin/*` reserved for auth (refresh-cookie path). |
 
 **Navidrome** — private per hub. Driven entirely through Subsonic (`getArtists`, `getAlbum`, `stream`, `getCoverArt`, `getScanStatus`, `startScan`). Its native `/api/*` is unused.
 
@@ -59,15 +61,16 @@ The admin SPA exposes **two distinct top-level destinations** that never co-exis
 
 Bounded directories may not cross-import. ESLint-level enforcement landed in #221 (`frontend/eslint.config.js` — `no-restricted-imports` between `features/hub-admin/`, `features/player-admin/`, and `features/player/`). The earlier tactical test in `frontend/src/features/feature-boundaries.test.ts` is kept as a belt-and-braces guard. Shared pure-UI helpers live in `features/shared/`.
 
-Backend endpoint paths exposed under three mounts since #220:
+<a id="admin-namespaces"></a>
+Backend endpoint paths exposed under three mounts, partitioned per namespace since #226:
 
 | Mount                | Owner    | What lives here                                                                                |
 |----------------------|----------|-----------------------------------------------------------------------------------------------|
-| `/admin/*`           | shared   | Backward-compat alias. Auth (`/admin/login`, `/admin/refresh`, `/admin/logout`, `/admin/me`) stays here permanently — the refresh cookie path is bound to `/admin/refresh`. |
-| `/api/admin/hub/*`   | Hub      | Users, peers, invitations, sync, cache, activity, instance, art-cache settings, activity retention. SPA's `features/hub-admin/` is the only frontend consumer. |
-| `/api/admin/player/*`| Player   | Sonos enable/volume-cap, LAN URL, future DLNA toggles. SPA's `features/player-admin/` is the only frontend consumer. |
+| `/admin/*`           | auth     | Auth only (`/login`, `/refresh`, `/logout`, `/me`). Kept because the refresh cookie path is bound to `/admin/refresh`. Hub and Player admin handlers do **not** mount here. |
+| `/api/admin/hub/*`   | Hub      | Auth + users, peers, invitations, sync, cache, activity, instance, activity retention. SPA's `features/hub-admin/` is the only frontend consumer. |
+| `/api/admin/player/*`| Player   | Auth + Sonos enable/volume-cap, LAN URL, future DLNA toggles. SPA's `features/player-admin/` is the only frontend consumer. |
 
-Today all three mounts serve identical handlers (one `adminRoutes` plugin registered three times). Namespace-level handler partition is a future cleanup; the SPA already only calls the matching namespace per side.
+Cross-namespace requests (e.g. `POST /api/admin/player/users`) return 404 — the handler isn't mounted there. The three plugins (`authRoutes`, `hubAdminRoutes`, `playerAdminRoutes`) live in `hub/src/routes/admin.ts`. This finishes the Hub/Player boundary at the request level, so lifting Player into its own process is a wiring change.
 
 ## Hub/Player boundary enforcement (#221)
 

@@ -57,7 +57,7 @@ async function admit(
 ) {
   const issue = await inviter.app.inject({
     method: "POST",
-    url: "/admin/peers/invite",
+    url: "/api/admin/hub/peers/invite",
     headers: { authorization: `Bearer ${inviter.token}` },
     payload: { ourUrl: inviter.url, inviteeUrl: invitee.url, expiresInSec: 600 },
   });
@@ -65,7 +65,7 @@ async function admit(
   const { invitation } = issue.json() as { invitation: string };
   const accept = await invitee.app.inject({
     method: "POST",
-    url: "/admin/peers/accept",
+    url: "/api/admin/hub/peers/accept",
     headers: { authorization: `Bearer ${invitee.token}` },
     payload: { invitation, ourUrl: invitee.url },
   });

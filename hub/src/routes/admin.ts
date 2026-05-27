@@ -60,7 +60,11 @@ async function requireOwner(
   }
 }
 
-export const adminRoutes: FastifyPluginAsync = async (app) => {
+// Auth endpoints. Mounted at all three admin prefixes so /login, /refresh,
+// /logout, and /me are reachable from any namespace. The refresh-token cookie
+// is hard-bound to path `/admin/refresh` for backward compatibility with
+// browser sessions that pre-date the namespace split (#226).
+export const authRoutes: FastifyPluginAsync = async (app) => {
   // POST /admin/login
   app.post<{ Body: { username?: string; password?: string } }>(
     "/login",
@@ -182,7 +186,11 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       createdAt: user.created_at,
     };
   });
+};
 
+// Hub-owned admin endpoints: users, peers, sync, instance, cache, activity,
+// activity-retention settings. Mounted only at /api/admin/hub/* (#226).
+export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
   // GET /admin/users
   app.get("/users", { preHandler: requireOwner }, async () => {
     const users = app.db
@@ -757,7 +765,11 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       return { maxEvents: app.streamTracking.getMaxRows() };
     },
   );
+};
 
+// Player-owned admin endpoints: Sonos settings (incl. shared `lanUrl`).
+// Mounted only at /api/admin/player/* (#226). Future DLNA toggles land here.
+export const playerAdminRoutes: FastifyPluginAsync = async (app) => {
   // GET /admin/settings/sonos — runtime Sonos config (#184). `lanUrl` (#209)
   // is shared with DLNA but lives under this section for UI simplicity.
   app.get("/settings/sonos", { preHandler: requireOwner }, async () => {

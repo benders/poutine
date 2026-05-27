@@ -10,7 +10,7 @@ import {
   createPlayerSettings,
   type PlayerSettings,
 } from "./services/player-settings.js";
-import { adminRoutes } from "./routes/admin.js";
+import { authRoutes, hubAdminRoutes, playerAdminRoutes } from "./routes/admin.js";
 import { subsonicRoutes } from "./routes/subsonic.js";
 import { proxyRoutes } from "./routes/proxy.js";
 import { federationRoutes } from "./routes/federation.js";
@@ -352,26 +352,27 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
   // Routes
   //
-  // Admin API namespaces (#220, Phase 6 of #212). The same plugin is
-  // mounted at three prefixes:
-  //   /admin/*               — historical path; kept for backward
-  //                            compatibility (auth cookies are bound to
-  //                            `/admin/refresh`, so this also keeps
-  //                            existing browser sessions working across
-  //                            the upgrade).
-  //   /api/admin/hub/*       — Hub-owned admin (users, peers, sync, cache,
-  //                            activity, art-cache settings). What the
-  //                            Hub-admin SPA section calls.
-  //   /api/admin/player/*    — Player-owned admin (Sonos / DLNA / LAN URL
-  //                            settings). What the Player-admin SPA
-  //                            section calls.
+  // Admin API namespaces (#220 / #226, Phase 6 of #212). Three prefixes,
+  // each partitioned to the handlers that belong to its namespace:
   //
-  // The route handlers are identical at all three mounts; partition
-  // enforcement (per-endpoint allowlist on which namespace serves which
-  // path) lands with the ESLint `no-restricted-paths` rule in #221.
-  await app.register(adminRoutes, { prefix: "/admin" });
-  await app.register(adminRoutes, { prefix: "/api/admin/hub" });
-  await app.register(adminRoutes, { prefix: "/api/admin/player" });
+  //   /admin/*               — historical path; auth only. Kept because the
+  //                            refresh-token cookie is bound to
+  //                            `/admin/refresh` (so existing browser
+  //                            sessions keep working across the upgrade).
+  //   /api/admin/hub/*       — auth + Hub-owned admin (users, peers, sync,
+  //                            cache, activity, activity-retention).
+  //   /api/admin/player/*    — auth + Player-owned admin (Sonos / DLNA /
+  //                            LAN URL settings).
+  //
+  // Cross-namespace requests (e.g. POST /api/admin/player/users) return
+  // 404 — the handler isn't mounted there. This finishes the Hub/Player
+  // boundary at the request level so a future deploy-split is a wiring
+  // change, not a route audit (#226).
+  await app.register(authRoutes, { prefix: "/admin" });
+  await app.register(authRoutes, { prefix: "/api/admin/hub" });
+  await app.register(hubAdminRoutes, { prefix: "/api/admin/hub" });
+  await app.register(authRoutes, { prefix: "/api/admin/player" });
+  await app.register(playerAdminRoutes, { prefix: "/api/admin/player" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
   await app.register(federationRoutes, { prefix: "/federation" });
 

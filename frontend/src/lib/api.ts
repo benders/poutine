@@ -208,11 +208,10 @@ export interface SyncResult {
   errors: string[];
 }
 
-// Hub-admin API surface (#220, Phase 6 of #212): users, peers, sync,
-// cache, instance, activity. All routed at `/api/admin/hub/*` — the
-// historical `/admin/*` paths still work (backward-compat alias), but
-// the SPA exclusively uses the namespaced form so the Hub/Player
-// frontend boundary is visible at the network layer.
+// Hub-admin API surface (#220 / #226, Phase 6 of #212): users, peers,
+// sync, cache, instance, activity. Routed at `/api/admin/hub/*`. The
+// `/admin/*` mount only serves auth endpoints (login/refresh/logout/me);
+// Hub admin handlers are no longer reachable there.
 
 export function getInstanceInfo() {
   return apiFetch<InstanceInfo>("/api/admin/hub/instance");
