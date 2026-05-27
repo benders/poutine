@@ -99,11 +99,16 @@ DLNA op → Subsonic mapping:
 | `BrowseMetadata(album/<id>)`     | `getAlbum`                                           | 1           |
 | `Search`                         | `search3`                                            | 1           |
 
-`getAlbumList2` does not return a total count; `totalMatches` is `-1` for
-the global Albums browse and UPnP clients walk the pager until they get
-a short page. `childCount` on the static Artists/Albums containers is also
-`-1` (unknown) to avoid the round-trips Subsonic would need to compute
-exact counts.
+`getAlbumList2` does not return a total count. UPnP CDS:1 §2.2.2 defines
+`TotalMatches` as `ui4` (unsigned), so returning `-1` is malformed —
+strict renderers (BubbleUPnP, Linn Kazoo) interpret it as a parse error
+and spin a tight Browse retry loop (#228). Instead: a short page
+(`numberReturned < requestedCount`) yields the known total
+(`startIndex + numberReturned`); a full page yields `0` (spec value for
+"unknown" — clients keep paging on `numberReturned > 0` regardless).
+`childCount` on the static Artists/Albums containers is reported as
+`-1` (UPnP signed type, "unknown") to avoid the round-trips Subsonic
+would need to compute exact counts.
 
 ### Artist list filtering
 

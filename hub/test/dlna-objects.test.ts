@@ -221,8 +221,11 @@ describe("DlnaObjectService.browse (Subsonic-backed)", () => {
     expect(out.result).toContain(`id="${albumObjectId("rg1")}"`);
     expect(out.result).toContain(`id="${albumObjectId("rg2")}"`);
     expect(out.result).toContain(`id="${albumObjectId("rg3")}"`);
-    // Subsonic getAlbumList2 has no total; we report -1.
-    expect(out.totalMatches).toBe(-1);
+    // Short page (3 albums in fixture < requested 500) → known end, so
+    // totalMatches is the accurate total. Returning -1 here violates UPnP
+    // CDS:1 §2.2.2 (TotalMatches is ui4) and trips renderers into a
+    // Browse retry loop — see services/dlna-objects.ts comment.
+    expect(out.totalMatches).toBe(3);
   });
 
   it("artist/<id> → lists release groups for that artist", async () => {

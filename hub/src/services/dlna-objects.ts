@@ -487,8 +487,11 @@ export class DlnaObjectService {
     }
 
     // Global "Albums" — paginate via getAlbumList2. Subsonic doesn't return
-    // a total in this response, so totalMatches stays -1 and the client
-    // walks the pager until it gets a short page.
+    // a total in this response, so we infer pagination state from the page
+    // size: a short page = end of list (total known); a full page = more
+    // may exist (total unknown). UPnP CDS:1 §2.2.2 defines TotalMatches as
+    // ui4 — returning -1 is malformed and trips some renderers (notably
+    // BubbleUPnP / Linn Kazoo) into a tight Browse retry loop.
     const size = opts.requestedCount > 0 ? Math.min(opts.requestedCount, 500) : 500;
     const body = await this.caller.call("/rest/getAlbumList2", {
       type: "alphabeticalByName",
@@ -511,7 +514,9 @@ export class DlnaObjectService {
         }),
       )
       .join("");
-    return { result: wrapDidl(xml), numberReturned: list.length, totalMatches: -1 };
+    // Short page → known end; full page → unknown (spec value 0).
+    const totalMatches = list.length < size ? opts.startIndex + list.length : 0;
+    return { result: wrapDidl(xml), numberReturned: list.length, totalMatches };
   }
 
   private async listTracks(rawAlbumId: string, opts: BrowseOptions): Promise<BrowseResult> {
