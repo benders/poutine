@@ -12,8 +12,8 @@ Enabled state and volume cap live in `player.db.player_settings` (keys
 `hub.db.settings`. See the dual-DB rules in
 [system-architecture.md](system-architecture.md#data-model).
 
-- `GET /admin/settings/sonos` → `{ enabled, volumeCap }`
-- `PUT /admin/settings/sonos` with `{ enabled?, volumeCap? }` (owner-only)
+- `GET /api/admin/player/settings/sonos` → `{ enabled, volumeCap }`
+- `PUT /api/admin/player/settings/sonos` with `{ enabled?, volumeCap? }` (owner-only)
 - `/api/capabilities` reads the live flag — the SPA's device picker
   shows/hides on the next render.
 - `/api/sonos/*` returns `503` when disabled. (Pre-#218 there was also a `/cast/stream/*` relay gated on the same flag; it's been deleted — devices now stream through Hub's Subsonic endpoint with a cast token.)

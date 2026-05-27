@@ -52,11 +52,11 @@ export async function startHub(id: string, prefix = "hub"): Promise<Hub> {
   return { app, port, url, keyPath, token };
 }
 
-/** Run the full /admin/peers/invite + /admin/peers/accept handshake. */
+/** Run the full /api/admin/hub/peers/invite + /api/admin/hub/peers/accept handshake. */
 export async function admit(inviter: Hub, invitee: Hub): Promise<void> {
   const issue = await inviter.app.inject({
     method: "POST",
-    url: "/admin/peers/invite",
+    url: "/api/admin/hub/peers/invite",
     headers: { authorization: `Bearer ${inviter.token}` },
     payload: { ourUrl: inviter.url, inviteeUrl: invitee.url, expiresInSec: 600 },
   });
@@ -64,7 +64,7 @@ export async function admit(inviter: Hub, invitee: Hub): Promise<void> {
   const { invitation } = issue.json() as { invitation: string };
   const accept = await invitee.app.inject({
     method: "POST",
-    url: "/admin/peers/accept",
+    url: "/api/admin/hub/peers/accept",
     headers: { authorization: `Bearer ${invitee.token}` },
     payload: { invitation, ourUrl: invitee.url },
   });

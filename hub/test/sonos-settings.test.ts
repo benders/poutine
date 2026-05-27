@@ -247,7 +247,7 @@ describe("SonosSettings (#184)", () => {
     });
   });
 
-  describe("admin /admin/settings/sonos", () => {
+  describe("admin /api/admin/player/settings/sonos", () => {
     let app: FastifyInstance;
     let token: string;
     beforeEach(async () => {
@@ -262,7 +262,7 @@ describe("SonosSettings (#184)", () => {
     it("GET returns current state", async () => {
       const res = await app.inject({
         method: "GET",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
       });
       expect(res.statusCode).toBe(200);
@@ -276,7 +276,7 @@ describe("SonosSettings (#184)", () => {
     it("requires owner auth", async () => {
       const res = await app.inject({
         method: "GET",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
       });
       expect(res.statusCode).toBe(401);
     });
@@ -284,7 +284,7 @@ describe("SonosSettings (#184)", () => {
     it("PUT toggles enabled and persists volumeCap", async () => {
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { enabled: true, volumeCap: 33 },
       });
@@ -301,7 +301,7 @@ describe("SonosSettings (#184)", () => {
     it("PUT updates lanUrl and persists across reads", async () => {
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { lanUrl: "http://192.168.1.10:3000/" },
       });
@@ -313,7 +313,7 @@ describe("SonosSettings (#184)", () => {
     it("PUT rejects malformed lanUrl with 400", async () => {
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { lanUrl: "not a url" },
       });
@@ -324,7 +324,7 @@ describe("SonosSettings (#184)", () => {
     it("PUT accepts empty string to clear lanUrl", async () => {
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { lanUrl: "" },
       });
@@ -337,7 +337,7 @@ describe("SonosSettings (#184)", () => {
       app.sonosSettings.setLanUrl("");
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { enabled: true },
       });
@@ -351,7 +351,7 @@ describe("SonosSettings (#184)", () => {
       app.sonosSettings.setEnabled(true); // lanUrl already seeded
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { lanUrl: "" },
       });
@@ -364,7 +364,7 @@ describe("SonosSettings (#184)", () => {
       app.sonosSettings.setLanUrl("");
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { enabled: true, lanUrl: "http://192.168.1.10:3000" },
       });
@@ -380,7 +380,7 @@ describe("SonosSettings (#184)", () => {
       app.sonosSettings.setLanUrl("");
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { enabled: true, lanUrl: "not a url" },
       });
@@ -392,7 +392,7 @@ describe("SonosSettings (#184)", () => {
     it("PUT rejects out-of-range volumeCap", async () => {
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { volumeCap: 200 },
       });
@@ -402,7 +402,7 @@ describe("SonosSettings (#184)", () => {
     it("PUT rejects non-boolean enabled", async () => {
       const res = await app.inject({
         method: "PUT",
-        url: "/admin/settings/sonos",
+        url: "/api/admin/player/settings/sonos",
         headers: { authorization: `Bearer ${token}` },
         payload: { enabled: "yes" },
       });

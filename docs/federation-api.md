@@ -18,7 +18,7 @@ All outgoing HTTP requests from the hub carry:
 |--------------|---------------------|--------------------------------------------------------------------------------------------------------------------------|
 | `User-Agent` | `Poutine/<semver>`  | Application version of the sending hub. Sent on federation requests, Navidrome Subsonic calls, and peer health checks.   |
 
-Peers report both versions through `/api/health`, which `GET /admin/peers` reads and surfaces as `appVersion` and `apiVersion` per peer.
+Peers report both versions through `/api/health`, which `GET /api/admin/hub/peers` reads and surfaces as `appVersion` and `apiVersion` per peer.
 
 **Current versions**
 
@@ -88,7 +88,7 @@ Library metadata and cover art travel through `/proxy/*`, which reuses the same 
 
 Peers join a cluster via signed invitations rather than shared config files. The protocol has three steps:
 
-1. **Issue.** An admin on hub *A* posts to `POST /admin/peers/invite`:
+1. **Issue.** An admin on hub *A* posts to `POST /api/admin/hub/peers/invite`:
 
    ```
    { "ourUrl": "https://a.example", "inviteeUrl": "https://b.example", "expiresInSec": 600 }
@@ -96,7 +96,7 @@ Peers join a cluster via signed invitations rather than shared config files. The
 
    The hub signs an invitation payload with its Ed25519 federation key, persists the nonce in the `invitations` table, and returns `{ "invitation": "<base64>" }`. `inviteeUrl` is optional — `null` means open invite (any URL).
 
-2. **Accept.** The admin pastes the invitation into hub *B*'s `POST /admin/peers/accept`:
+2. **Accept.** The admin pastes the invitation into hub *B*'s `POST /api/admin/hub/peers/accept`:
 
    ```
    { "invitation": "<base64>", "ourUrl": "https://b.example" }

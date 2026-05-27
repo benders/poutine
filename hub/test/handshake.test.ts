@@ -2,7 +2,7 @@
  * End-to-end test for the v5 invitation/handshake admission protocol.
  *
  * Spins up two real hubs (A = inviter, B = invitee). A issues an invitation
- * via POST /admin/peers/invite; B redeems it via POST /admin/peers/accept.
+ * via POST /api/admin/hub/peers/invite; B redeems it via POST /api/admin/hub/peers/accept.
  * The accept endpoint posts to A's POST /federation/handshake, which
  * inserts B into A's instances table and marks the invitation consumed.
  * B mirrors A as a peer in its own instances table.
@@ -91,7 +91,7 @@ describe("federation handshake (v5 invitation flow)", () => {
     // A issues invitation for B
     const issueRes = await appA.inject({
       method: "POST",
-      url: "/admin/peers/invite",
+      url: "/api/admin/hub/peers/invite",
       headers: { authorization: `Bearer ${tokenA}` },
       payload: { ourUrl: urlA, inviteeUrl: urlB, expiresInSec: 600 },
     });
@@ -114,7 +114,7 @@ describe("federation handshake (v5 invitation flow)", () => {
     // B accepts — calls A's /federation/handshake
     const acceptRes = await appB.inject({
       method: "POST",
-      url: "/admin/peers/accept",
+      url: "/api/admin/hub/peers/accept",
       headers: { authorization: `Bearer ${tokenB}` },
       payload: { invitation, ourUrl: urlB },
     });
@@ -176,7 +176,7 @@ describe("federation handshake (v5 invitation flow)", () => {
   it("rejects a replayed invitation (single-use)", async () => {
     const issueRes = await appA.inject({
       method: "POST",
-      url: "/admin/peers/invite",
+      url: "/api/admin/hub/peers/invite",
       headers: { authorization: `Bearer ${tokenA}` },
       payload: { ourUrl: urlA, inviteeUrl: urlB },
     });
@@ -184,7 +184,7 @@ describe("federation handshake (v5 invitation flow)", () => {
 
     const first = await appB.inject({
       method: "POST",
-      url: "/admin/peers/accept",
+      url: "/api/admin/hub/peers/accept",
       headers: { authorization: `Bearer ${tokenB}` },
       payload: { invitation, ourUrl: urlB },
     });
@@ -210,7 +210,7 @@ describe("federation handshake (v5 invitation flow)", () => {
     try {
       const second = await appC.inject({
         method: "POST",
-        url: "/admin/peers/accept",
+        url: "/api/admin/hub/peers/accept",
         headers: { authorization: `Bearer ${tokenC}` },
         payload: { invitation, ourUrl: `http://127.0.0.1:${portC}` },
       });
@@ -226,7 +226,7 @@ describe("federation handshake (v5 invitation flow)", () => {
   it("rejects a tampered invitation", async () => {
     const issueRes = await appA.inject({
       method: "POST",
-      url: "/admin/peers/invite",
+      url: "/api/admin/hub/peers/invite",
       headers: { authorization: `Bearer ${tokenA}` },
       payload: { ourUrl: urlA, inviteeUrl: urlB },
     });
@@ -244,7 +244,7 @@ describe("federation handshake (v5 invitation flow)", () => {
 
     const acceptRes = await appB.inject({
       method: "POST",
-      url: "/admin/peers/accept",
+      url: "/api/admin/hub/peers/accept",
       headers: { authorization: `Bearer ${tokenB}` },
       payload: { invitation: tamperedWire, ourUrl: urlB },
     });
