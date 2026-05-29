@@ -5,6 +5,28 @@ export const SUBSONIC_VERSION = "1.16.1";
 export const SERVER_TYPE = "poutine";
 export const SERVER_VERSION = APP_VERSION;
 
+/**
+ * OpenSubsonic optional extensions this server implements, returned by
+ * `getOpenSubsonicExtensions` for client capability negotiation. Each entry is
+ * `{ name, versions }` per the spec. Clients route around anything absent, so
+ * only list extensions that are FULLY supported — advertising an unsupported
+ * one makes clients enable features that then fail.
+ *
+ * - `transcodeOffset` (v1): `timeOffset` is honored on transcoded streams
+ *   (#109). Not applied to raw passthrough — see docs/pitfalls.md (#204) — but
+ *   the extension only promises offset support for transcoded media.
+ *
+ * NOT advertised (deliberately):
+ * - `formPost`: POST is accepted on every endpoint, but params are read from
+ *   the query string only — no `application/x-www-form-urlencoded` body parser
+ *   is registered, so a form-body POST would auth-fail. Tracked for follow-up.
+ * - `songLyrics`, `apiKeyAuthentication`: endpoints not implemented yet.
+ */
+export const OPENSUBSONIC_EXTENSIONS: ReadonlyArray<{
+  name: string;
+  versions: number[];
+}> = [{ name: "transcodeOffset", versions: [1] }];
+
 export type Format = "json" | "xml";
 
 // Subsonic spec: default response format is XML when `f=` is omitted.

@@ -292,6 +292,38 @@ def test_opensubsonic_envelope_fields(conn):
     assert "serverVersion" in env
 
 
+def test_get_opensubsonic_extensions(conn):
+    """#236: capability negotiation endpoint. Spec marks it callable WITHOUT
+    auth so clients (Symfonium, Feishin, Amperfy) can feature-detect pre-login.
+    Must list transcodeOffset and must NOT list formPost (no form-body parser)."""
+    import json
+    import urllib.request
+
+    base = f"{conn._baseUrl}:{conn._port}/rest/getOpenSubsonicExtensions"
+
+    # No credentials at all — still returns ok.
+    env = json.loads(
+        urllib.request.urlopen(f"{base}?v=1.16.1&c=poutine-compat&f=json").read()
+    )["subsonic-response"]
+    assert env["status"] == "ok"
+    exts = env["openSubsonicExtensions"]
+    if isinstance(exts, dict):
+        exts = [exts]
+    names = {e["name"] for e in exts}
+    assert "transcodeOffset" in names
+    assert "formPost" not in names
+    offset = next(e for e in exts if e["name"] == "transcodeOffset")
+    versions = offset["versions"]
+    if isinstance(versions, int):
+        versions = [versions]
+    assert 1 in versions
+
+    # XML form nests <versions> under the named extension element.
+    xml = urllib.request.urlopen(f"{base}.view?v=1.16.1&c=poutine-compat&f=xml").read()
+    assert b'name="transcodeOffset"' in xml
+    assert b"<versions>1</versions>" in xml
+
+
 def test_view_suffix_equivalence(conn):
     import json, urllib.request
     qs = f"u={conn._username}&p={conn._rawPass}&v=1.16.1&c=poutine-compat&f=json"

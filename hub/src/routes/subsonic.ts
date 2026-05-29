@@ -8,6 +8,7 @@ import {
   sendBinaryError,
   encodeId,
   decodeId,
+  OPENSUBSONIC_EXTENSIONS,
 } from "./subsonic-response.js";
 import { decodeCoverArtId } from "../library/cover-art.js";
 import { isAllowedExternalArtUrl } from "./external-art.js";
@@ -307,6 +308,20 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     app.post(`${path}.view`, { preHandler }, handler);
   }
 
+  /**
+   * Register an UNAUTHENTICATED handler (GET+POST, with/without `.view`).
+   * Only for endpoints the OpenSubsonic spec marks as callable without
+   * credentials — currently just `getOpenSubsonicExtensions`, which clients
+   * probe before login to negotiate capabilities. Do not use this for anything
+   * that reads user state or library data.
+   */
+  function publicRoute(path: string, handler: RouteHandlerMethod): void {
+    app.get(path, handler);
+    app.get(`${path}.view`, handler);
+    app.post(path, handler);
+    app.post(`${path}.view`, handler);
+  }
+
   // ── Hoisted prepared statements for star/unstar/getStarred2 (#130) ──────────
   // Prepared once at plugin init rather than per-request to avoid allocation
   // churn on hot endpoints.
@@ -393,6 +408,21 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const q = request.query as Record<string, string>;
     sendSubsonicOk(reply, q, {
       license: { valid: true, email: "", licenseExpires: "" },
+    });
+  });
+
+  // ── getOpenSubsonicExtensions ─────────────────────────────────────────────
+  // Capability negotiation. Per spec this endpoint is callable WITHOUT auth so
+  // clients can feature-detect before login — hence publicRoute. Returns the
+  // static OPENSUBSONIC_EXTENSIONS list (source of truth in subsonic-response).
+
+  publicRoute("/getOpenSubsonicExtensions", async (request, reply) => {
+    const q = request.query as Record<string, string>;
+    sendSubsonicOk(reply, q, {
+      openSubsonicExtensions: OPENSUBSONIC_EXTENSIONS.map((e) => ({
+        name: e.name,
+        versions: e.versions,
+      })),
     });
   });
 

@@ -56,7 +56,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 |-----------------------------|-----------------|------------------------------|
 | `ping`                      | Implemented     |                              |
 | `getLicense`                | Implemented     | Always returns `valid: true` |
-| `getOpenSubsonicExtensions` | NOT IMPLEMENTED |                              |
+| `getOpenSubsonicExtensions` | Implemented     | **Unauthenticated** (spec: callable before login for capability negotiation). Returns the static `OPENSUBSONIC_EXTENSIONS` list in `subsonic-response.ts`. Currently advertises only `transcodeOffset` (v1) — `timeOffset` on transcoded streams (#109). `formPost` is intentionally NOT advertised: POST is accepted but no `x-www-form-urlencoded` body parser is registered, so params are read from the query string only. (#236) |
 
 ### Browsing
 
