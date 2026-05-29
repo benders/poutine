@@ -84,6 +84,10 @@ export interface SubsonicAlbum {
   /** OpenSubsonic `created` — ISO 8601 timestamp of when the album was
    * first added to the source hub. Drives the "Recently Added" sort (#148). */
   created?: string;
+  /** Per-user play count across the federated catalog (#197). */
+  playCount?: number;
+  /** ISO 8601 timestamp of this user's most recent play (#197). */
+  played?: string;
 }
 
 export interface SubsonicSong {
@@ -119,6 +123,10 @@ export interface SubsonicSong {
   comment?: string;
   bpm?: number;
   starred?: string;
+  /** Per-user play count from `play_events` (#197); absent when never played. */
+  playCount?: number;
+  /** ISO 8601 timestamp of the most recent play (#197). */
+  played?: string;
 }
 
 export interface SubsonicArtistDetail extends SubsonicArtist {
@@ -168,6 +176,8 @@ interface RawAlbum {
   shareId?: string;
   starred?: string;
   created?: string;
+  playCount?: number;
+  played?: string;
 }
 
 interface RawSong {
@@ -200,6 +210,8 @@ interface RawSong {
   comment?: string;
   bpm?: number;
   starred?: string;
+  playCount?: number;
+  played?: string;
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
@@ -217,6 +229,8 @@ function parseAlbum(raw: RawAlbum): SubsonicAlbum {
     shareId: raw.shareId,
     starred: raw.starred,
     created: raw.created,
+    playCount: raw.playCount,
+    played: raw.played,
   };
 }
 
@@ -251,6 +265,8 @@ function parseSong(raw: RawSong): SubsonicSong {
     comment: raw.comment,
     bpm: raw.bpm,
     starred: raw.starred,
+    playCount: raw.playCount,
+    played: raw.played,
   };
 }
 
@@ -427,6 +443,30 @@ export async function star(target: { id: string }): Promise<void> {
 
 export async function unstar(target: { id: string }): Promise<void> {
   await subsonicFetch<unknown>("unstar", { id: target.id });
+}
+
+// Report a play to the hub (#197). `submission=true` records a play once the
+// listener crosses the scrobble threshold; the hub attributes it to the logged-
+// in user and the track's source instance. Best-effort — failures are swallowed
+// by the caller so a flaky scrobble never disrupts playback.
+export async function scrobble(
+  id: string,
+  submission = true,
+): Promise<void> {
+  await subsonicFetch<unknown>("scrobble", {
+    id,
+    submission: String(submission),
+  });
+}
+
+/**
+ * Last.fm-style scrobble threshold (#197): a play counts once the listener has
+ * heard at least half the track, capped at 4 minutes. Falls back to the 4-min
+ * cap when the track length is unknown. Shared by the local <audio> and Sonos
+ * playback paths so both surfaces count plays on identical rules.
+ */
+export function scrobbleThresholdSec(trackLenSec: number): number {
+  return trackLenSec > 0 ? Math.min(trackLenSec / 2, 240) : 240;
 }
 
 export async function getStarred2(): Promise<SubsonicStarred> {

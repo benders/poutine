@@ -63,6 +63,10 @@ describe("Sidebar Albums group", () => {
     expect(screen.getByText("Albums")).toBeInTheDocument();
     expect(screen.getByText("All")).toBeInTheDocument();
     expect(screen.getByText("Random")).toBeInTheDocument();
+    expect(screen.getByText("Most Played").closest("a")).toHaveAttribute(
+      "href",
+      "/library/most-played",
+    );
 
     await waitFor(() => {
       expect(screen.getByText("Alice's Hub")).toBeInTheDocument();

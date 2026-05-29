@@ -22,10 +22,10 @@ Peers report both versions through `/api/health`, which `GET /api/admin/hub/peer
 
 **Current versions**
 
-| Field                              | Value            |
-|------------------------------------|------------------|
-| Protocol (`Poutine-Api-Version`)   | `6`              |
-| Application (`User-Agent`)         | `Poutine/0.5.1`  |
+| Field                              | Value                                          |
+|------------------------------------|------------------------------------------------|
+| Protocol (`Poutine-Api-Version`)   | `6`                                            |
+| Application (`User-Agent`)         | `Poutine/<APP_VERSION>` — see `hub/src/version.ts` |
 
 The minimum accepted protocol version is **5**. Peers below the floor are
 rejected with `403`. v0.4.x peers (api version 3) cannot join a v5 cluster

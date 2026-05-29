@@ -25,6 +25,7 @@ import { loadOrCreatePasswordKey } from "./auth/password-crypto.js";
 import { AutoSyncService } from "./services/auto-sync.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
+import { PlayEventService } from "./services/play-events.js";
 import { LastFmClient } from "./services/lastfm.js";
 import { FanartTvClient } from "./services/fanarttv.js";
 import { SonosDiscoveryService } from "./services/sonos-discovery.js";
@@ -65,6 +66,7 @@ declare module "fastify" {
   federatedFetch: ReturnType<typeof FetcherFactory>;
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
+  playEvents: PlayEventService;
   lastFmClient: LastFmClient | null;
   fanartTvClient: FanartTvClient | null;
   navidromeClient: SubsonicClient;
@@ -292,8 +294,10 @@ export async function buildApp(configOverrides?: Partial<Config>) {
 
   // Auto-sync: polls Navidrome every 30s and syncs when a new scan has completed
   const syncOpService = new SyncOperationService(db);
+  const playEvents = new PlayEventService(db);
   const streamTracking = new StreamTrackingService(db);
   app.decorate("syncOpService", syncOpService);
+  app.decorate("playEvents", playEvents);
   app.decorate("streamTracking", streamTracking);
 
   // Load activity history retention from settings (issue #121)

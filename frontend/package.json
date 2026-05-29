@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "lint:boundary": "eslint --config eslint.boundary.config.js src/features/",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },

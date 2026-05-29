@@ -36,7 +36,7 @@ interface ViewSpec {
 
 /**
  * Map a URL view slug to the API params and display title.
- * Slugs: `all`, `random`, `favorites`, `folder-<numericId>`.
+ * Slugs: `all`, `random`, `favorites`, `most-played`, `folder-<numericId>`.
  * Returns null for unknown slugs so the page can redirect.
  */
 function resolveView(
@@ -46,6 +46,9 @@ function resolveView(
   if (slug === "all") return { type: "alphabeticalByName", title: "All Albums" };
   if (slug === "random") return { type: "random", title: "Random Albums" };
   if (slug === "favorites") return { type: "starred", title: "Favorites" };
+  // `frequent` is Subsonic's standard most-played list, ranked by album
+  // playCount (#197); the server excludes never-played albums.
+  if (slug === "most-played") return { type: "frequent", title: "Most Played" };
   if (slug.startsWith("folder-")) {
     const id = parseInt(slug.slice("folder-".length), 10);
     if (!Number.isFinite(id)) return null;
@@ -117,8 +120,9 @@ export function AlbumsPage() {
           a.artist.toLowerCase().includes(q),
       );
     }
-    // Random view: preserve server-shuffled order. Sort is hidden in that mode.
-    if (spec?.type !== "random") {
+    // Server-ordered views (random shuffle, most-played ranking) keep the
+    // order the API returned; the sort control is hidden in those modes.
+    if (spec?.type !== "random" && spec?.type !== "frequent") {
       items.sort((a, b) => {
         switch (sort) {
           case "name":
@@ -143,6 +147,8 @@ export function AlbumsPage() {
   if (!spec) return <Navigate to="/library/all" replace />;
 
   const isRandom = spec.type === "random";
+  // Views whose order is meaningful server-side; client sort is suppressed.
+  const serverOrdered = isRandom || spec.type === "frequent";
 
   return (
     <CategoryGrid<SubsonicAlbum, SortOption>
@@ -165,10 +171,14 @@ export function AlbumsPage() {
       searchPlaceholder="Search albums..."
       search={search}
       onSearchChange={setSearch}
-      sortOptions={isRandom ? undefined : SORT_OPTIONS}
-      sort={isRandom ? undefined : sort}
-      onSortChange={isRandom ? undefined : setSort}
-      emptyMessage="No albums in your library yet."
+      sortOptions={serverOrdered ? undefined : SORT_OPTIONS}
+      sort={serverOrdered ? undefined : sort}
+      onSortChange={serverOrdered ? undefined : setSort}
+      emptyMessage={
+        spec.type === "frequent"
+          ? "Nothing played yet — albums show up here once you listen."
+          : "No albums in your library yet."
+      }
       emptySearchMessage="No albums match your search."
       itemKey={(a) => a.id}
       renderItem={(album) => (

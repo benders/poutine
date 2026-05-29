@@ -7,6 +7,7 @@ import { usePlayer } from "@/stores/player";
 import { setSubsonicCreds } from "@/lib/api";
 import { streamUrl } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
+import * as subsonic from "@/lib/subsonic";
 import * as api from "@/lib/api";
 
 function track(id: string, coverArt?: string): SubsonicSong {
@@ -438,5 +439,179 @@ describe("PlayerBar cast volume slider", () => {
     // the guard ref in PlayerBar suppresses calling setCastVolume for
     // ~1.5s. The store's castVolume should remain at 40.
     expect(usePlayer.getState().castVolume).toBe(40);
+  });
+});
+
+describe("PlayerBar Sonos scrobble (#197)", () => {
+  beforeEach(() => {
+    vi.spyOn(api, "getCapabilities").mockResolvedValue({
+      sonos: true,
+      dlna: true,
+      sonosAllowNonAdmin: false,
+    } as Awaited<ReturnType<typeof api.getCapabilities>>);
+    vi.spyOn(api, "sonosPlay").mockResolvedValue({ ok: true, transcoded: true });
+    vi.spyOn(api, "sonosSetNext").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosCommand").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosSetVolume").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosSeek").mockResolvedValue(undefined as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderCasting(durationMs: number, currentTime = 0) {
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      queue: [{ ...track("trk-1"), durationMs }],
+      currentIndex: 0,
+      currentTime,
+    });
+    return render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter></QueryClientProvider>,
+    );
+  }
+
+  it("scrobbles once the device position crosses the threshold", async () => {
+    // 200s track → threshold = min(100s, 240s) = 100s; device reports 120s.
+    vi.spyOn(api, "getSonosState").mockResolvedValue({
+      state: "PLAYING",
+      position: 120,
+      duration: 200,
+      volume: 25,
+      volumeCap: 50,
+      trackUri: "",
+    });
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+
+    renderCasting(200_000);
+    // Let the initial poll tick resolve (getSonosState → scrobble check).
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(scrobbleSpy).toHaveBeenCalledWith("trk-1");
+    expect(scrobbleSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not scrobble while the device is below the threshold", async () => {
+    vi.spyOn(api, "getSonosState").mockResolvedValue({
+      state: "PLAYING",
+      position: 30,
+      duration: 200,
+      volume: 25,
+      volumeCap: 50,
+      trackUri: "",
+    });
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+
+    renderCasting(200_000);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(scrobbleSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not scrobble a paused device even when its position is past the threshold", async () => {
+    // Position is well past the half mark, but the device is PAUSED — a held
+    // position must not be mistaken for a listened-through play (#197 review #1).
+    vi.spyOn(api, "getSonosState").mockResolvedValue({
+      state: "PAUSED_PLAYBACK",
+      position: 150,
+      duration: 200,
+      volume: 25,
+      volumeCap: 50,
+      trackUri: "",
+    });
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+
+    renderCasting(200_000);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(scrobbleSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not instant-scrobble a cast resumed near the end of the track", async () => {
+    // Resume at 180s of a 200s track: the device reports absolute position 180
+    // (>= the 100s threshold), but only ~0s was heard in THIS session, so the
+    // session-progress rule must not fire (#197 review #3).
+    vi.spyOn(api, "getSonosState").mockResolvedValue({
+      state: "PLAYING",
+      position: 0, // stream just started; base offset (180) is added back
+      duration: 20,
+      volume: 25,
+      volumeCap: 50,
+      trackUri: "",
+    });
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+
+    renderCasting(200_000, 180);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(scrobbleSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("PlayerBar local scrobble (#197)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("scrobbles on track completion even if the threshold was never crossed", async () => {
+    // Covers a throttled background tab where timeupdate never fires past the
+    // threshold: reaching 'ended' must still record the play (#197 review #4).
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+    // Single-track queue + paused so advancing past the end doesn't load a
+    // second stream (jsdom has no real <audio>); we only assert the scrobble.
+    usePlayer.setState({
+      sink: "local",
+      queue: [track("trk-1")],
+      currentIndex: 0,
+      currentTime: 0,
+      isPlaying: false,
+    });
+
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter></QueryClientProvider>,
+    );
+
+    const audio = container.querySelector("audio")!;
+    act(() => {
+      fireEvent.ended(audio);
+    });
+
+    expect(scrobbleSpy).toHaveBeenCalledWith("trk-1");
+    expect(scrobbleSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("scrobbleThresholdSec (#197)", () => {
+  it("is half the track, capped at 4 minutes, with a 4-min fallback", () => {
+    expect(subsonic.scrobbleThresholdSec(200)).toBe(100); // half a 3:20 track
+    expect(subsonic.scrobbleThresholdSec(600)).toBe(240); // capped at 4:00 for long tracks
+    expect(subsonic.scrobbleThresholdSec(0)).toBe(240); // unknown length → 4-min floor
   });
 });

@@ -5,7 +5,7 @@ import { usePlayer } from "@/stores/player";
 import { useAuth } from "@/stores/auth";
 import { useToasts } from "@/stores/toast";
 import { formatDuration } from "@/lib/format";
-import { streamUrl, artUrl, effectiveStream } from "@/lib/subsonic";
+import { streamUrl, artUrl, effectiveStream, scrobble, scrobbleThresholdSec } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import {
   getCapabilities,
@@ -98,6 +98,44 @@ export function PlayerBar() {
   // raw streams, so the URL is plain and we seek the <audio> element
   // after the file headers parse (#204).
   const pendingLocalSeekRef = useRef<number | null>(null);
+  // #197: the track id we've already scrobbled for the current play, so the
+  // play-count report fires at most once per listen. Reset on track change /
+  // replay. Both playback paths use it: the local <audio> timeupdate handler
+  // and the Sonos poll loop, the latter scrobbling off the device's reported
+  // transport position so casting counts plays at the same threshold without
+  // a server-side wall-clock estimate.
+  const scrobbledRef = useRef<string | null>(null);
+  // Track-time position where the CURRENT stream session began (a resume/seek
+  // offset, else 0). The scrobble threshold is measured against progress made
+  // in this session (`absolutePos - sessionStart`), not the absolute track
+  // position — so resuming mid-track doesn't instantly cross the threshold for
+  // audio that wasn't heard on this device (#197).
+  const sessionStartPosRef = useRef(0);
+
+  // Re-arm the scrobble whenever the track changes (new id). A sink switch
+  // (local↔Sonos) keeps the same id, so it does NOT re-arm — preventing one
+  // logical play from being counted on both paths (#197). A repeat-one replay
+  // reuses the same id and is re-armed by handleEnded instead.
+  useEffect(() => {
+    scrobbledRef.current = null;
+  }, [currentTrack?.id]);
+
+  // Fire a scrobble at most once per play, when this session's playback
+  // progress crosses the threshold. `playing` lets cast ticks skip a paused
+  // device (whose reported position would otherwise trip the threshold).
+  // Best-effort: a failed report never disrupts playback.
+  const maybeScrobble = useCallback(
+    (absolutePosSec: number, trackLenSec: number, playing: boolean) => {
+      if (!playing || !currentTrack) return;
+      if (scrobbledRef.current === currentTrack.id) return;
+      const progress = absolutePosSec - sessionStartPosRef.current;
+      if (progress >= scrobbleThresholdSec(trackLenSec)) {
+        scrobbledRef.current = currentTrack.id;
+        scrobble(currentTrack.id).catch(() => {});
+      }
+    },
+    [currentTrack],
+  );
 
   // streamUrl() generates a fresh u+t+s salt per call, so we MUST memoize
   // by track id — otherwise every render produces a new string, every
@@ -165,6 +203,8 @@ export function PlayerBar() {
     if (!audio || !currentStreamUrl || !currentTrack) return;
 
     const resumeAt = usePlayer.getState().currentTime;
+    // Scrobble progress is measured from where this stream starts (#197).
+    sessionStartPosRef.current = resumeAt > 0 ? resumeAt : 0;
     if (resumeAt > 0 && isTranscoded) {
       pendingBaseOffsetRef.current = resumeAt;
       audio.src =
@@ -259,6 +299,8 @@ export function PlayerBar() {
     (track: SubsonicSong, startAt: number, autoplay: boolean) => {
       if (!deviceId) return;
       castBaseOffsetRef.current = startAt > 0 ? startAt : 0;
+      // Scrobble progress is measured from where this stream starts (#197).
+      sessionStartPosRef.current = startAt > 0 ? startAt : 0;
       lastSonosPlayAtRef.current = Date.now();
       void sonosPlay(deviceId, track.id, {
         autoplay,
@@ -441,7 +483,16 @@ export function PlayerBar() {
         } else if (s.duration > 0) {
           setDuration(s.duration);
         }
-        setCurrentTime(s.position + base);
+        const pos = s.position + base;
+        setCurrentTime(pos);
+        // #197: scrobble off the device's reported position. Only while the
+        // device is actually PLAYING — a paused cast holds its position, which
+        // would otherwise trip the threshold. The truncated stream's
+        // TrackDuration is unreliable when base>0, so prefer the metadata
+        // length there.
+        const lengthSec =
+          base > 0 ? currentTrack.durationMs / 1000 : s.duration > 0 ? s.duration : currentTrack.durationMs / 1000;
+        maybeScrobble(pos, lengthSec, s.state === "PLAYING");
         // Mirror device volume into the slider so external changes
         // (Sonos app, hardware buttons) reflect within ~1.5s. Skip if
         // the user just touched the slider — otherwise an in-flight
@@ -521,13 +572,25 @@ export function PlayerBar() {
     setPlaying,
     setCastVolume,
     setCastVolumeCap,
+    maybeScrobble,
   ]);
 
   const handleTimeUpdate = useCallback(() => {
-    if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime + baseOffsetRef.current);
-    }
-  }, [setCurrentTime]);
+    const audio = audioRef.current;
+    if (!audio) return;
+    const trackTime = audio.currentTime + baseOffsetRef.current;
+    setCurrentTime(trackTime);
+
+    // #197: report a play once this session crosses the threshold. timeupdate
+    // only fires during playback, but pass !paused defensively.
+    const lengthSec =
+      audio.duration && isFinite(audio.duration)
+        ? audio.duration + baseOffsetRef.current
+        : currentTrack?.durationMs
+          ? currentTrack.durationMs / 1000
+          : 0;
+    maybeScrobble(trackTime, lengthSec, !audio.paused);
+  }, [setCurrentTime, currentTrack, maybeScrobble]);
 
   const handleLoadedMetadata = useCallback(() => {
     const audio = audioRef.current;
@@ -555,8 +618,16 @@ export function PlayerBar() {
   }, [setDuration, setCurrentTime]);
 
   const handleEnded = useCallback(() => {
+    // A track that played to completion always counts as a play, even if
+    // timeupdate never crossed the threshold (e.g. a throttled background tab
+    // suppressing timeupdate near the end) (#197).
+    if (currentTrack && scrobbledRef.current !== currentTrack.id) {
+      scrobble(currentTrack.id).catch(() => {});
+    }
+    // Allow the next play (incl. repeat-one replay of the same id) to scrobble.
+    scrobbledRef.current = null;
     next();
-  }, [next]);
+  }, [next, currentTrack]);
 
   const handleError = useCallback(() => {
     const audio = audioRef.current;

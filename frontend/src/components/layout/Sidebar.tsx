@@ -14,6 +14,7 @@ import {
   Server,
   Activity,
   Star,
+  Flame,
   ListMusic,
   Speaker,
 } from "lucide-react";
@@ -86,6 +87,7 @@ export function Sidebar() {
           <NavGroupItem to="/library/all" label="All" />
           <NavGroupItem to="/library/random" label="Random" icon={Shuffle} />
           <NavGroupItem to="/library/favorites" label="Favorites" icon={Star} />
+          <NavGroupItem to="/library/most-played" label="Most Played" icon={Flame} />
           {folders?.map((folder) => (
             <NavGroupItem
               key={folder.id}
