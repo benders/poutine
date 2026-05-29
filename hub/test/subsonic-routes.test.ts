@@ -243,6 +243,51 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"].license.valid).toBe(true);
   });
 
+  it("getOpenSubsonicExtensions → lists transcodeOffset (authed JSON)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getOpenSubsonicExtensions?u=tester&p=secret&f=json",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    const exts = body["subsonic-response"].openSubsonicExtensions as Array<{
+      name: string;
+      versions: number[];
+    }>;
+    expect(Array.isArray(exts)).toBe(true);
+    const offset = exts.find((e) => e.name === "transcodeOffset");
+    expect(offset).toBeDefined();
+    expect(offset?.versions).toEqual([1]);
+    // formPost is deliberately NOT advertised (no form-body parser).
+    expect(exts.find((e) => e.name === "formPost")).toBeUndefined();
+  });
+
+  it("getOpenSubsonicExtensions → callable WITHOUT credentials (spec)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getOpenSubsonicExtensions?f=json",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    expect(
+      (body["subsonic-response"].openSubsonicExtensions as unknown[]).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("getOpenSubsonicExtensions → XML nests <versions> under named extension", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getOpenSubsonicExtensions.view?f=xml",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("xml");
+    expect(res.body).toContain(
+      '<openSubsonicExtensions name="transcodeOffset"><versions>1</versions></openSubsonicExtensions>',
+    );
+  });
+
   it("getMusicFolders → one folder per known instance", async () => {
     const res = await app.inject({
       method: "GET",
