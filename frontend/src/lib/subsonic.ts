@@ -123,6 +123,10 @@ export interface SubsonicSong {
   comment?: string;
   bpm?: number;
   starred?: string;
+  /** Per-user play count from `play_events` (#197); absent when never played. */
+  playCount?: number;
+  /** ISO 8601 timestamp of the most recent play (#197). */
+  played?: string;
 }
 
 export interface SubsonicArtistDetail extends SubsonicArtist {
