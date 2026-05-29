@@ -34,6 +34,7 @@ Every `unified_*` insert in `merge.ts` logs the offending row + prior `existingR
 | Assuming Subsonic `timeOffset` works on raw pass-through streams                                                  | #204      | `timeOffset` is only applied when transcoding — on raw streams it's silently ignored. Seek raw streams via HTTP Range / SOAP Seek instead |
 | Recording a play anywhere other than `/rest/scrobble`                                                             | #197      | There is exactly one recording path: the client scrobbles when *it* crosses the threshold. `StreamTrackingService.finish()` records nothing. Don't infer plays from stream lifetime — a new surface reports its own position and scrobbles, it does not get a server-side estimate. |
 | Reading play counts from the backing Navidrome instead of `play_events`                                            | #197      | Navidrome's counts are siloed per-hub and miss peer media. `play_events` is the canonical, federation-wide, per-user source of truth — go through `PlayEventService`. |
+| Trusting a green `pnpm verify` for Subsonic API / federation changes                                              | #197      | `verify` does NOT run the Python `subsonic-compat` suite — only `pnpm test:federation` (or `verify:full`) does. A `/rest/*` semantics change (e.g. `type=recent` becoming play-history-only) passes `verify` but breaks compat. Run the federation suite for any Subsonic/federation surface change; CI gates it regardless. |
 
 Endpoint coverage detail: [opensubsonic.md](opensubsonic.md).
 

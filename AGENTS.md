@@ -26,7 +26,8 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
    - Touching hub internals, conventions, or anything with a known gotcha: check `docs/hub-internals.md`.
    - Touching Player code (Sonos, DLNA, cast, player-admin): obey the **Hub/Player boundary** (section below) and run `pnpm lint:boundary`.
    - Architectural changes: update `docs/system-architecture.md` as part of the work.
-4. Write tests alongside code. Run `pnpm verify` (typecheck + test) before declaring done.
+4. Write tests alongside code. Run `pnpm verify` (typecheck + lint:boundary + unit tests) before declaring done.
+   - **Touching the Subsonic API (`/rest/*`, `getAlbumList2`, scrobble/play-counts, search, stream), `/federation/*`, auth, or the merged-catalog shape? `pnpm verify` is NOT enough** — it does not run the Python `subsonic-compat` suite. Run `pnpm test:federation` (Docker; spins up hub-a/b/c) and get a green run before declaring done. `pnpm verify:full` runs both. CI gates every PR on the `federation` job regardless, so a skip here only delays the failure to post-push.
    - When querying the live database: check `hub/src/db/schema.sql` for the schema, then use `scripts/db-query.sh "SQL"`. Never exec into the container and try to import `better-sqlite3` manually.
    - Run `pnpm lint` and resolve **all** errors AND warnings before declaring done — including pre-existing ones in files you didn't author. Zero lint output is the bar. If a warning is a deliberate false-positive, suppress it inline with a one-line rationale rather than leaving it noisy.
 5. Update documentation and check for any outdated or inconsistent information.
