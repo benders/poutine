@@ -295,7 +295,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // Auto-sync: polls Navidrome every 30s and syncs when a new scan has completed
   const syncOpService = new SyncOperationService(db);
   const playEvents = new PlayEventService(db);
-  const streamTracking = new StreamTrackingService(db, playEvents);
+  const streamTracking = new StreamTrackingService(db);
   app.decorate("syncOpService", syncOpService);
   app.decorate("playEvents", playEvents);
   app.decorate("streamTracking", streamTracking);

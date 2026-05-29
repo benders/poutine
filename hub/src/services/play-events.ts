@@ -1,12 +1,6 @@
 import type Database from "better-sqlite3";
 import { sqliteToIso } from "../util/time.js";
 
-// Last.fm-style scrobble threshold: a play counts once the listener has heard
-// at least half the track, capped at 4 minutes (so very long tracks still
-// count after a reasonable listen). When the track length is unknown we fall
-// back to the 4-minute floor.
-const PLAY_THRESHOLD_CAP_MS = 240_000;
-
 export interface RecordPlayOptions {
   userId: string;
   unifiedTrackId: string;
@@ -32,7 +26,6 @@ export interface PlayStats {
  */
 export class PlayEventService {
   private readonly insertStmt: Database.Statement;
-  private readonly trackDurationStmt: Database.Statement;
 
   constructor(private readonly db: Database.Database) {
     // Millisecond precision (strftime %f) so `type=recent` ordering is stable
@@ -44,12 +37,14 @@ export class PlayEventService {
          played_at, duration_played_ms, client_name
        ) VALUES (?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'), ?, ?)`,
     );
-    this.trackDurationStmt = db.prepare(
-      "SELECT duration_ms FROM unified_tracks WHERE id = ?",
-    );
   }
 
-  /** Record a play unconditionally. The caller owns the count decision. */
+  /**
+   * Record a play. The threshold decision (Last.fm-style: half the track or
+   * 4 minutes) is owned by the client that calls /rest/scrobble — every
+   * playback surface in this app reports its own position, so the server just
+   * persists what it's told.
+   */
   record(opts: RecordPlayOptions): void {
     this.insertStmt.run(
       crypto.randomUUID(),
@@ -59,27 +54,6 @@ export class PlayEventService {
       opts.durationPlayedMs ?? null,
       opts.clientName ?? null,
     );
-  }
-
-  /**
-   * Record a play only if the played duration crosses the scrobble threshold.
-   * Used by server-driven surfaces (Sonos cast, DLNA) where there is no client
-   * scrobble — the played duration is the stream connection lifetime. Returns
-   * true if a play was recorded.
-   */
-  recordIfThreshold(
-    opts: RecordPlayOptions & { durationPlayedMs: number },
-  ): boolean {
-    const row = this.trackDurationStmt.get(opts.unifiedTrackId) as
-      | { duration_ms: number | null }
-      | undefined;
-    const trackMs = row?.duration_ms ?? null;
-    const threshold = trackMs
-      ? Math.min(Math.floor(trackMs / 2), PLAY_THRESHOLD_CAP_MS)
-      : PLAY_THRESHOLD_CAP_MS;
-    if (opts.durationPlayedMs < threshold) return false;
-    this.record(opts);
-    return true;
   }
 
   /**

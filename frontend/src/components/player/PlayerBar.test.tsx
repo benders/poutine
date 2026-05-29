@@ -7,6 +7,7 @@ import { usePlayer } from "@/stores/player";
 import { setSubsonicCreds } from "@/lib/api";
 import { streamUrl } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
+import * as subsonic from "@/lib/subsonic";
 import * as api from "@/lib/api";
 
 function track(id: string, coverArt?: string): SubsonicSong {
@@ -438,5 +439,85 @@ describe("PlayerBar cast volume slider", () => {
     // the guard ref in PlayerBar suppresses calling setCastVolume for
     // ~1.5s. The store's castVolume should remain at 40.
     expect(usePlayer.getState().castVolume).toBe(40);
+  });
+});
+
+describe("PlayerBar Sonos scrobble (#197)", () => {
+  beforeEach(() => {
+    vi.spyOn(api, "getCapabilities").mockResolvedValue({
+      sonos: true,
+      dlna: true,
+      sonosAllowNonAdmin: false,
+    } as Awaited<ReturnType<typeof api.getCapabilities>>);
+    vi.spyOn(api, "sonosPlay").mockResolvedValue({ ok: true, transcoded: true });
+    vi.spyOn(api, "sonosSetNext").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosCommand").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosSetVolume").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosSeek").mockResolvedValue(undefined as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderCasting(durationMs: number) {
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      queue: [{ ...track("trk-1"), durationMs }],
+      currentIndex: 0,
+      currentTime: 0,
+    });
+    return render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter></QueryClientProvider>,
+    );
+  }
+
+  it("scrobbles once the device position crosses the threshold", async () => {
+    // 200s track → threshold = min(100s, 240s) = 100s; device reports 120s.
+    vi.spyOn(api, "getSonosState").mockResolvedValue({
+      state: "PLAYING",
+      position: 120,
+      duration: 200,
+      volume: 25,
+      volumeCap: 50,
+      trackUri: "",
+    });
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+
+    renderCasting(200_000);
+    // Let the initial poll tick resolve (getSonosState → scrobble check).
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(scrobbleSpy).toHaveBeenCalledWith("trk-1");
+    expect(scrobbleSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not scrobble while the device is below the threshold", async () => {
+    vi.spyOn(api, "getSonosState").mockResolvedValue({
+      state: "PLAYING",
+      position: 30,
+      duration: 200,
+      volume: 25,
+      volumeCap: 50,
+      trackUri: "",
+    });
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+
+    renderCasting(200_000);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(scrobbleSpy).not.toHaveBeenCalled();
   });
 });

@@ -1414,7 +1414,6 @@ try {
     streamOpId = app.streamTracking.start({
       kind: streamKind,
       username: request.subsonicUser.username,
-      userId: request.subsonicUser.id,
       trackId: trackRow.id,
       trackTitle: trackRow.title,
       artistName: trackRow.artist_name,

@@ -190,38 +190,9 @@ describe("PlayEventService (#197)", () => {
     await app.close();
   });
 
-  it("recordIfThreshold counts a play past the half-track mark", () => {
-    // Track is 200s; threshold = min(100s, 240s) = 100s.
-    expect(
-      svc.recordIfThreshold({
-        userId: "user-1",
-        unifiedTrackId: T1_ID,
-        durationPlayedMs: 99_000,
-      }),
-    ).toBe(false);
-    expect(
-      svc.recordIfThreshold({
-        userId: "user-1",
-        unifiedTrackId: T1_ID,
-        durationPlayedMs: 120_000,
-      }),
-    ).toBe(true);
+  it("record persists a play unconditionally", () => {
+    svc.record({ userId: "user-1", unifiedTrackId: T1_ID });
     expect(svc.getTrackStats("user-1", [T1_ID]).get(T1_ID)?.playCount).toBe(1);
-  });
-
-  it("unknown track length falls back to the 4-minute floor", () => {
-    app.db
-      .prepare(
-        "INSERT INTO unified_tracks (id, release_id, artist_id, title, title_normalized) VALUES (?, ?, ?, ?, ?)",
-      )
-      .run("22222222-2222-4222-2222-222222222222", REL1_ID, ARTIST_ID, "No Len", "no len");
-    const id = "22222222-2222-4222-2222-222222222222";
-    expect(
-      svc.recordIfThreshold({ userId: "user-1", unifiedTrackId: id, durationPlayedMs: 200_000 }),
-    ).toBe(false);
-    expect(
-      svc.recordIfThreshold({ userId: "user-1", unifiedTrackId: id, durationPlayedMs: 245_000 }),
-    ).toBe(true);
   });
 
   it("getAlbumStats sums plays across an album's tracks", () => {

@@ -130,7 +130,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | `star`      | Implemented     | Per-user; accepts `id`, `albumId`, `artistId` (each may repeat). Kind classified by id prefix. (#104)  |
 | `unstar`    | Implemented     | Mirror of `star`. Idempotent — unstarring a non-starred entity is a no-op. (#104)                      |
 | `setRating` | NOT IMPLEMENTED |                                                                                                        |
-| `scrobble`  | Implemented     | Records a per-user play in `play_events` (#197). `submission=true` (default) counts; `submission=false` is a now-playing notification and is ignored. Accepts one or many `id`; unknown/malformed ids are skipped so a batch still records the rest. Server-driven surfaces (Sonos cast, DLNA) never scrobble — they are recorded from the stream proxy on finish. |
+| `scrobble`  | Implemented     | Records a per-user play in `play_events` (#197). `submission=true` (default) counts; `submission=false` is a now-playing notification and is ignored. Accepts one or many `id`; unknown/malformed ids are skipped so a batch still records the rest. This is the *only* play-recording path: the SPA scrobbles for both local and Sonos-cast playback off the actual playback position. |
 
 Album / artist / song objects returned by `getAlbum`, `getArtist`,
 `getAlbumList2`, `getSong`, and `search3` carry an ISO 8601 `starred`
@@ -157,9 +157,10 @@ album's most-recent track play.
 
 Counts are **per-user** (Subsonic spec), durable, and span the merged catalog
 (local + peer media) — they are sourced from `play_events`, not from the
-backing Navidrome's own counts. See [hub-internals.md](hub-internals.md#play-counts-197)
-for how plays are recorded (client scrobble vs. server-driven cast/DLNA) and
-the known cast/DLNA approximation.
+backing Navidrome's own counts. Plays are recorded by exactly one path — the
+client scrobbles when playback crosses the threshold (the SPA does this for
+both local and Sonos-cast playback). See
+[hub-internals.md](hub-internals.md#play-counts-197) for details.
 
 ### Song `albumArtist` / `albumArtistId` (#138)
 

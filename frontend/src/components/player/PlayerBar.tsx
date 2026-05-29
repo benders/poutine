@@ -100,9 +100,10 @@ export function PlayerBar() {
   const pendingLocalSeekRef = useRef<number | null>(null);
   // #197: the track id we've already scrobbled for the current play, so the
   // play-count report fires at most once per listen. Reset on track change /
-  // replay. Cast (Sonos/DLNA) playback is recorded server-side from the stream
-  // proxy, so this local-playback scrobble path never runs while casting (the
-  // <audio> element is paused and emits no timeupdate).
+  // replay. Both playback paths use it: the local <audio> timeupdate handler
+  // and the Sonos poll loop, the latter scrobbling off the device's reported
+  // transport position so casting counts plays at the same threshold without
+  // a server-side wall-clock estimate.
   const scrobbledRef = useRef<string | null>(null);
 
   // streamUrl() generates a fresh u+t+s salt per call, so we MUST memoize
@@ -303,6 +304,11 @@ export function PlayerBar() {
     // left off instead of restarting from 0:00 (#194). next()/previous()
     // already zero currentTime, so a normal track-change passes no offset.
     const resumeAt = usePlayer.getState().currentTime;
+    // Re-arm the scrobble for a play that starts at the top — a normal track
+    // change or a repeat-one replay (both zero currentTime). A mid-track
+    // resume (sink switch) keeps the armed state so one logical play isn't
+    // scrobbled twice (#197).
+    if (resumeAt < 1) scrobbledRef.current = null;
     issueSonosPlay(currentTrack, resumeAt, isPlaying);
     // isPlaying intentionally excluded — pause/resume is handled by its
     // own effect below. We only read its value at track-change time.
@@ -449,7 +455,27 @@ export function PlayerBar() {
         } else if (s.duration > 0) {
           setDuration(s.duration);
         }
-        setCurrentTime(s.position + base);
+        const pos = s.position + base;
+        setCurrentTime(pos);
+        // #197: scrobble off the device's reported playback position once it
+        // crosses the Last.fm-style threshold (half the track, capped at 4
+        // min). Same scrobbledRef guard as the local path, so each play counts
+        // once; best-effort so a failed report never disrupts playback.
+        if (currentTrack && scrobbledRef.current !== currentTrack.id) {
+          const lengthSec =
+            base > 0
+              ? currentTrack.durationMs / 1000
+              : s.duration > 0
+                ? s.duration
+                : currentTrack.durationMs
+                  ? currentTrack.durationMs / 1000
+                  : 0;
+          const threshold = lengthSec > 0 ? Math.min(lengthSec / 2, 240) : 240;
+          if (pos >= threshold) {
+            scrobbledRef.current = currentTrack.id;
+            scrobble(currentTrack.id).catch(() => {});
+          }
+        }
         // Mirror device volume into the slider so external changes
         // (Sonos app, hardware buttons) reflect within ~1.5s. Skip if
         // the user just touched the slider — otherwise an in-flight
