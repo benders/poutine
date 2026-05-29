@@ -89,6 +89,18 @@ describe("AlbumsPage view routing", () => {
     expect(await screen.findByText("Favorites")).toBeInTheDocument();
   });
 
+  it("/library/most-played requests frequent type and titles the page Most Played", async () => {
+    vi.mocked(getAlbumList2).mockResolvedValue([ALBUM]);
+    renderAt("/library/most-played");
+    await waitFor(() => expect(getAlbumList2).toHaveBeenCalled());
+    const args = vi.mocked(getAlbumList2).mock.calls[0]?.[0];
+    expect(args?.type).toBe("frequent");
+    expect(args?.musicFolderId).toBeUndefined();
+    expect(await screen.findByText("Most Played")).toBeInTheDocument();
+    // Server ranking is preserved, so the sort control is hidden.
+    expect(screen.queryByText("Recently Added")).toBeNull();
+  });
+
   it("unknown view slug redirects to /library/all", async () => {
     vi.mocked(getAlbumList2).mockResolvedValue([ALBUM]);
     renderAt("/library/bogus");
