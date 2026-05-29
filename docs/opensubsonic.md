@@ -11,7 +11,7 @@ For a forward-looking inventory of OpenSubsonic optional extensions worth adopti
 | `version`       | `1.16.1`  | `hub/src/routes/subsonic-response.ts`        |
 | `openSubsonic`  | `true`    | Present in every response envelope           |
 | `type`          | `poutine` | Server type field (OpenSubsonic extension)   |
-| `serverVersion` | `0.2.0`   | Tracks `APP_VERSION` in `hub/src/version.ts` |
+| `serverVersion` | `APP_VERSION` | From `hub/src/version.ts` (e.g. `0.5.3`)  |
 
 ## Response formats
 

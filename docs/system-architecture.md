@@ -116,7 +116,7 @@ instance_tracks   ─┘              unified_release_groups
                                   track_sources           (keyed by instance_id)
 ```
 
-`track_sources` is the streaming branch point. `selectBestSource()` ranks by format → bitrate → local tie-break. Merge rules: [hub-internals.md#federation](hub-internals.md#federation).
+`track_sources` is the streaming branch point. Source selection runs at merge time, not stream time: `mergeLibraries()` flags one row per unified track `preferred = 1` (ranked format → bitrate → local tie-break). Stream routes read that row. Merge rules: [hub-internals.md#federation](hub-internals.md#federation).
 
 `unified_*_sources` join tables back the "which peers own this" UI and the Subsonic MusicFolders mapping (one folder per peer).
 
@@ -146,7 +146,7 @@ Phase 3 (#217) migrates Player-owned rows out of `hub.db.settings` into `player.
 
 ```
 1. Client requests unified track ID
-2. Hub reads track_sources, selectBestSource picks winner
+2. Hub reads the track_sources row flagged preferred = 1 (chosen at merge time)
 3. Local source  → /proxy/rest/stream on local Navidrome (JWT auth)
    Peer source   → signed GET /proxy/rest/stream on peer (Ed25519)
 4. Response piped to client (no hub buffering)

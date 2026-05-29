@@ -24,6 +24,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
    - Touching auth, JWT, login, tokens, or Subsonic credentials: read `docs/authentication.md` FIRST.
    - Touching `/federation/*`: read `docs/federation-api.md` FIRST. Update it AND bump `FEDERATION_API_VERSION` in `hub/src/version.ts` on any contract change.
    - Touching hub internals, conventions, or anything with a known gotcha: check `docs/hub-internals.md`.
+   - Touching Player code (Sonos, DLNA, cast, player-admin): obey the **Hub/Player boundary** (section below) and run `pnpm lint:boundary`.
    - Architectural changes: update `docs/system-architecture.md` as part of the work.
 4. Write tests alongside code. Run `pnpm verify` (typecheck + test) before declaring done.
    - When querying the live database: check `hub/src/db/schema.sql` for the schema, then use `scripts/db-query.sh "SQL"`. Never exec into the container and try to import `better-sqlite3` manually.
@@ -32,6 +33,19 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 6. Commit work in phases, when all tests are passing.
 7. Push branch to origin.
 8. When work is completed, open a Pull Request in the Draft state.
+
+## Hub/Player boundary
+
+The backend is split into two bounded contexts inside one process — **Hub** (library, catalog, federation, users, hub-admin) and **Player** (Sonos cast, DLNA, player-admin) — so Player can later be lifted into its own process as a wiring change, not a rewrite (#212/#225). The split is real and machine-enforced. Do not erode it.
+
+- **Player-side code** = `hub/src/routes/{sonos,dlna}.ts`, `hub/src/services/{sonos-*,dlna-*,cast-tokens,didl,soap,ssdp-advertiser,player-settings}.ts`, and frontend `features/player-admin/` + `features/player/`.
+- **Player code reaches Hub state only through `HubSubsonicCaller`** (`hub/src/services/hub-subsonic-caller.ts`) over `app.inject()`. It must NOT import `better-sqlite3` at runtime (type-only `import type Database` is fine), the in-process `SubsonicClient` (`adapters/subsonic`), `app.db`, or any `hub/src/db/*` module. Player-owned storage is `player.db` via a capability-injected handle (`app.playerDb` / `PlayerSettings` / `app.sonosSettings`), never `hub.db`.
+- **Frontend bounded dirs may not cross-import.** `features/hub-admin/`, `features/player-admin/`, and `features/player/` are isolated; shared pure-UI helpers go in `features/shared/`.
+- **Backend admin mounts are partitioned** (#226): `/api/admin/hub/*` (Hub) and `/api/admin/player/*` (Player); `/admin/*` is auth-only. Handlers mount only in their namespace — cross-namespace requests 404.
+- **Adding a Player route/service?** Add the file to the `playerFiles` glob in `hub/eslint.config.js` (and the frontend equivalent for UI), then extend the negative tests so the rule is proven to fire: `hub/test/boundary-lint.test.ts`, `frontend/src/features/boundary-lint.test.ts`. If an exception is unavoidable, document the carve-out inline in the config — never silently relax the rule.
+- **Test it:** run `pnpm lint:boundary` (also bundled into `pnpm verify` and CI). Zero output is the bar — a boundary violation is a build failure, not a warning.
+
+Full rationale and enforcement matrix: `docs/system-architecture.md` ("Hub/Player boundary enforcement", "SPA admin split", "Data model" dual-DB). Recurring traps: `docs/pitfalls.md` ("Hub/Player boundary", "Sonos cast"). Boundary test patterns: `docs/frontend-testing.md`. The trusted in-process auth path Player uses to call Hub Subsonic as the SPA user: `docs/authentication.md` ("Trusted in-process auth").
 
 ## Documentation rules
 
@@ -51,12 +65,12 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 | `docs/authentication.md`             | **Auth reference** — JWT, Subsonic dual-auth, token refresh      |
 | `docs/federation-api.md`             | **Federation protocol contract** — read before `/federation/*`   |
 | `docs/hub-internals.md`              | Conventions, env vars, lessons learned, Docker                   |
-| `docs/pitfalls.md`                   | **Recurring traps** — check before touching merge, SQLite, auth, federation, external fetches |
+| `docs/pitfalls.md`                   | **Recurring traps** — check before touching merge, SQLite, auth, federation, external fetches, Hub/Player boundary |
 | `docs/opensubsonic.md`               | OpenSubsonic endpoint compatibility table and caveats            |
 | `hub/src/db/schema.sql`              | Canonical DB schema — source of truth; read before writing DB queries |
 | `scripts/db-query.sh`               | Run ad-hoc SQL against the live hub DB via `docker compose`       |
-| `docs/system-architecture.md`        | Current system architecture                                      |
-| `docs/frontend-testing.md`           | Vitest + RTL setup, patterns, gotchas                            |
+| `docs/system-architecture.md`        | Current system architecture — incl. **Hub/Player boundary** enforcement |
+| `docs/frontend-testing.md`           | Vitest + RTL setup, patterns, gotchas (incl. bounded-dir tests)  |
 | `docs/fanarttv-integration.md`       | fanart.tv artist image / album cover source (primary, MBID-keyed) |
 | `docs/lastfm-integration.md`         | Last.fm fallback for artists without an MBID                     |
 | `docs/sonos.md`                      | Sonos casting — protocol, components, libraries, testing         |
