@@ -335,3 +335,26 @@ CREATE TABLE IF NOT EXISTS stream_operations (
   bytes_transferred INTEGER,        -- bytes streamed
   error TEXT
 );
+
+-- ============================================================
+-- Play History (#197): canonical, federation-wide play counts
+-- ============================================================
+-- Durable per-user play log across the merged catalog (local + peer media).
+-- Distinct from stream_operations (ephemeral activity feed, pruned to a cap):
+-- play_events is the source of truth for Subsonic playCount/played and is not
+-- pruned. No FK on unified_track_id — the unified_* tables are rebuilt on every
+-- merge, so a row may outlive its track; orphans are dropped at read time via
+-- JOIN, exactly as user_stars does. Counts are per-user (Subsonic spec).
+CREATE TABLE IF NOT EXISTS play_events (
+  id TEXT PRIMARY KEY,                -- UUID
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  unified_track_id TEXT NOT NULL,     -- unified_tracks.id (no FK; orphans dropped at read)
+  source_instance_id TEXT,            -- 'local' or peer instance id; NULL if unknown
+  played_at TEXT NOT NULL DEFAULT (datetime('now')),
+  duration_played_ms INTEGER,         -- best-effort played duration (scrobble threshold / debug)
+  client_name TEXT                    -- Subsonic c= param, or 'sonos' / 'dlna' for server-driven plays
+);
+
+CREATE INDEX IF NOT EXISTS idx_play_events_user_track ON play_events(user_id, unified_track_id);
+CREATE INDEX IF NOT EXISTS idx_play_events_track ON play_events(unified_track_id);
+CREATE INDEX IF NOT EXISTS idx_play_events_user_played ON play_events(user_id, played_at);

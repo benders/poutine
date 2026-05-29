@@ -5,7 +5,7 @@ import { usePlayer } from "@/stores/player";
 import { useAuth } from "@/stores/auth";
 import { useToasts } from "@/stores/toast";
 import { formatDuration } from "@/lib/format";
-import { streamUrl, artUrl, effectiveStream } from "@/lib/subsonic";
+import { streamUrl, artUrl, effectiveStream, scrobble } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import {
   getCapabilities,
@@ -98,6 +98,12 @@ export function PlayerBar() {
   // raw streams, so the URL is plain and we seek the <audio> element
   // after the file headers parse (#204).
   const pendingLocalSeekRef = useRef<number | null>(null);
+  // #197: the track id we've already scrobbled for the current play, so the
+  // play-count report fires at most once per listen. Reset on track change /
+  // replay. Cast (Sonos/DLNA) playback is recorded server-side from the stream
+  // proxy, so this local-playback scrobble path never runs while casting (the
+  // <audio> element is paused and emits no timeupdate).
+  const scrobbledRef = useRef<string | null>(null);
 
   // streamUrl() generates a fresh u+t+s salt per call, so we MUST memoize
   // by track id — otherwise every render produces a new string, every
@@ -164,6 +170,8 @@ export function PlayerBar() {
     const audio = audioRef.current;
     if (!audio || !currentStreamUrl || !currentTrack) return;
 
+    // New stream loaded → arm the scrobble for this play (#197).
+    scrobbledRef.current = null;
     const resumeAt = usePlayer.getState().currentTime;
     if (resumeAt > 0 && isTranscoded) {
       pendingBaseOffsetRef.current = resumeAt;
@@ -524,10 +532,28 @@ export function PlayerBar() {
   ]);
 
   const handleTimeUpdate = useCallback(() => {
-    if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime + baseOffsetRef.current);
+    const audio = audioRef.current;
+    if (!audio) return;
+    const trackTime = audio.currentTime + baseOffsetRef.current;
+    setCurrentTime(trackTime);
+
+    // #197: report a play once the listener crosses the Last.fm-style threshold
+    // (half the track, capped at 4 min). Fire at most once per play; best-effort
+    // so a failed scrobble never disrupts playback.
+    if (currentTrack && scrobbledRef.current !== currentTrack.id) {
+      const lengthSec =
+        audio.duration && isFinite(audio.duration)
+          ? audio.duration + baseOffsetRef.current
+          : currentTrack.durationMs
+            ? currentTrack.durationMs / 1000
+            : 0;
+      const threshold = lengthSec > 0 ? Math.min(lengthSec / 2, 240) : 240;
+      if (trackTime >= threshold) {
+        scrobbledRef.current = currentTrack.id;
+        scrobble(currentTrack.id).catch(() => {});
+      }
     }
-  }, [setCurrentTime]);
+  }, [setCurrentTime, currentTrack]);
 
   const handleLoadedMetadata = useCallback(() => {
     const audio = audioRef.current;
@@ -555,6 +581,8 @@ export function PlayerBar() {
   }, [setDuration, setCurrentTime]);
 
   const handleEnded = useCallback(() => {
+    // Allow the next play (incl. repeat-one replay of the same id) to scrobble.
+    scrobbledRef.current = null;
     next();
   }, [next]);
 

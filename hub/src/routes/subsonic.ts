@@ -238,6 +238,38 @@ function annotateStarred<T extends { id: string }>(
   }
 }
 
+// ── Play-count annotation helper (#197) ───────────────────────────────────────
+// Mirrors annotateStarred: post-fetch lookup that mutates already-built Subsonic
+// objects with the requesting user's `playCount` + `played` (last-played ISO).
+// Per-user counts (Subsonic spec). Only set when the user has plays, matching
+// how `starred` is omitted when absent. Encoded ids (`<prefix><uuid>`) are
+// stripped to match the unified id stored in play_events.
+function annotatePlays<T extends { id: string }>(
+  playEvents: import("../services/play-events.js").PlayEventService,
+  userId: string | undefined,
+  kind: "track" | "album",
+  prefix: string,
+  items: T[],
+): void {
+  if (!userId || items.length === 0) return;
+  const rawIds = items.map((it) =>
+    it.id.startsWith(prefix) ? it.id.slice(prefix.length) : it.id,
+  );
+  const stats =
+    kind === "track"
+      ? playEvents.getTrackStats(userId, rawIds)
+      : playEvents.getAlbumStats(userId, rawIds);
+  if (stats.size === 0) return;
+  for (let i = 0; i < items.length; i++) {
+    const s = stats.get(rawIds[i]);
+    if (s && s.playCount > 0) {
+      const item = items[i] as T & { playCount?: number; played?: string };
+      item.playCount = s.playCount;
+      if (s.played) item.played = s.played;
+    }
+  }
+}
+
 function buildAlbum(row: ReleaseGroupRow) {
   return {
     id: encodeId("al", row.id),
@@ -580,6 +612,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const builtAlbums = albums.map(buildAlbum);
     annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
+    annotatePlays(app.playEvents, request.subsonicUser?.id, "album", "al", builtAlbums);
     const artistObj: {
       id: string;
       name: string;
@@ -703,6 +736,26 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     let where = "WHERE 1=1";
     const params: unknown[] = [];
 
+    // #197: type=frequent / type=recent rank by the requesting user's play
+    // history. A LEFT JOIN onto per-release-group aggregates lets us order by
+    // play count / last-played and (for these two types) exclude never-played
+    // albums — matching how Subsonic clients expect "frequent"/"recent". The
+    // join's `?` (user id) is the first bound param, so it's prepended below.
+    const usePlayJoin = type === "frequent" || type === "recent";
+    const playJoin = usePlayJoin
+      ? `LEFT JOIN (
+           SELECT ur2.release_group_id AS rg,
+                  COUNT(*) AS play_count,
+                  MAX(pe.played_at) AS last_played
+           FROM play_events pe
+           JOIN unified_tracks ut2 ON ut2.id = pe.unified_track_id
+           JOIN unified_releases ur2 ON ur2.id = ut2.release_id
+           WHERE pe.user_id = ?
+           GROUP BY ur2.release_group_id
+         ) pc ON pc.rg = urg.id`
+      : "";
+    const joinParams: unknown[] = usePlayJoin ? [request.subsonicUser.id] : [];
+
     // type=starred — restrict to albums starred by the requesting user. (#104)
     if (type === "starred") {
       where +=
@@ -755,7 +808,18 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       case "starred":
         orderBy = "urg.name_normalized ASC";
         break;
-      // frequent, recent, highest — fall back to newest (no play tracking yet)
+      case "frequent":
+        // Most-played first; restrict to albums the user has actually played.
+        where += " AND pc.play_count IS NOT NULL";
+        orderBy = "pc.play_count DESC, pc.last_played DESC";
+        break;
+      case "recent":
+        // Most-recently-played first; played albums only. SQLite sorts NULLs
+        // last under DESC, but the WHERE already excludes the never-played.
+        where += " AND pc.play_count IS NOT NULL";
+        orderBy = "pc.last_played DESC";
+        break;
+      // highest (ratings) — not tracked; fall back to newest.
       default:
         orderBy = "urg.created_at DESC";
         break;
@@ -770,6 +834,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           COUNT(ut.id) AS songCount
         FROM unified_release_groups urg
         JOIN unified_artists ua ON ua.id = urg.artist_id
+        ${playJoin}
         LEFT JOIN unified_releases ur ON ur.release_group_id = urg.id
         LEFT JOIN unified_tracks ut ON ut.release_id = ur.id
         ${where}
@@ -777,10 +842,11 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         ORDER BY ${orderBy}
         LIMIT ? OFFSET ?`,
       )
-      .all(...params) as ReleaseGroupRow[];
+      .all(...joinParams, ...params) as ReleaseGroupRow[];
 
     const builtAlbums = albums.map(buildAlbum);
     annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
+    annotatePlays(app.playEvents, request.subsonicUser?.id, "album", "al", builtAlbums);
     sendSubsonicOk(reply, q, { albumList2: { album: builtAlbums } });
   });
 
@@ -871,6 +937,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const builtSongs = tracks.map(buildSong);
     annotateStarred(app.db, request.subsonicUser?.id, "track", "t", builtSongs);
+    annotatePlays(app.playEvents, request.subsonicUser?.id, "track", "t", builtSongs);
     const albumObj: {
       id: string;
       name: string;
@@ -885,6 +952,8 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       song: ReturnType<typeof buildSong>[];
       starred?: string;
       created?: string;
+      playCount?: number;
+      played?: string;
     } = {
       id: encodeId("al", rg.id),
       name: rg.name,
@@ -900,6 +969,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       created: rg.created_at ? sqliteToIso(rg.created_at) : undefined,
     };
     annotateStarred(app.db, request.subsonicUser?.id, "album", "al", [albumObj]);
+    annotatePlays(app.playEvents, request.subsonicUser?.id, "album", "al", [albumObj]);
     sendSubsonicOk(reply, q, {
       album: albumObj,
     });
@@ -951,6 +1021,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const built = buildSong(row);
     annotateStarred(app.db, request.subsonicUser?.id, "track", "t", [built]);
+    annotatePlays(app.playEvents, request.subsonicUser?.id, "track", "t", [built]);
     sendSubsonicOk(reply, q, { song: built });
   });
 
@@ -1090,6 +1161,8 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     annotateStarred(app.db, request.subsonicUser?.id, "artist", "ar", builtArtists);
     annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
     annotateStarred(app.db, request.subsonicUser?.id, "track", "t", builtSongs);
+    annotatePlays(app.playEvents, request.subsonicUser?.id, "album", "al", builtAlbums);
+    annotatePlays(app.playEvents, request.subsonicUser?.id, "track", "t", builtSongs);
     sendSubsonicOk(reply, q, {
       searchResult3: {
         artist: builtArtists,
@@ -1341,6 +1414,7 @@ try {
     streamOpId = app.streamTracking.start({
       kind: streamKind,
       username: request.subsonicUser.username,
+      userId: request.subsonicUser.id,
       trackId: trackRow.id,
       trackTitle: trackRow.title,
       artistName: trackRow.artist_name,
@@ -1555,6 +1629,17 @@ try {
       TrackRow & { starred_at: string }
     >;
 
+    const album = albums.map((a) => ({
+      ...buildAlbum(a),
+      starred: sqliteToIso(a.starred_at),
+    }));
+    const song = songs.map((s) => ({
+      ...buildSong(s),
+      starred: sqliteToIso(s.starred_at),
+    }));
+    annotatePlays(app.playEvents, userId, "album", "al", album);
+    annotatePlays(app.playEvents, userId, "track", "t", song);
+
     return {
       artist: artists.map((a) => ({
         id: encodeId("ar", a.id),
@@ -1563,14 +1648,8 @@ try {
         coverArt: a.image_url ?? undefined,
         starred: sqliteToIso(a.starred_at),
       })),
-      album: albums.map((a) => ({
-        ...buildAlbum(a),
-        starred: sqliteToIso(a.starred_at),
-      })),
-      song: songs.map((s) => ({
-        ...buildSong(s),
-        starred: sqliteToIso(s.starred_at),
-      })),
+      album,
+      song,
     };
   }
 
@@ -1614,11 +1693,55 @@ try {
     sendSubsonicError(reply, 0, "Generic error: not yet implemented", q);
   });
 
-  // ── Scrobble stubs ──────────────────────────────────────────────────────────
-
+  // ── Scrobble (#197) ───────────────────────────────────────────────────────
+  // Canonical play-recording signal for client-driven playback (the SPA and
+  // 3rd-party Subsonic apps). `submission=true` (the default) records a play;
+  // `submission=false` is a "now playing" notification and is not counted.
+  // Accepts one or many `id`. Unknown / malformed ids are skipped silently so a
+  // batch with one bad id still records the rest — matching Subsonic leniency.
+  // Server-driven surfaces (Sonos cast, DLNA) never reach this path; they are
+  // recorded from the stream proxy on finish (StreamTrackingService) to avoid
+  // double-counting the SPA, which both streams AND scrobbles.
   route("/scrobble", async (request, reply) => {
-    const q = request.query as Record<string, string>;
-    sendSubsonicOk(reply, q, {});
+    const q = request.query as Record<string, string | string[] | undefined>;
+    const submission = q.submission == null ? true : String(q.submission) !== "false";
+
+    if (submission) {
+      const ids = (Array.isArray(q.id) ? q.id : q.id != null ? [q.id] : []).map(
+        String,
+      );
+      for (const encoded of ids) {
+        let trackId: string;
+        try {
+          trackId = decodeId(encoded, "t");
+        } catch {
+          continue; // not a track id — skip, don't fail the batch
+        }
+        // Only record plays of tracks this hub actually knows about; ignore
+        // unknown ids so a stale/garbage id can't pollute the history.
+        const track = app.db
+          .prepare("SELECT 1 FROM unified_tracks WHERE id = ?")
+          .get(trackId);
+        if (!track) continue;
+        // Attribute to the source we'd stream from (preferred source), local or
+        // peer. Best-effort: a known track with no source row records as null.
+        const src = app.db
+          .prepare(
+            `SELECT instance_id FROM track_sources
+             WHERE unified_track_id = ?
+             ORDER BY preferred DESC, instance_id = 'local' DESC LIMIT 1`,
+          )
+          .get(trackId) as { instance_id: string } | undefined;
+        app.playEvents.record({
+          userId: request.subsonicUser.id,
+          unifiedTrackId: trackId,
+          sourceInstanceId: src?.instance_id ?? null,
+          clientName: typeof q.c === "string" ? q.c : null,
+        });
+      }
+    }
+
+    sendSubsonicOk(reply, q as Record<string, string>, {});
   });
 
   route("/getNowPlaying", async (request, reply) => {

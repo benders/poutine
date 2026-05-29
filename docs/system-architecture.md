@@ -141,6 +141,7 @@ Phase 3 (#217) migrates Player-owned rows out of `hub.db.settings` into `player.
 | `user_stars`                           | Per-user stars (artist/album/track unified IDs)                  |
 | `art_cache`                            | LRU on-disk cache for cover art + external artwork               |
 | `sync_operations`, `stream_operations` | Per-peer sync state + recent stream activity                     |
+| `play_events`                          | Durable per-user play history (Subsonic `playCount`/`played`, #197) |
 
 ## Play flow
 

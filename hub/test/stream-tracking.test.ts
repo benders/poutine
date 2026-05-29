@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
 import { StreamTrackingService } from "../src/services/stream-tracking.js";
+import { PlayEventService } from "../src/services/play-events.js";
 
 function tmpDbPath() {
   return path.join(
@@ -170,6 +171,83 @@ describe("StreamTrackingService", () => {
 
       const ids = (db.prepare("SELECT id FROM stream_operations").all() as Array<{ id: string }>).map((r) => r.id);
       expect(ids).toContain(active);
+    });
+  });
+
+  // #197: server-driven surfaces (cast / dlna) record a play_events row on
+  // finish; client-driven kinds (subsonic / proxy) do not (the SPA / 3rd-party
+  // client scrobbles instead). A tiny track duration makes the threshold
+  // trivially met so we exercise the wiring without faking elapsed time.
+  describe("play-events recording on finish (#197)", () => {
+    let playEvents: PlayEventService;
+    let trackedService: StreamTrackingService;
+
+    beforeEach(() => {
+      db.exec(`
+        CREATE TABLE unified_tracks (id TEXT PRIMARY KEY, duration_ms INTEGER);
+        CREATE TABLE play_events (
+          id TEXT PRIMARY KEY, user_id TEXT NOT NULL, unified_track_id TEXT NOT NULL,
+          source_instance_id TEXT, played_at TEXT, duration_played_ms INTEGER, client_name TEXT
+        );
+        CREATE TABLE unified_releases (id TEXT PRIMARY KEY, release_group_id TEXT);
+      `);
+      db.prepare("INSERT INTO unified_tracks (id, duration_ms) VALUES ('t-uuid', 1)").run();
+      playEvents = new PlayEventService(db);
+      trackedService = new StreamTrackingService(db, playEvents);
+    });
+
+    function playCount(): number {
+      return (db.prepare("SELECT COUNT(*) AS n FROM play_events").get() as { n: number }).n;
+    }
+
+    it("records a play for a cast stream", () => {
+      const id = trackedService.start(
+        makeStart({ kind: "cast", userId: "user-1", trackId: "t-uuid", sourceKind: "local" }),
+      );
+      trackedService.finish(id, 1000, null);
+      expect(playCount()).toBe(1);
+      const row = db.prepare("SELECT * FROM play_events").get() as any;
+      expect(row.user_id).toBe("user-1");
+      expect(row.unified_track_id).toBe("t-uuid");
+      expect(row.source_instance_id).toBe("local");
+      expect(row.client_name).toBe("cast");
+    });
+
+    it("records a peer source instance for a dlna stream", () => {
+      const id = trackedService.start(
+        makeStart({
+          kind: "dlna",
+          userId: "user-1",
+          trackId: "t-uuid",
+          sourceKind: "peer",
+          sourcePeerId: "peerB",
+        }),
+      );
+      trackedService.finish(id, 1000, null);
+      const row = db.prepare("SELECT * FROM play_events").get() as any;
+      expect(row.source_instance_id).toBe("peerB");
+    });
+
+    it("does NOT record for subsonic kind (client scrobbles instead)", () => {
+      const id = trackedService.start(
+        makeStart({ kind: "subsonic", userId: "user-1", trackId: "t-uuid" }),
+      );
+      trackedService.finish(id, 1000, null);
+      expect(playCount()).toBe(0);
+    });
+
+    it("does NOT record on errored finish", () => {
+      const id = trackedService.start(
+        makeStart({ kind: "cast", userId: "user-1", trackId: "t-uuid" }),
+      );
+      trackedService.finish(id, 0, "Stream error");
+      expect(playCount()).toBe(0);
+    });
+
+    it("does NOT record when no user id is attached", () => {
+      const id = trackedService.start(makeStart({ kind: "cast", trackId: "t-uuid" }));
+      trackedService.finish(id, 1000, null);
+      expect(playCount()).toBe(0);
     });
   });
 

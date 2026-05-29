@@ -32,6 +32,8 @@ Every `unified_*` insert in `merge.ts` logs the offending row + prior `existingR
 | Caching Navidrome's "missing cover" XML envelope as if it were an image                                           | recurring | Validate content-type + magic bytes before writing to `art_cache`                                   |
 | Not honoring caller transcode params when recording proxy stream activity                                         | recurring | Use the resolved params (after `buildStreamParams`), not the raw request                            |
 | Assuming Subsonic `timeOffset` works on raw pass-through streams                                                  | #204      | `timeOffset` is only applied when transcoding — on raw streams it's silently ignored. Seek raw streams via HTTP Range / SOAP Seek instead |
+| Recording a play for BOTH the `/rest/scrobble` call and the `/rest/stream` finish                                 | #197      | Double-counts the SPA (it streams *and* scrobbles). Scrobble records `subsonic`/`proxy`; `StreamTrackingService.finish()` records only `cast`/`dlna`. Never widen either side. New play-recording surfaces pick exactly one path. |
+| Reading play counts from the backing Navidrome instead of `play_events`                                            | #197      | Navidrome's counts are siloed per-hub and miss peer media. `play_events` is the canonical, federation-wide, per-user source of truth — go through `PlayEventService`. |
 
 Endpoint coverage detail: [opensubsonic.md](opensubsonic.md).
 

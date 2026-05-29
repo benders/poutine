@@ -85,7 +85,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | Endpoint          | Status          | Notes                                                                                          |
 |-------------------|-----------------|------------------------------------------------------------------------------------------------|
 | `getAlbumList`    | NOT IMPLEMENTED |                                                                                                |
-| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`, `starred` (per-user, issue #104). Honors standard `musicFolderId` (resolved via `instances.musicfolder_id`). **EOL alias:** `instanceId=<local\|peerId>` filters by raw instance UUID — kept for in-tree callers mid-migration; do not adopt in new code, scheduled for removal. Unknown `musicFolderId` returns an empty list. |
+| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`, `starred` (per-user, issue #104), and `frequent`/`recent` (per-user play history, issue #197 — both exclude never-played albums). `highest` falls back to `newest` (no ratings). Honors standard `musicFolderId` (resolved via `instances.musicfolder_id`). **EOL alias:** `instanceId=<local\|peerId>` filters by raw instance UUID — kept for in-tree callers mid-migration; do not adopt in new code, scheduled for removal. Unknown `musicFolderId` returns an empty list. |
 | `getRandomSongs`  | NOT IMPLEMENTED |                                                                                                |
 | `getSongsByGenre` | NOT IMPLEMENTED |                                                                                                |
 | `getNowPlaying`   | Stub            | Always returns an empty list                                                                   |
@@ -130,7 +130,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | `star`      | Implemented     | Per-user; accepts `id`, `albumId`, `artistId` (each may repeat). Kind classified by id prefix. (#104)  |
 | `unstar`    | Implemented     | Mirror of `star`. Idempotent — unstarring a non-starred entity is a no-op. (#104)                      |
 | `setRating` | NOT IMPLEMENTED |                                                                                                        |
-| `scrobble`  | Stub            | No-op; always returns success                                                                          |
+| `scrobble`  | Implemented     | Records a per-user play in `play_events` (#197). `submission=true` (default) counts; `submission=false` is a now-playing notification and is ignored. Accepts one or many `id`; unknown/malformed ids are skipped so a batch still records the rest. Server-driven surfaces (Sonos cast, DLNA) never scrobble — they are recorded from the stream proxy on finish. |
 
 Album / artist / song objects returned by `getAlbum`, `getArtist`,
 `getAlbumList2`, `getSong`, and `search3` carry an ISO 8601 `starred`
@@ -144,6 +144,22 @@ Album objects returned by `getAlbum`, `getAlbumList2`, `getArtist`, and
 timestamp of when the album first appeared on this hub (via Navidrome
 sync or federation). `getAlbumList2?type=newest` orders by this value
 DESC; the SPA "Recently Added" sort uses it client-side as well.
+
+### Play counts: `playCount` / `played` (#197)
+
+Song and album objects returned by `getSong`, `getAlbum`, `getAlbumList2`,
+`getArtist`, `search3`, and the starred endpoints carry a per-user
+`playCount` (integer) and `played` (ISO 8601 last-play timestamp) when the
+requesting user has played that target. Both fields are **omitted** when the
+count is zero (mirroring how `starred` is omitted when absent). Album
+`playCount` is the sum of plays across the album's tracks; `played` is the
+album's most-recent track play.
+
+Counts are **per-user** (Subsonic spec), durable, and span the merged catalog
+(local + peer media) — they are sourced from `play_events`, not from the
+backing Navidrome's own counts. See [hub-internals.md](hub-internals.md#play-counts-197)
+for how plays are recorded (client scrobble vs. server-driven cast/DLNA) and
+the known cast/DLNA approximation.
 
 ### Song `albumArtist` / `albumArtistId` (#138)
 

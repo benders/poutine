@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { PlayEventService } from "./play-events.js";
 
 export type StreamKind = "subsonic" | "proxy" | "cast" | "dlna";
 export type SourceKind = "local" | "peer";
@@ -6,6 +7,12 @@ export type SourceKind = "local" | "peer";
 export interface StreamStartOptions {
   kind: StreamKind;
   username: string;
+  /**
+   * Resolved user id (users.id). Carried so server-driven plays (cast / dlna)
+   * can be attributed in play_events on finish (#197). Optional because some
+   * activity rows (e.g. peer proxy) have no local user.
+   */
+  userId?: string | null;
   trackId: string;
   trackTitle: string;
   artistName: string;
@@ -57,7 +64,10 @@ export class StreamTrackingService {
   private active = new Map<string, ActiveEntry>();
   private maxRows = 10000;
 
-  constructor(private readonly db: Database.Database) {}
+  constructor(
+    private readonly db: Database.Database,
+    private readonly playEvents?: PlayEventService,
+  ) {}
 
   setMaxRows(n: number): void {
     this.maxRows = Math.max(0, Math.floor(n));
@@ -119,6 +129,8 @@ export class StreamTrackingService {
     bytesTransferred: number | null = null,
     error: string | null = null,
   ): void {
+    const entry = this.active.get(operationId);
+
     this.db
       .prepare(
         `UPDATE stream_operations
@@ -129,6 +141,33 @@ export class StreamTrackingService {
          WHERE id = ?`,
       )
       .run(bytesTransferred, error, operationId);
+
+    // #197: record a play for server-driven surfaces (Sonos cast, DLNA). These
+    // have no client to call /rest/scrobble, so the stream connection lifetime
+    // is our best-effort signal. Client-driven kinds (subsonic / proxy) are
+    // counted via the scrobble endpoint instead, so we skip them here to avoid
+    // double-counting. The wall-clock duration can under-report when a renderer
+    // buffers ahead of playback — accepted limitation for v1 (see docs).
+    if (
+      entry &&
+      !error &&
+      this.playEvents &&
+      entry.opts.userId &&
+      (entry.opts.kind === "cast" || entry.opts.kind === "dlna")
+    ) {
+      const playedMs = Date.now() - entry.startedAt.getTime();
+      const sourceInstanceId =
+        entry.opts.sourceKind === "peer"
+          ? (entry.opts.sourcePeerId ?? null)
+          : "local";
+      this.playEvents.recordIfThreshold({
+        userId: entry.opts.userId,
+        unifiedTrackId: entry.opts.trackId,
+        sourceInstanceId,
+        durationPlayedMs: playedMs,
+        clientName: entry.opts.kind,
+      });
+    }
 
     this.active.delete(operationId);
     this.pruneToCount();

@@ -143,6 +143,21 @@ Streams and syncs are recorded in `stream_operations` and `sync_operations`. Sur
 - **Retention** is count-based via `settings.activity_history_max_events` (default 10000), exposed as `GET/PUT /admin/settings/activity`. `pruneToCount()` runs after every `finish()`. Stream pruning excludes rows with `finished_at IS NULL` so an in-flight stream's row is never deleted out from under its eventual `finish()` UPDATE.
 - **API**: `GET /admin/activity/active` (active streams + running syncs), `GET /admin/activity/history?kinds=stream,sync&limit=N` (combined timeline), `DELETE /admin/activity` (clear both), `GET /admin/activity/summary` (dashboard counters).
 
+## Play counts (#197)
+
+Canonical, federation-wide play history. **Distinct from activity tracking:**
+`stream_operations` is an ephemeral operational feed (pruned to a cap, clearable
+from the Activity page); `play_events` is durable and never pruned, and is the
+source of truth for Subsonic `playCount` / `played`.
+
+- **Table `play_events`** (`hub/src/db/schema.sql`): `user_id` (FK → users), `unified_track_id`, `source_instance_id` (`local` | peer id | NULL), `played_at` (millisecond precision via `strftime('%f')` so `type=recent` ordering is stable within a second), `duration_played_ms`, `client_name`. **No FK on `unified_track_id`** — the `unified_*` tables are rebuilt on every merge, so a row can outlive its track; orphans are dropped at read time via JOIN, exactly as `user_stars` does. Counts are **per-user** (Subsonic spec).
+- **`PlayEventService`** (`hub/src/services/play-events.ts`): `record()` (unconditional), `recordIfThreshold()` (Last.fm-style gate: ≥ half the track, capped at 4 min; 4-min floor when track length is unknown), and `getTrackStats()` / `getAlbumStats()` (per-user aggregates; album = sum of its tracks' plays, last-played = max). Projected into Subsonic responses by the `annotatePlays` helper in `routes/subsonic.ts` (mirrors `annotateStarred`).
+- **Two recording paths, deliberately non-overlapping to avoid double-counting:**
+  - *Client-driven playback* (SPA + 3rd-party Subsonic apps) → `POST /rest/scrobble?submission=true`. The SPA fires this once per play from `PlayerBar` when local playback crosses the threshold. `subsonic` / `proxy` stream kinds are **not** auto-recorded, since those clients stream *and* scrobble.
+  - *Server-driven playback* (Sonos cast, DLNA) → recorded from `StreamTrackingService.finish()` for `kind` ∈ {`cast`, `dlna`} only, because no client is in the loop to scrobble. Requires a resolved `userId` on the stream op.
+- **Known limitation (cast/DLNA):** the played-duration signal is the stream *connection lifetime* (wall clock), not true playback position. A renderer that buffers far ahead of playback can under-report and miss the threshold; one that holds the connection open after stopping can over-count. Accepted for v1 — there is no playback-position callback from these devices.
+- **Out of scope for v1 (tracked separately):** Navidrome play-history backfill, and federating aggregate counts between peers.
+
 ## Share IDs
 
 Users copy a "Share ID" for an album or artist from its detail page and paste it into Search on any peer hub that also syncs the same underlying library.
