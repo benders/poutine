@@ -33,12 +33,12 @@ external clients cannot feature-detect and must guess.
 | **P0**   | `formPost`                         | Long signed peer URLs + DLNA Search query payloads            |
 | **P0**   | `songLyrics` extras on Song        | DLNA + future Player lyrics view                              |
 | **P1**   | `transcodeOffset` / time-offset    | Already implemented (#109); just advertise                    |
-| **P1**   | OpenSubsonic Song fields (`mediaType`, `bitDepth`, `samplingRate`, `channelCount`, `genres[]`, `replayGain`, `musicBrainzId`, `bpm`, `comment`, `sortName`, `played`, `playCount`) | DLNA ContentDirectory + Sonos didl-lite + Player UI |
-| **P1**   | OpenSubsonic Album fields (`isCompilation`, `discTitles`, `releaseTypes`, `recordLabels`, `moods`, `originalReleaseDate`, `releaseDate`, `sortName`, `genres[]`, `played`, `playCount`, `userRating`) | DLNA browsing + Player album header                       |
+| **P1**   | OpenSubsonic Song fields (`mediaType`, `bitDepth`, `samplingRate`, `channelCount`, `genres[]`, `replayGain`, `musicBrainzId`, `bpm`, `comment`, `sortName`) — `played`/`playCount` DONE (#197) | DLNA ContentDirectory + Sonos didl-lite + Player UI |
+| **P1**   | OpenSubsonic Album fields (`isCompilation`, `discTitles`, `releaseTypes`, `recordLabels`, `moods`, `originalReleaseDate`, `releaseDate`, `sortName`, `genres[]`, `userRating`) — `played`/`playCount` DONE (#197) | DLNA browsing + Player album header                       |
 | **P1**   | OpenSubsonic Artist fields (`sortName`, `roles`, `musicBrainzId`)                | Player artist header + DLNA tree                              |
 | **P1**   | `apiKeyAuthentication`             | Long-lived Player→Hub token without re-using user password    |
 | **P2**   | `getPlayQueue` / `savePlayQueue`   | Per-device queue handoff (browser ↔ Sonos ↔ DLNA)             |
-| **P2**   | Scrobble extension (`time`, `submission`, `duration_ms`) | Lossless activity ingest from Player → Hub      |
+| ~~P2~~ DONE (#197) | Scrobble extension (`time`, `submission`)      | Lossless activity ingest from Player → Hub — real per-user `play_events` |
 | **P2**   | `getLyricsBySongId` (structured lyrics) | Player lyrics view (Symfonium, SuperSonic already consume it)  |
 | **P2**   | `search3` paging (`*Offset`, `*Count`) | Already partially supported; document + verify for DLNA Search |
 | **P3**   | `indexBasedQueue` / multi-disc `discTitles` | Box-set rendering                                       |
@@ -115,7 +115,7 @@ OpenSubsonic adds (beyond stock Subsonic):
 | `genres[]`       | already aggregated in unified tracks      | Multi-genre — stock Subsonic only carries first         |
 | `replayGain`     | object: `trackGain`, `albumGain`, `trackPeak`, `albumPeak`, `fallbackGain` | **Critical for Sonos/DLNA stream loudness consistency** |
 | `musicBrainzId`  | already in unified tracks                 | External lookups, scrobblers                            |
-| `played` / `playCount` | per-user — needs activity store     | Player "recently played" + DLNA browse                  |
+| ~~`played` / `playCount`~~ DONE (#197) | per-user `play_events`      | Already emitted on Song; see `docs/opensubsonic.md` "Play counts" |
 | `userRating`     | per-user — needs ratings (issue: not impl)| Player UI                                               |
 
 **Why it helps:** Bulk-emitting these makes the Subsonic boundary
@@ -124,7 +124,8 @@ synthesize approximations) and Sonos metadata. `replayGain` in particular
 removes the only justification for inventing a private endpoint for loudness
 hints.
 
-**Hub today:** None of these emitted. Most are available in
+**Hub today:** `played`/`playCount` emitted as of #197 (per-user, from
+`play_events`). The rest are not emitted; most are available in
 `unified_tracks` / `track_sources` already (or trivially fetchable from the
 source Navidrome via `getSong`).
 
@@ -147,7 +148,7 @@ Navidrome.
 | `releaseDate`               | Different from original on reissues                            |
 | `sortName`                  | Alphabetisation                                                |
 | `genres[]`                  | Already aggregated; multi-genre                                |
-| `played` / `playCount`      | Recently-played row                                            |
+| ~~`played` / `playCount`~~ DONE (#197) | Recently-played row — already emitted on Album      |
 | `userRating`                | Album rating                                                   |
 
 **Why it helps:** ContentDirectory.Browse currently flattens box sets into one
@@ -207,14 +208,14 @@ endpoint. This is the cleanest way to do device handoff over the Subsonic wire.
 Storage is trivial; the interesting work is reconciliation across cast
 targets, which is Player's #212 problem regardless.
 
-### P2 — Scrobble extension
+### P2 — Scrobble extension — DONE (#197)
 
 **Link:** OpenSubsonic clarifies `submission=true` semantics + accepts `time`
 (epoch ms) for backfilled plays.
 
 **What:** Vanilla `scrobble` takes only `id` + `submission`; OpenSubsonic
 documents `time` as epoch ms (matters for DLNA/Sonos where the play started
-before the call) and many servers accept a `duration_ms`.
+before the call).
 
 **Why it helps:** Activity ingest from Player → Hub goes via `scrobble` (per
 #214 brief). DLNA has no concept of nowPlaying; Sonos reports completion
@@ -222,10 +223,14 @@ asynchronously. Without `time` Hub loses fidelity on when the play actually
 happened. Adopting the extension means activity log is accurate without
 inventing `/api/activity/log`.
 
-**Hub today:** Stub. Receives the call but discards. No `activity` table yet.
+**Hub today:** Implemented as of #197. `scrobble` records a per-user play in
+`play_events`, honors `submission` (only `true` counts; `false` now-playing is
+ignored) and the optional `time` (epoch ms) backfill, and accepts batched
+`id`s. See `docs/opensubsonic.md` "Media annotation" + "Play counts".
 
-**Effort:** **M** — `activity` table, real handling, expose in
-`getNowPlaying`.
+**Remaining:** `getNowPlaying` is still a stub (always empty) — wiring it from
+the scrobble now-playing signal is tracked separately. `duration_ms` is not
+accepted (not needed for current play-count semantics).
 
 ### P2 — `getLyricsBySongId` (covered under P0 lyrics)
 
@@ -255,7 +260,7 @@ errors when the endpoint 404s. Returning an empty list (similar to current
 | Sonos didl-lite metadata + loudness                   | `replayGain`, Song fields, lyrics                 |
 | Player BE auth back to Hub (no shared password)       | `apiKeyAuthentication`                            |
 | Cast transcoding choices (`format`, `maxBitRate`)     | Already in vanilla; advertise via extensions      |
-| Activity ingest from Player and devices               | Scrobble extension (`time`, `submission`)         |
+| Activity ingest from Player and devices               | Scrobble extension (`time`, `submission`) — DONE (#197) |
 | Player UI feature-detection                           | `getOpenSubsonicExtensions`                       |
 | Browsing search from external Subsonic clients        | `search3` paging                                  |
 
@@ -272,11 +277,13 @@ errors when the endpoint 404s. Returning an empty list (similar to current
    mapper change + one schema migration. Done piecemeal it is N flag days for
    Player.
 
-3. **Implement `getPlayQueue` / `savePlayQueue` + the scrobble extension as
-   the per-device-state pair.** These two together let Player keep its
-   "queue / now-playing per device" responsibility entirely on the Subsonic
-   wire — no private device-state endpoints required. They are also the
-   pre-requisite for the Player↔Sonos↔DLNA handoff story.
+3. **Implement `getPlayQueue` / `savePlayQueue` as the per-device-state
+   piece.** The scrobble half of this pair is already done (#197); combined
+   with a server-side play queue, Player keeps its "queue / now-playing per
+   device" responsibility entirely on the Subsonic wire — no private
+   device-state endpoints required. This is the pre-requisite for the
+   Player↔Sonos↔DLNA handoff story. Wiring `getNowPlaying` off the scrobble
+   now-playing signal is the small companion task.
 
 Anything below P2 can wait until the boundary refactor (#212) is complete and
 we know what Player actually needs.
