@@ -62,6 +62,11 @@ interface ReleaseGroupRow {
   // local hub DB (via Navidrome sync or peer federation). Drives the
   // OpenSubsonic `created` field and the "Recently Added" sort (#148).
   created_at?: string | null;
+  // Present only on the getAlbumList2 frequent/recent playJoin: the user's
+  // per-album play aggregate, reused for playCount/played to avoid a second
+  // pass over play_events (#197).
+  play_count?: number | null;
+  last_played?: string | null;
 }
 
 interface TrackRow {
@@ -755,6 +760,10 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
          ) pc ON pc.rg = urg.id`
       : "";
     const joinParams: unknown[] = usePlayJoin ? [request.subsonicUser.id] : [];
+    // Reuse the playJoin's aggregate for playCount/played instead of a second
+    // pass via getAlbumStats (#197). Functionally dependent on urg.id (one pc
+    // row per release group), so safe under GROUP BY urg.id.
+    const playCols = usePlayJoin ? ", pc.play_count, pc.last_played" : "";
 
     // type=starred — restrict to albums starred by the requesting user. (#104)
     if (type === "starred") {
@@ -833,7 +842,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       .prepare(
         `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
           urg.year, urg.genre, urg.image_url, urg.created_at,
-          COUNT(ut.id) AS songCount
+          COUNT(ut.id) AS songCount${playCols}
         FROM unified_release_groups urg
         JOIN unified_artists ua ON ua.id = urg.artist_id
         ${playJoin}
@@ -848,7 +857,24 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const builtAlbums = albums.map(buildAlbum);
     annotateStarred(app.db, request.subsonicUser?.id, "album", "al", builtAlbums);
-    annotatePlays(app.playEvents, request.subsonicUser?.id, "album", "al", builtAlbums);
+    if (usePlayJoin) {
+      // frequent/recent: the playJoin already computed each album's play
+      // aggregate for this page — reuse it instead of re-querying getAlbumStats
+      // (#197). Same per-user, source-agnostic count, same ISO conversion.
+      for (let i = 0; i < albums.length; i++) {
+        const count = albums[i].play_count;
+        if (count != null && count > 0) {
+          const a = builtAlbums[i] as (typeof builtAlbums)[number] & {
+            playCount?: number;
+            played?: string;
+          };
+          a.playCount = count;
+          if (albums[i].last_played) a.played = sqliteToIso(albums[i].last_played!);
+        }
+      }
+    } else {
+      annotatePlays(app.playEvents, request.subsonicUser?.id, "album", "al", builtAlbums);
+    }
     sendSubsonicOk(reply, q, { albumList2: { album: builtAlbums } });
   });
 

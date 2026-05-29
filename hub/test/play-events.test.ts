@@ -161,7 +161,9 @@ describe("scrobble + play counts (#197)", () => {
       playCount?: number;
     }>;
     expect(albums.map((a) => a.id)).toEqual([`al${RG2_ID}`, `al${RG1_ID}`]);
+    // playCount comes from the playJoin aggregate reused for display (#197).
     expect(albums[0].playCount).toBe(2);
+    expect(albums[1].playCount).toBe(1);
   });
 
   it("getAlbumList2 type=recent orders by last play and excludes never-played", async () => {
@@ -176,9 +178,14 @@ describe("scrobble + play counts (#197)", () => {
       method: "GET",
       url: `/rest/getAlbumList2?${QS}&type=recent&size=10`,
     });
-    const albums = res.json()["subsonic-response"].albumList2.album as Array<{ id: string }>;
+    const albums = res.json()["subsonic-response"].albumList2.album as Array<{
+      id: string;
+      played?: string;
+    }>;
     expect(albums).toHaveLength(2);
     expect(albums[0].id).toBe(`al${RG2_ID}`);
+    // `played` (last-play ISO) also comes from the reused playJoin aggregate.
+    expect(albums[1].played).toMatch(/^2020-01-01T00:00:00/);
   });
 
   it("never-played tracks carry no playCount field", async () => {
