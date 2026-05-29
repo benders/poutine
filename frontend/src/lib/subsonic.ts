@@ -459,6 +459,16 @@ export async function scrobble(
   });
 }
 
+/**
+ * Last.fm-style scrobble threshold (#197): a play counts once the listener has
+ * heard at least half the track, capped at 4 minutes. Falls back to the 4-min
+ * cap when the track length is unknown. Shared by the local <audio> and Sonos
+ * playback paths so both surfaces count plays on identical rules.
+ */
+export function scrobbleThresholdSec(trackLenSec: number): number {
+  return trackLenSec > 0 ? Math.min(trackLenSec / 2, 240) : 240;
+}
+
 export async function getStarred2(): Promise<SubsonicStarred> {
   const sr = await subsonicFetch<{
     starred2: {

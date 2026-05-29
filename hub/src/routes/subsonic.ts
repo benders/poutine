@@ -810,14 +810,16 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
         break;
       case "frequent":
         // Most-played first; restrict to albums the user has actually played.
+        // urg.id breaks ties so LIMIT/OFFSET paging is stable across windows.
         where += " AND pc.play_count IS NOT NULL";
-        orderBy = "pc.play_count DESC, pc.last_played DESC";
+        orderBy = "pc.play_count DESC, pc.last_played DESC, urg.id";
         break;
       case "recent":
         // Most-recently-played first; played albums only. SQLite sorts NULLs
         // last under DESC, but the WHERE already excludes the never-played.
+        // urg.id breaks ties so LIMIT/OFFSET paging is stable across windows.
         where += " AND pc.play_count IS NOT NULL";
-        orderBy = "pc.last_played DESC";
+        orderBy = "pc.last_played DESC, urg.id";
         break;
       // highest (ratings) — not tracked; fall back to newest.
       default:
@@ -1693,17 +1695,26 @@ try {
   });
 
   // ── Scrobble (#197) ───────────────────────────────────────────────────────
-  // Canonical play-recording signal for client-driven playback (the SPA and
-  // 3rd-party Subsonic apps). `submission=true` (the default) records a play;
-  // `submission=false` is a "now playing" notification and is not counted.
-  // Accepts one or many `id`. Unknown / malformed ids are skipped silently so a
-  // batch with one bad id still records the rest — matching Subsonic leniency.
-  // Server-driven surfaces (Sonos cast, DLNA) never reach this path; they are
-  // recorded from the stream proxy on finish (StreamTrackingService) to avoid
-  // double-counting the SPA, which both streams AND scrobbles.
+  // The single play-recording path. Every playback surface reports its own
+  // play here: the SPA scrobbles for both local <audio> and Sonos-cast playback
+  // (off the actual playback position), and 3rd-party Subsonic apps scrobble
+  // too. `StreamTrackingService.finish()` records nothing — there is no
+  // server-side play inference — so this endpoint is the only writer of
+  // play_events. `submission=true` (the default) records a play; `false` is a
+  // "now playing" notification and is not counted. Accepts one or many `id`;
+  // unknown / malformed ids are skipped so a batch with one bad id still
+  // records the rest (Subsonic leniency). Honors the optional `time` param
+  // (epoch ms of when the play occurred) so offline/batching clients can
+  // backfill; absent, the play is stamped now.
   route("/scrobble", async (request, reply) => {
     const q = request.query as Record<string, string | string[] | undefined>;
     const submission = q.submission == null ? true : String(q.submission) !== "false";
+    // Subsonic `time` is epoch milliseconds; ignore a non-numeric value.
+    const timeRaw = Array.isArray(q.time) ? q.time[0] : q.time;
+    const playedAtMs =
+      timeRaw != null && timeRaw !== "" && Number.isFinite(Number(timeRaw))
+        ? Number(timeRaw)
+        : null;
 
     if (submission) {
       const ids = (Array.isArray(q.id) ? q.id : q.id != null ? [q.id] : []).map(
@@ -1736,6 +1747,7 @@ try {
           unifiedTrackId: trackId,
           sourceInstanceId: src?.instance_id ?? null,
           clientName: typeof q.c === "string" ? q.c : null,
+          playedAtMs,
         });
       }
     }

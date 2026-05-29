@@ -130,7 +130,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | `star`      | Implemented     | Per-user; accepts `id`, `albumId`, `artistId` (each may repeat). Kind classified by id prefix. (#104)  |
 | `unstar`    | Implemented     | Mirror of `star`. Idempotent — unstarring a non-starred entity is a no-op. (#104)                      |
 | `setRating` | NOT IMPLEMENTED |                                                                                                        |
-| `scrobble`  | Implemented     | Records a per-user play in `play_events` (#197). `submission=true` (default) counts; `submission=false` is a now-playing notification and is ignored. Accepts one or many `id`; unknown/malformed ids are skipped so a batch still records the rest. This is the *only* play-recording path: the SPA scrobbles for both local and Sonos-cast playback off the actual playback position. |
+| `scrobble`  | Implemented     | Records a per-user play in `play_events` (#197). `submission=true` (default) counts; `submission=false` is a now-playing notification and is ignored. Accepts one or many `id`; unknown/malformed ids are skipped so a batch still records the rest. Honors optional `time` (epoch ms) to backfill a play's timestamp; absent, stamps now. This is the *only* play-recording path: the SPA scrobbles for both local and Sonos-cast playback off the actual playback position. |
 
 Album / artist / song objects returned by `getAlbum`, `getArtist`,
 `getAlbumList2`, `getSong`, and `search3` carry an ISO 8601 `starred`

@@ -7,6 +7,12 @@ export interface RecordPlayOptions {
   sourceInstanceId?: string | null;
   durationPlayedMs?: number | null;
   clientName?: string | null;
+  /**
+   * Epoch milliseconds of when the play actually occurred (Subsonic `time`).
+   * Lets offline/batching clients backfill plays at their real time instead of
+   * sync time. Omit/null to stamp `now`.
+   */
+  playedAtMs?: number | null;
 }
 
 export interface PlayStats {
@@ -26,6 +32,7 @@ export interface PlayStats {
  */
 export class PlayEventService {
   private readonly insertStmt: Database.Statement;
+  private readonly insertAtStmt: Database.Statement;
 
   constructor(private readonly db: Database.Database) {
     // Millisecond precision (strftime %f) so `type=recent` ordering is stable
@@ -37,15 +44,35 @@ export class PlayEventService {
          played_at, duration_played_ms, client_name
        ) VALUES (?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'), ?, ?)`,
     );
+    // Variant that stamps a client-supplied time (epoch ms → unixepoch seconds).
+    this.insertAtStmt = db.prepare(
+      `INSERT INTO play_events (
+         id, user_id, unified_track_id, source_instance_id,
+         played_at, duration_played_ms, client_name
+       ) VALUES (?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', ? / 1000.0, 'unixepoch'), ?, ?)`,
+    );
   }
 
   /**
    * Record a play. The threshold decision (Last.fm-style: half the track or
    * 4 minutes) is owned by the client that calls /rest/scrobble — every
    * playback surface in this app reports its own position, so the server just
-   * persists what it's told.
+   * persists what it's told. `playedAtMs` backfills the timestamp; absent, the
+   * play is stamped now.
    */
   record(opts: RecordPlayOptions): void {
+    if (opts.playedAtMs != null) {
+      this.insertAtStmt.run(
+        crypto.randomUUID(),
+        opts.userId,
+        opts.unifiedTrackId,
+        opts.sourceInstanceId ?? null,
+        opts.playedAtMs,
+        opts.durationPlayedMs ?? null,
+        opts.clientName ?? null,
+      );
+      return;
+    }
     this.insertStmt.run(
       crypto.randomUUID(),
       opts.userId,

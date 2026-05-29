@@ -120,6 +120,19 @@ describe("scrobble + play counts (#197)", () => {
     expect(res.json()["subsonic-response"].song.playCount).toBeUndefined();
   });
 
+  it("honors the Subsonic `time` param to backfill a play's timestamp", async () => {
+    const pastMs = Date.parse("2021-06-15T12:00:00.000Z");
+    await app.inject({
+      method: "GET",
+      url: `/rest/scrobble?${QS}&id=${T1_SUB}&time=${pastMs}`,
+    });
+    const res = await app.inject({ method: "GET", url: `/rest/getSong?${QS}&id=${T1_SUB}` });
+    const song = res.json()["subsonic-response"].song;
+    expect(song.playCount).toBe(1);
+    // Recorded at the supplied time, not "now".
+    expect(song.played).toMatch(/^2021-06-15T12:00:00/);
+  });
+
   it("a batch with unknown / malformed ids records only the valid ones", async () => {
     const res = await app.inject({
       method: "GET",
