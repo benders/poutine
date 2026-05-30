@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { search3 } from "@/lib/subsonic";
+import { search3, artUrl } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
@@ -105,12 +105,21 @@ export function SearchPage() {
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-hover transition-colors text-left cursor-pointer"
                   >
                     <div
-                      className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
+                      className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 overflow-hidden"
                       style={{ backgroundColor: hashColor(artist.name) }}
                     >
-                      <span className="text-xs font-semibold text-white/70">
-                        {initials(artist.name)}
-                      </span>
+                      {artist.coverArt ? (
+                        <img
+                          src={artUrl(artist.coverArt, 80) ?? undefined}
+                          alt={artist.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <span className="text-xs font-semibold text-white/70">
+                          {initials(artist.name)}
+                        </span>
+                      )}
                     </div>
                     <div className="min-w-0">
                       <p className="text-sm text-text-primary truncate">{artist.name}</p>
@@ -139,10 +148,19 @@ export function SearchPage() {
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-hover transition-colors text-left cursor-pointer"
                   >
                     <div
-                      className="w-10 h-10 rounded-md flex items-center justify-center shrink-0"
+                      className="w-10 h-10 rounded-md flex items-center justify-center shrink-0 overflow-hidden"
                       style={{ backgroundColor: hashColor(album.name) }}
                     >
-                      <Disc className="w-5 h-5 text-white/30" />
+                      {album.coverArt ? (
+                        <img
+                          src={artUrl(album.coverArt, 80) ?? undefined}
+                          alt={album.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <Disc className="w-5 h-5 text-white/30" />
+                      )}
                     </div>
                     <div className="min-w-0">
                       <p className="text-sm text-text-primary truncate">{album.name}</p>

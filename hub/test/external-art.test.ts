@@ -20,9 +20,15 @@ describe("isAllowedExternalArtUrl", () => {
     expect(isAllowedExternalArtUrl("http://assets.fanart.tv/x.jpg")).toBe(false);
   });
 
+  it("allows the Last.fm image CDN", () => {
+    expect(
+      isAllowedExternalArtUrl("https://lastfm.freetls.fastly.net/i/u/x.jpg"),
+    ).toBe(true);
+  });
+
   it("rejects unrelated hostnames", () => {
     expect(isAllowedExternalArtUrl("https://evil.example.com/x.jpg")).toBe(false);
-    expect(isAllowedExternalArtUrl("https://lastfm.freetls.fastly.net/x.jpg")).toBe(false);
+    expect(isAllowedExternalArtUrl("https://other.fastly.net/x.jpg")).toBe(false);
   });
 
   it("rejects hostnames that merely contain 'fanart.tv' as a substring", () => {

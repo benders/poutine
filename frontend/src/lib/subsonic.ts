@@ -422,6 +422,7 @@ export async function search3(query: string): Promise<SubsonicSearchResults> {
       id: a.id,
       name: a.name,
       albumCount: a.albumCount ?? 0,
+      coverArt: a.coverArt,
       starred: a.starred,
     })),
     albums: (r.album ?? []).map(parseAlbum),
@@ -559,10 +560,10 @@ export function streamUrl(
 }
 
 export function artUrl(coverArtId: string, size?: number): string | null {
-  // Last.fm and other absolute URLs are returned as-is.
-  if (coverArtId.startsWith("http://") || coverArtId.startsWith("https://")) {
-    return coverArtId;
-  }
+  // Everything routes through getCoverArt — including absolute fanart.tv /
+  // Last.fm URLs. The hub fetches and caches external art behind an SSRF
+  // allowlist, so local (fanart-URL) and peer (encoded-id) art follow the
+  // same proxied path rather than the browser hitting third parties directly.
   const params = authParamsWithSalt(ART_SALT);
   if (!params) return null;
   params.set("id", coverArtId);

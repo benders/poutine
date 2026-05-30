@@ -1106,7 +1106,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
 
     const artists = app.db
       .prepare(
-        `SELECT ua.id, ua.name, COUNT(urg.id) AS albumCount
+        `SELECT ua.id, ua.name, ua.image_url, COUNT(urg.id) AS albumCount
         FROM unified_artists ua
         LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
         WHERE ua.name_normalized LIKE ?
@@ -1213,6 +1213,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       id: encodeId("ar", a.id),
       name: a.name,
       albumCount: a.albumCount,
+      coverArt: a.image_url ?? undefined,
     }));
     const builtAlbums = albums.map(buildAlbum);
     const builtSongs = songs.map(buildSong);
