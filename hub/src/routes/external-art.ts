@@ -11,6 +11,8 @@
 const ALLOWED_HOSTNAMES: readonly string[] = [
   "fanart.tv",
   "assets.fanart.tv",
+  // Last.fm artist-image CDN (fallback source for artists without an MBID).
+  "lastfm.freetls.fastly.net",
 ];
 
 const ALLOWED_SUFFIXES: readonly string[] = [".fanart.tv"];

@@ -106,6 +106,28 @@ describe("/rest/getCoverArt external URL passthrough", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "https://localhost/x.jpg",
+    "https://127.0.0.1/x.jpg",
+    "https://169.254.169.254/latest/meta-data/", // cloud metadata SSRF target
+    "https://navidrome:4533/x.jpg", // internal compose service
+    "https://10.0.0.5/x.jpg",
+  ])("refuses to proxy internal/LAN target %s (400, no fetch)", async (target) => {
+    // Raw-URL form (3rd-party client echoing back a coverArt value)…
+    const raw = `/rest/getCoverArt?u=tester&p=secret&f=json&id=${encodeURIComponent(target)}`;
+    const rawRes = await app.inject({ method: "GET", url: raw });
+    expect(rawRes.statusCode).toBe(400);
+
+    // …and the encoded `local:` form a malicious peer could federate.
+    const encRes = await app.inject({
+      method: "GET",
+      url: artUrl(encodeCoverArtId("local", target)),
+    });
+    expect(encRes.statusCode).toBe(400);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects http:// (https only) with 400 and never fetches", async () => {
     const id = encodeCoverArtId("local", "http://assets.fanart.tv/x.jpg");
     const res = await app.inject({ method: "GET", url: artUrl(id) });
