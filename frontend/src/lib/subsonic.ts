@@ -422,6 +422,7 @@ export async function search3(query: string): Promise<SubsonicSearchResults> {
       id: a.id,
       name: a.name,
       albumCount: a.albumCount ?? 0,
+      coverArt: a.coverArt,
       starred: a.starred,
     })),
     albums: (r.album ?? []).map(parseAlbum),

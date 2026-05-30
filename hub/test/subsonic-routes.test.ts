@@ -615,6 +615,27 @@ describe("Subsonic routes — endpoints", () => {
     expect(byMbid.json()["subsonic-response"].searchResult3.artist).toHaveLength(1);
   });
 
+  it("search3 returns coverArt for an artist with an image_url", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized, image_url) VALUES (?, ?, ?, ?)",
+      )
+      .run(
+        "artist-art-1",
+        "Cover Artist",
+        "cover artist",
+        "https://example.com/art.jpg",
+      );
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=cover artist",
+    });
+    const artist = res.json()["subsonic-response"].searchResult3.artist[0];
+    expect(artist.name).toBe("Cover Artist");
+    expect(artist.coverArt).toBe("https://example.com/art.jpg");
+  });
+
   it("search3 matches album by internal id and MusicBrainz id", async () => {
     app.db
       .prepare(
