@@ -11,7 +11,7 @@ import {
   type PlayerSettings,
 } from "./services/player-settings.js";
 import { authRoutes, hubAdminRoutes, playerAdminRoutes } from "./routes/admin.js";
-import { subsonicRoutes } from "./routes/subsonic.js";
+import { subsonicRoutes } from "./routes/subsonic/index.js";
 import { proxyRoutes } from "./routes/proxy.js";
 import { federationRoutes } from "./routes/federation.js";
 import { ArtCache } from "./services/art-cache.js";

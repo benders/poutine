@@ -18,7 +18,7 @@ const BEST_SOURCE_INSTANCE_SUBQUERY = `
 `;
 
 /**
- * Prepared-statement factory for hub/src/routes/subsonic.ts (#243 phase 2).
+ * Prepared-statement factory for hub/src/routes/subsonic/ (#243 phase 2).
  *
  * All statements here are prepared eagerly, at plugin-init call time — this
  * extends the #130 hoisting convention (see docs/pitfalls.md "Concurrency")

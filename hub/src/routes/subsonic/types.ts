@@ -1,3 +1,19 @@
+import type { FastifyInstance, RouteHandlerMethod } from "fastify";
+import type { SubsonicQueries } from "../../db/queries/subsonic-queries.js";
+
+// ── Shared context passed to each endpoint-family registerX() (#243 phase 3) ──
+// One plain object built once in index.ts and handed to every module below —
+// no classes, no per-module reconstruction. `route`/`publicRoute`/`binaryRoute`
+// are the same registration helpers the monolith used; queries is the
+// `createSubsonicQueries(app.db)` result.
+export interface SubsonicRouteContext {
+  app: FastifyInstance;
+  queries: SubsonicQueries;
+  route: (path: string, handler: RouteHandlerMethod) => void;
+  publicRoute: (path: string, handler: RouteHandlerMethod) => void;
+  binaryRoute: (path: string, handler: RouteHandlerMethod) => void;
+}
+
 // ── DB row types shared between the route handlers and the response builders ──
 
 export interface ReleaseGroupRow {
@@ -18,6 +34,19 @@ export interface ReleaseGroupRow {
   // pass over play_events (#197).
   play_count?: number | null;
   last_played?: string | null;
+}
+
+export interface ArtistRow {
+  id: string;
+  name: string;
+  albumCount: number;
+  image_url: string | null;
+}
+
+export interface GenreRow {
+  genre: string;
+  albumCount: number;
+  songCount: number;
 }
 
 export interface TrackRow {
