@@ -100,7 +100,7 @@ Contract: [federation-api.md](federation-api.md). Read before modifying `/federa
 - **`invitations` table** (issuer-local, never gossiped): persists each issued nonce so handshakes can enforce single-use. Columns: `id`, `payload` (JSON), `signature`, `invitee_url`, `nonce` UNIQUE, `issued_at`, `expires_at`, `consumed_at`, `consumed_by_id`.
 - **`federatedFetch(peer, path, opts)`:** `path` must include the appropriate prefix (`/federation` or `/proxy`) — the fetcher concatenates `peer.url + path`. For proxy calls, use a synthetic peer with `url = peer.proxyUrl`.
 - **`track_sources`** keys each source by `instance_id` (matches `instances.id` — `'local'` for the bundled Navidrome, peer id for federated peers). Streaming routes branch on whether `instance_id === 'local'`; peer routes use `instance_id` to look up the peer in the registry. `remote_id` is fetched from `instance_tracks` via JOIN when needed for streaming.
-- **Source selection runs at merge time, not stream time.** `mergeLibraries()` (`hub/src/library/merge.ts`, Step 5) marks exactly one `track_sources` row per unified track `preferred = 1`, ranking format quality → bitrate → local tie-break → lowest id. Stream routes select `WHERE preferred = 1` (`routes/subsonic.ts`); there is no runtime source-selection function.
+- **Source selection runs at merge time, not stream time.** `mergeLibraries()` (`hub/src/library/merge.ts`, Step 5) marks exactly one `track_sources` row per unified track `preferred = 1`, ranking format quality → bitrate → local tie-break → lowest id. Stream routes select `WHERE preferred = 1` (`routes/subsonic/stream.ts`); there is no runtime source-selection function.
 - **Catalog sync flow (Phase 2+):**
   - `syncLocal` (`sync-local.ts`) reads the local Navidrome by hitting its Subsonic API directly with t+s creds (via `createLocalProxyFetch` pointed at `config.navidromeUrl` — bypasses `/proxy/*` to avoid an internal password-decrypt round-trip).
   - `syncPeer` (`sync-peer.ts`) reads a peer's Navidrome via the peer's `/proxy/rest/*` using Ed25519-signed requests (`createFederationFetcher`). The signing path includes `/proxy` prefix as seen by the peer's Fastify router.
@@ -151,7 +151,7 @@ from the Activity page); `play_events` is durable and never pruned, and is the
 source of truth for Subsonic `playCount` / `played`.
 
 - **Table `play_events`** (`hub/src/db/schema.sql`): `user_id` (FK → users), `unified_track_id`, `source_instance_id` (`local` | peer id | NULL), `played_at` (millisecond precision via `strftime('%f')` so `type=recent` ordering is stable within a second), `duration_played_ms`, `client_name`. **No FK on `unified_track_id`** — the `unified_*` tables are rebuilt on every merge, so a row can outlive its track; orphans are dropped at read time via JOIN, exactly as `user_stars` does. Counts are **per-user** (Subsonic spec).
-- **`PlayEventService`** (`hub/src/services/play-events.ts`): `record()` (unconditional — the threshold decision lives in the client), and `getTrackStats()` / `getAlbumStats()` (per-user aggregates; album = sum of its tracks' plays, last-played = max). Projected into Subsonic responses by the `annotatePlays` helper in `routes/subsonic.ts` (mirrors `annotateStarred`). `getAlbumList2` `type=frequent`/`recent` skip `annotatePlays` and reuse the per-album aggregate already computed by their ranking `playJoin`, so the play history is scanned once per request, not twice.
+- **`PlayEventService`** (`hub/src/services/play-events.ts`): `record()` (unconditional — the threshold decision lives in the client), and `getTrackStats()` / `getAlbumStats()` (per-user aggregates; album = sum of its tracks' plays, last-played = max). Projected into Subsonic responses by the `annotatePlays` helper in `routes/subsonic/builders.ts` (mirrors `annotateStarred`). `getAlbumList2` `type=frequent`/`recent` skip `annotatePlays` and reuse the per-album aggregate already computed by their ranking `playJoin`, so the play history is scanned once per request, not twice.
 - **One recording path: `POST /rest/scrobble?submission=true`.** Every playback surface reports its own play, so the server just persists what it's told and never infers plays from stream lifetimes. The SPA's `PlayerBar` fires the scrobble once per play when playback crosses the Last.fm-style threshold (≥ half the track, capped at 4 min):
   - *Local `<audio>`* → off the element's `timeupdate` position.
   - *Sonos cast* → off the device's reported transport position from the `getSonosState` poll (`s.position + base`). Real playback position, not a server-side estimate. A single `scrobbledRef` guard covers both so each play counts once.
@@ -164,7 +164,7 @@ source of truth for Subsonic `playCount` / `played`.
 Users copy a "Share ID" for an album or artist from its detail page and paste it into Search on any peer hub that also syncs the same underlying library.
 
 - **Token**: bare `instance_*.remote_id` — the Navidrome hash (≈32 hex chars). No prefix, no encoding. Collision across unrelated Navidromes is negligible.
-- **Sender** (`pickAlbumShareId` / `pickArtistShareId` in `hub/src/routes/subsonic.ts`): picks one source row per entity; prefers `instance_id = 'local'`, else deterministic by instance id. Returned as `shareId` on `getAlbum` / `getArtist` responses.
+- **Sender** (`pickAlbumShareId` / `pickArtistShareId` in `hub/src/routes/subsonic/builders.ts`): picks one source row per entity; prefers `instance_id = 'local'`, else deterministic by instance id. Returned as `shareId` on `getAlbum` / `getArtist` responses.
 - **Receiver**: `/rest/search3` WHERE-clause joins through `unified_*_sources → instance_*` and matches `remote_id` alongside the existing name/UUID/MBID cases. If no hub the receiver syncs has the album, the search is empty (scenario D).
 - **No federation RPC involved.** Resolution is a local DB lookup against data the receiver already synced via `/proxy/*`.
 
@@ -192,7 +192,7 @@ Users copy a "Share ID" for an album or artist from its detail page and paste it
 `getCoverArt`, `stream`, `download` return raw bytes. `sendSubsonicError` returns HTTP 200 with a JSON envelope (correct for JSON routes), but clients of a binary endpoint interpret any 200 as image/audio, silently corrupting the result. Two rules:
 
 1. Use `sendBinaryError(reply, httpStatus, message)` (`subsonic-response.ts`) for all error paths in the handler.
-2. Register via `binaryRoute()` in `subsonic.ts` (uses `requireSubsonicAuthBinary`) so auth failures also return real HTTP codes.
+2. Register via `binaryRoute()` in `routes/subsonic/index.ts` (uses `requireSubsonicAuthBinary`) so auth failures also return real HTTP codes.
 
 Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 

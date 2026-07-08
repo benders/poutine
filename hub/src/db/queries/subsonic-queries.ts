@@ -27,7 +27,7 @@ const BEST_SOURCE_INSTANCE_SUBQUERY = `
  * SQL strings are built from per-request input.
  *
  * Dynamic-SQL queries (e.g. getAlbumList2's WHERE/ORDER BY assembly) are NOT
- * here — they stay inline in subsonic.ts where the SQL is built.
+ * here — they stay inline in routes/subsonic/browsing.ts where the SQL is built.
  */
 // Explicit interface (rather than an inferred return type, which trips TS4058
 // under declaration emit; rather than Record<string, Statement>, which would
