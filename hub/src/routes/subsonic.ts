@@ -20,7 +20,6 @@ import { sqliteToIso } from "../util/time.js";
 import type { ReleaseGroupRow, TrackRow } from "./subsonic/types.js";
 import {
   contentTypeForFormat,
-  audioSourceFields,
   pickAlbumShareId,
   pickArtistShareId,
   buildSong,
@@ -28,6 +27,7 @@ import {
   annotatePlays,
   buildAlbum,
 } from "./subsonic/builders.js";
+import { createSubsonicQueries } from "../db/queries/subsonic-queries.js";
 
 // Extend Fastify app type for stream tracking
 declare module "fastify" {
@@ -50,22 +50,6 @@ interface GenreRow {
   albumCount: number;
   songCount: number;
 }
-
-// ── Source selection subquery ─────────────────────────────────────────────────
-// Returns the best source for a track (highest bitrate). Used for format,
-// bitrate, size, and instance_name. Copy-pasted 3x in getAlbum, getSong,
-// search3 — fine for now, could be a CTE/lateral join if query plans get heavy.
-const BEST_SOURCE_SUBQUERY = `
-  (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ?
-   ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1)
-`;
-
-const BEST_SOURCE_INSTANCE_SUBQUERY = `
-  (SELECT i.name FROM track_sources ts
-   JOIN instances i ON i.id = ts.instance_id
-   WHERE ts.unified_track_id = ?
-   ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1)
-`;
 
 // ── Route plugin ──────────────────────────────────────────────────────────────
 
@@ -97,68 +81,16 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     app.post(`${path}.view`, handler);
   }
 
-  // ── Hoisted prepared statements for star/unstar/getStarred2 (#130) ──────────
-  // Prepared once at plugin init rather than per-request to avoid allocation
-  // churn on hot endpoints.
-  const starInsertStmt = app.db.prepare(
-    "INSERT OR IGNORE INTO user_stars (user_id, kind, target_id) VALUES (?, ?, ?)",
-  );
-  const starDeleteStmt = app.db.prepare(
-    "DELETE FROM user_stars WHERE user_id = ? AND kind = ? AND target_id = ?",
-  );
-  const starredArtistsStmt = app.db.prepare(
-    `SELECT ua.id, ua.name, ua.image_url,
-      COUNT(urg.id) AS albumCount,
-      us.starred_at
-    FROM user_stars us
-    JOIN unified_artists ua ON ua.id = us.target_id
-    LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
-    WHERE us.user_id = ? AND us.kind = 'artist'
-    GROUP BY ua.id, ua.name, ua.image_url, us.starred_at
-    ORDER BY us.starred_at DESC`,
-  );
-  const starredAlbumsStmt = app.db.prepare(
-    `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-      urg.year, urg.genre, urg.image_url, urg.created_at,
-      (SELECT COUNT(*) FROM unified_tracks ut
-       JOIN unified_releases ur ON ur.id = ut.release_id
-       WHERE ur.release_group_id = urg.id) AS songCount,
-      us.starred_at
-    FROM user_stars us
-    JOIN unified_release_groups urg ON urg.id = us.target_id
-    JOIN unified_artists ua ON ua.id = urg.artist_id
-    WHERE us.user_id = ? AND us.kind = 'album'
-    ORDER BY us.starred_at DESC`,
-  );
-  const starredSongsStmt = app.db.prepare(
-    `SELECT
-      ut.id, ut.title, ut.track_number, ut.disc_number,
-      ut.duration_ms, ut.genre, ut.musicbrainz_id,
-      ut.artist_id, ua.name AS artist_name,
-      urg.id AS rg_id, urg.name AS rg_name,
-      urg.year AS rg_year, urg.image_url AS rg_image_url,
-      urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
-      (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
-       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
-      (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
-       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
-      (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
-       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
-      ${audioSourceFields("ut.id")}
-      (SELECT i.name FROM track_sources ts
-       JOIN instances i ON i.id = ts.instance_id
-       WHERE ts.unified_track_id = ut.id
-       ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS instance_name,
-      us.starred_at
-    FROM user_stars us
-    JOIN unified_tracks ut ON ut.id = us.target_id
-    JOIN unified_artists ua ON ua.id = ut.artist_id
-    JOIN unified_releases ur ON ur.id = ut.release_id
-    JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-    JOIN unified_artists ua2 ON ua2.id = urg.artist_id
-    WHERE us.user_id = ? AND us.kind = 'track'
-    ORDER BY us.starred_at DESC`,
-  );
+  // ── Prepared statements (#130, factored out to a query module in #243) ──────
+  // Prepared once at plugin init, via createSubsonicQueries, rather than per-
+  // request or inline — avoids allocation churn on hot endpoints and catches
+  // SQL/schema drift at init instead of first request.
+  const queries = createSubsonicQueries(app.db);
+  const starInsertStmt = queries.starInsert;
+  const starDeleteStmt = queries.starDelete;
+  const starredArtistsStmt = queries.starredArtists;
+  const starredAlbumsStmt = queries.starredAlbums;
+  const starredSongsStmt = queries.starredSongs;
   const starInsertTx = app.db.transaction(
     (userId: string, rows: Array<{ kind: StarKind; raw: string }>) => {
       for (const r of rows) starInsertStmt.run(userId, r.kind, r.raw);
@@ -213,9 +145,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
     const targetName = requested || auth.username;
-    const row = app.db
-      .prepare("SELECT username, is_admin FROM users WHERE username = ?")
-      .get(targetName) as { username: string; is_admin: number } | undefined;
+    const row = queries.userByUsername.get(targetName) as
+      | { username: string; is_admin: number }
+      | undefined;
     if (!row) {
       sendSubsonicError(reply, 70, "User not found.", q);
       return;
@@ -248,13 +180,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const q = request.query as Record<string, string>;
     // Issue #123: each known instance (local + active peers) is exposed as a
     // MusicFolder so 3rd-party Subsonic clients can scope browsing per peer.
-    const rows = app.db
-      .prepare(
-        `SELECT musicfolder_id AS id, name FROM instances
-         WHERE musicfolder_id IS NOT NULL
-         ORDER BY musicfolder_id`,
-      )
-      .all() as Array<{ id: number; name: string }>;
+    const rows = queries.musicFolders.all() as Array<{ id: number; name: string }>;
     sendSubsonicOk(reply, q, {
       musicFolders: { musicFolder: rows },
     });
@@ -265,19 +191,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
   route("/getGenres", async (request, reply) => {
     const q = request.query as Record<string, string>;
 
-    const rows = app.db
-      .prepare(
-        `SELECT g.genre,
-          (SELECT COUNT(*) FROM unified_release_groups WHERE genre = g.genre) AS albumCount,
-          (SELECT COUNT(*) FROM unified_tracks WHERE genre = g.genre) AS songCount
-        FROM (
-          SELECT DISTINCT genre FROM unified_release_groups WHERE genre IS NOT NULL
-          UNION
-          SELECT DISTINCT genre FROM unified_tracks WHERE genre IS NOT NULL
-        ) g
-        ORDER BY g.genre`,
-      )
-      .all() as GenreRow[];
+    const rows = queries.genres.all() as GenreRow[];
 
     sendSubsonicOk(reply, q, {
       genres: {
@@ -300,16 +214,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     // lists with zero albums and no playable content, because the artist
     // detail view filters albums by `urg.artist_id`. Their tracks remain
     // reachable via the album they appear on.
-    const artists = app.db
-      .prepare(
-        `SELECT ua.id, ua.name, ua.image_url,
-          COUNT(urg.id) AS albumCount
-        FROM unified_artists ua
-        JOIN unified_release_groups urg ON urg.artist_id = ua.id
-        GROUP BY ua.id, ua.name
-        ORDER BY ua.name_normalized`,
-      )
-      .all() as ArtistRow[];
+    const artists = queries.artistsWithAlbumCount.all() as ArtistRow[];
 
     const indexMap = new Map<string, typeof artists>();
     for (const a of artists) {
@@ -342,16 +247,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const q = request.query as Record<string, string>;
 
     // INNER JOIN: see /getArtists above for the rationale.
-    const artists = app.db
-      .prepare(
-        `SELECT ua.id, ua.name,
-          COUNT(urg.id) AS albumCount
-        FROM unified_artists ua
-        JOIN unified_release_groups urg ON urg.artist_id = ua.id
-        GROUP BY ua.id, ua.name
-        ORDER BY ua.name_normalized`,
-      )
-      .all() as ArtistRow[];
+    const artists = queries.artistIndexRows.all() as ArtistRow[];
 
     const indexMap = new Map<string, typeof artists>();
     for (const a of artists) {
@@ -394,29 +290,16 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    const artist = app.db
-      .prepare("SELECT id, name, image_url FROM unified_artists WHERE id = ?")
-      .get(artistId) as { id: string; name: string; image_url: string | null } | undefined;
+    const artist = queries.artistById.get(artistId) as
+      | { id: string; name: string; image_url: string | null }
+      | undefined;
 
     if (!artist) {
       sendSubsonicError(reply, 70, "Artist not found", q);
       return;
     }
 
-    const albums = app.db
-      .prepare(
-        `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-          urg.year, urg.genre, urg.image_url, urg.created_at,
-          COUNT(ut.id) AS songCount
-        FROM unified_release_groups urg
-        JOIN unified_artists ua ON ua.id = urg.artist_id
-        LEFT JOIN unified_releases ur ON ur.release_group_id = urg.id
-        LEFT JOIN unified_tracks ut ON ut.release_id = ur.id
-        WHERE urg.artist_id = ?
-        GROUP BY urg.id
-        ORDER BY urg.year DESC, urg.name_normalized`,
-      )
-      .all(artistId) as ReleaseGroupRow[];
+    const albums = queries.albumsForArtist.all(artistId) as ReleaseGroupRow[];
 
     const shareId = pickArtistShareId(app.db, artist.id);
 
@@ -456,9 +339,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    const artistRow = app.db
-      .prepare("SELECT id, name, musicbrainz_id, image_url FROM unified_artists WHERE id = ?")
-      .get(artistId) as { id: string; name: string; musicbrainz_id: string | null; image_url: string | null } | undefined;
+    const artistRow = queries.artistInfoById.get(artistId) as
+      | { id: string; name: string; musicbrainz_id: string | null; image_url: string | null }
+      | undefined;
 
     if (!artistRow) {
       sendSubsonicError(reply, 70, "Artist not found", q);
@@ -489,9 +372,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
           const bestImage = app.lastFmClient.getBestImage(lastFmInfo);
           if (bestImage) {
             // Cache the image URL in the database
-            app.db
-              .prepare("UPDATE unified_artists SET image_url = ? WHERE id = ?")
-              .run(bestImage, artistId);
+            queries.updateArtistImageUrl.run(bestImage, artistId);
             imageUrl = bestImage;
             request.log.info(`Cached Last.fm image for artist ${artistRow.name}`);
           }
@@ -531,9 +412,9 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     // adopt in new code. See docs/opensubsonic.md.
     let instanceId: string | undefined = q.instanceId;
     if (!instanceId && q.musicFolderId) {
-      const row = app.db
-        .prepare("SELECT id FROM instances WHERE musicfolder_id = ?")
-        .get(parseInt(q.musicFolderId, 10)) as { id: string } | undefined;
+      const row = queries.instanceByMusicFolderId.get(
+        parseInt(q.musicFolderId, 10),
+      ) as { id: string } | undefined;
       // Unknown folder id → empty result, matching how Subsonic clients expect
       // an unrecognized scope to surface (no rows rather than an error).
       if (!row) {
@@ -696,15 +577,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    const rg = app.db
-      .prepare(
-        `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-          urg.year, urg.genre, urg.image_url, urg.created_at
-        FROM unified_release_groups urg
-        JOIN unified_artists ua ON ua.id = urg.artist_id
-        WHERE urg.id = ?`,
-      )
-      .get(rgId) as
+    const rg = queries.releaseGroupById.get(rgId) as
       | {
           id: string;
           name: string;
@@ -723,42 +596,10 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     }
 
     // Pick the release with the most tracks (fall back to first by id)
-    const release = app.db
-      .prepare(
-        `SELECT id FROM unified_releases
-        WHERE release_group_id = ?
-        ORDER BY track_count DESC, id ASC
-        LIMIT 1`,
-      )
-      .get(rgId) as { id: string } | undefined;
+    const release = queries.bestReleaseForGroup.get(rgId) as { id: string } | undefined;
 
     const tracks: TrackRow[] = release
-      ? (app.db
-          .prepare(
-            `SELECT
-              ut.id, ut.title, ut.track_number, ut.disc_number,
-              ut.duration_ms, ut.genre, ut.musicbrainz_id,
-              ut.artist_id, ua.name AS artist_name,
-              urg.id AS rg_id, urg.name AS rg_name,
-              urg.year AS rg_year, urg.image_url AS rg_image_url,
-              urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
-              (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
-               ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
-              (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
-               ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
-              (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
-               ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
-              ${audioSourceFields("ut.id")}
-              ${BEST_SOURCE_INSTANCE_SUBQUERY.replace('?', 'ut.id')} AS instance_name
-            FROM unified_tracks ut
-            JOIN unified_artists ua ON ua.id = ut.artist_id
-            JOIN unified_releases ur ON ur.id = ut.release_id
-            JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-            JOIN unified_artists ua2 ON ua2.id = urg.artist_id
-            WHERE ut.release_id = ?
-            ORDER BY ut.disc_number, ut.track_number, ut.id`,
-          )
-          .all(release.id) as TrackRow[])
+      ? (queries.tracksForRelease.all(release.id) as TrackRow[])
       : [];
 
     const totalDuration = tracks.reduce(
@@ -821,31 +662,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    const row = app.db
-      .prepare(
-        `SELECT
-          ut.id, ut.title, ut.track_number, ut.disc_number,
-          ut.duration_ms, ut.genre, ut.musicbrainz_id,
-          ut.artist_id, ua.name AS artist_name,
-          urg.id AS rg_id, urg.name AS rg_name,
-          urg.year AS rg_year, urg.image_url AS rg_image_url,
-          urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
-          (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
-          (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
-          (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
-          ${audioSourceFields("ut.id")}
-          ${BEST_SOURCE_INSTANCE_SUBQUERY.replace('?', 'ut.id')} AS instance_name
-        FROM unified_tracks ut
-        JOIN unified_artists ua ON ua.id = ut.artist_id
-        JOIN unified_releases ur ON ur.id = ut.release_id
-        JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-        JOIN unified_artists ua2 ON ua2.id = urg.artist_id
-        WHERE ut.id = ?`,
-      )
-      .get(trackId) as TrackRow | undefined;
+    const row = queries.trackForSong.get(trackId) as TrackRow | undefined;
 
     if (!row) {
       sendSubsonicError(reply, 70, "Song not found", q);
@@ -879,110 +696,38 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
     const albumIdCandidate = trimmed.startsWith("al") ? trimmed.slice(2) : trimmed;
     const songIdCandidate = trimmed.startsWith("t") ? trimmed.slice(1) : trimmed;
 
-    const artists = app.db
-      .prepare(
-        `SELECT ua.id, ua.name, ua.image_url, COUNT(urg.id) AS albumCount
-        FROM unified_artists ua
-        LEFT JOIN unified_release_groups urg ON urg.artist_id = ua.id
-        WHERE ua.name_normalized LIKE ?
-          OR ua.id = ? OR ua.id = ?
-          OR ua.musicbrainz_id = ? OR ua.musicbrainz_id = ?
-          OR EXISTS (
-            SELECT 1 FROM unified_artist_sources uas
-            JOIN instance_artists iar ON iar.id = uas.instance_artist_id
-            WHERE uas.unified_artist_id = ua.id AND iar.remote_id = ?
-          )
-        GROUP BY ua.id
-        ORDER BY ua.name_normalized
-        LIMIT ? OFFSET ?`,
-      )
-      .all(
-        like,
-        trimmed,
-        artistIdCandidate,
-        trimmed,
-        artistIdCandidate,
-        trimmed,
-        artistCount,
-        artistOffset,
-      ) as ArtistRow[];
+    const artists = queries.searchArtists.all(
+      like,
+      trimmed,
+      artistIdCandidate,
+      trimmed,
+      artistIdCandidate,
+      trimmed,
+      artistCount,
+      artistOffset,
+    ) as ArtistRow[];
 
-    const albums = app.db
-      .prepare(
-        `SELECT urg.id, urg.name, urg.artist_id, ua.name AS artist_name,
-          urg.year, urg.genre, urg.image_url, urg.created_at,
-          COUNT(ut.id) AS songCount
-        FROM unified_release_groups urg
-        JOIN unified_artists ua ON ua.id = urg.artist_id
-        LEFT JOIN unified_releases ur ON ur.release_group_id = urg.id
-        LEFT JOIN unified_tracks ut ON ut.release_id = ur.id
-        WHERE urg.name_normalized LIKE ?
-          OR urg.id = ? OR urg.id = ?
-          OR urg.musicbrainz_id = ? OR urg.musicbrainz_id = ?
-          OR EXISTS (
-            SELECT 1 FROM unified_release_sources urs
-            JOIN unified_releases ur2 ON ur2.id = urs.unified_release_id
-            JOIN instance_albums ial ON ial.id = urs.instance_album_id
-            WHERE ur2.release_group_id = urg.id AND ial.remote_id = ?
-          )
-        GROUP BY urg.id
-        ORDER BY urg.name_normalized
-        LIMIT ? OFFSET ?`,
-      )
-      .all(
-        like,
-        trimmed,
-        albumIdCandidate,
-        trimmed,
-        albumIdCandidate,
-        trimmed,
-        albumCount,
-        albumOffset,
-      ) as ReleaseGroupRow[];
+    const albums = queries.searchAlbums.all(
+      like,
+      trimmed,
+      albumIdCandidate,
+      trimmed,
+      albumIdCandidate,
+      trimmed,
+      albumCount,
+      albumOffset,
+    ) as ReleaseGroupRow[];
 
-    const songs = app.db
-      .prepare(
-        `SELECT
-          ut.id, ut.title, ut.track_number, ut.disc_number,
-          ut.duration_ms, ut.genre, ut.musicbrainz_id,
-          ut.artist_id, ua.name AS artist_name,
-          urg.id AS rg_id, urg.name AS rg_name,
-          urg.year AS rg_year, urg.image_url AS rg_image_url,
-          urg.artist_id AS rg_artist_id, ua2.name AS rg_artist_name,
-          (SELECT ts.format FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS format,
-          (SELECT ts.bitrate FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS bitrate,
-          (SELECT ts.size FROM track_sources ts WHERE ts.unified_track_id = ut.id
-           ORDER BY COALESCE(ts.bitrate, 0) DESC LIMIT 1) AS size,
-          ${audioSourceFields("ut.id")}
-          ${BEST_SOURCE_INSTANCE_SUBQUERY.replace('?', 'ut.id')} AS instance_name
-        FROM unified_tracks ut
-        JOIN unified_artists ua ON ua.id = ut.artist_id
-        JOIN unified_releases ur ON ur.id = ut.release_id
-        JOIN unified_release_groups urg ON urg.id = ur.release_group_id
-        JOIN unified_artists ua2 ON ua2.id = urg.artist_id
-        WHERE ut.title_normalized LIKE ?
-          OR ut.id = ? OR ut.id = ?
-          OR ut.musicbrainz_id = ? OR ut.musicbrainz_id = ?
-          OR EXISTS (
-            SELECT 1 FROM track_sources ts2
-            JOIN instance_tracks it ON it.id = ts2.instance_track_id
-            WHERE ts2.unified_track_id = ut.id AND it.remote_id = ?
-          )
-        ORDER BY ut.title_normalized
-        LIMIT ? OFFSET ?`,
-      )
-      .all(
-        like,
-        trimmed,
-        songIdCandidate,
-        trimmed,
-        songIdCandidate,
-        trimmed,
-        songCount,
-        songOffset,
-      ) as TrackRow[];
+    const songs = queries.searchSongs.all(
+      like,
+      trimmed,
+      songIdCandidate,
+      trimmed,
+      songIdCandidate,
+      trimmed,
+      songCount,
+      songOffset,
+    ) as TrackRow[];
 
     const builtArtists = artists.map((a) => ({
       id: encodeId("ar", a.id),
@@ -1179,14 +924,9 @@ try {
 }
 
   // Get track info for streaming
-  const trackRow = app.db
-    .prepare(
-      `SELECT ut.id, ut.title, ut.artist_id, ua.name AS artist_name, ut.duration_ms
-       FROM unified_tracks ut
-       JOIN unified_artists ua ON ua.id = ut.artist_id
-       WHERE ut.id = ?`,
-    )
-    .get(trackId) as { id: string; title: string; artist_name: string; duration_ms: number | null } | undefined;
+  const trackRow = queries.trackForStream.get(trackId) as
+    | { id: string; title: string; artist_name: string; duration_ms: number | null }
+    | undefined;
 
   if (!trackRow) {
     request.log.warn(`Stream tracking: track ${trackId} not found in unified_tracks`);
@@ -1198,15 +938,7 @@ try {
 
   // Source selection happens at merge time (merge.ts sets preferred = 1).
   // At stream time we just look up THE source for this unified track.
-  const best = app.db
-    .prepare(
-      `SELECT ts.instance_id, ts.format, ts.bitrate, it.remote_id
-       FROM track_sources ts
-       JOIN instance_tracks it ON it.id = ts.instance_track_id
-       WHERE ts.unified_track_id = ? AND ts.preferred = 1
-       LIMIT 1`,
-    )
-    .get(trackId) as
+  const best = queries.preferredSourceForStream.get(trackId) as
     | { instance_id: string; format: string | null; bitrate: number | null; remote_id: string }
     | undefined;
 
@@ -1561,19 +1293,13 @@ try {
         }
         // Only record plays of tracks this hub actually knows about; ignore
         // unknown ids so a stale/garbage id can't pollute the history.
-        const track = app.db
-          .prepare("SELECT 1 FROM unified_tracks WHERE id = ?")
-          .get(trackId);
+        const track = queries.trackExists.get(trackId);
         if (!track) continue;
         // Attribute to the source we'd stream from (preferred source), local or
         // peer. Best-effort: a known track with no source row records as null.
-        const src = app.db
-          .prepare(
-            `SELECT instance_id FROM track_sources
-             WHERE unified_track_id = ?
-             ORDER BY preferred DESC, instance_id = 'local' DESC LIMIT 1`,
-          )
-          .get(trackId) as { instance_id: string } | undefined;
+        const src = queries.sourceForScrobble.get(trackId) as
+          | { instance_id: string }
+          | undefined;
         app.playEvents.record({
           userId: request.subsonicUser.id,
           unifiedTrackId: trackId,
