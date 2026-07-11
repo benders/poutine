@@ -254,7 +254,9 @@ CREATE TABLE IF NOT EXISTS playlists (
 CREATE TABLE IF NOT EXISTS playlist_tracks (
   playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
   position INTEGER NOT NULL,
-  unified_track_id TEXT NOT NULL REFERENCES unified_tracks(id) ON DELETE CASCADE,
+  -- no FK — rebuilt unified tables; orphans dropped at read, remapped by
+  -- id-remap (#242). Used to CASCADE-DELETE on every merge before #242.
+  unified_track_id TEXT NOT NULL,
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (playlist_id, position)
 );
@@ -306,7 +308,8 @@ CREATE TABLE IF NOT EXISTS sync_operations (
   artist_count INTEGER DEFAULT 0,
   album_count INTEGER DEFAULT 0,
   track_count INTEGER DEFAULT 0,
-  errors TEXT                       -- JSON array of error strings
+  errors TEXT,                      -- JSON array of error strings
+  details TEXT                      -- JSON: orphan audit counts (#242)
 );
 
 -- ============================================================
