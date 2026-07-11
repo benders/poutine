@@ -120,14 +120,14 @@ export class AutoSyncService {
           this.lastFmClient ?? null,
           this.fanartTvClient ?? null,
         );
-        const orphanReport = runMergePipeline(this.db, {
+        const pipelineReport = runMergePipeline(this.db, {
           logger: { warn: (msg) => this.log.error(msg), info: (msg) => this.log.info(msg) },
         });
         this.log.info(
           `AutoSync complete: ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks`,
         );
         if (operationId && this.syncOpService) {
-          this.syncOpService.setDetails(operationId, orphanReport);
+          this.syncOpService.setDetails(operationId, pipelineReport);
           this.syncOpService.complete(operationId, result.artistCount, result.albumCount, result.trackCount, result.errors);
         }
       } catch (err) {

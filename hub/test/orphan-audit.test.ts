@@ -157,7 +157,7 @@ describe("orphan-audit", () => {
     insertTrack("t1", albumId, "Paranoid Android");
 
     const report = runMergePipeline(db);
-    expect(report.total).toBe(0);
+    expect(report.orphans.total).toBe(0);
 
     const unifiedTrack = db.prepare("SELECT id FROM unified_tracks").get() as { id: string };
     expect(unifiedTrack).toBeDefined();

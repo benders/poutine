@@ -117,7 +117,7 @@ export async function syncAll(
     }
   }
 
-  const orphanReport = runMergePipeline(db, {
+  const pipelineReport = runMergePipeline(db, {
     logger: {
       warn: (msg) => console.warn(`[sync] ${msg}`),
       info: (msg) => console.log(`[sync] ${msg}`),
@@ -125,7 +125,7 @@ export async function syncAll(
   });
 
   if (operationId && syncOpService) {
-    syncOpService.setDetails(operationId, orphanReport);
+    syncOpService.setDetails(operationId, pipelineReport);
     syncOpService.complete(operationId, localResult.artistCount, localResult.albumCount, localResult.trackCount, localResult.errors);
   }
 

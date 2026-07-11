@@ -274,6 +274,39 @@ function migrateSyncOperations(db: Database.Database): void {
   }
 }
 
+/**
+ * Issue #242: drop the `unified_track_id` FK (+ implicit CASCADE) on
+ * playlist_tracks. unified_tracks is cleared and rebuilt on every merge —
+ * the FK meant a merge CASCADE-DELETEd every playlist row. playlist_tracks
+ * now follows the same no-FK/orphans-dropped-at-read convention as
+ * user_stars/play_events, with rows carried across merges by id-remap
+ * instead of relying on referential integrity.
+ */
+function migratePlaylistTracks(db: Database.Database): void {
+  const fks = db
+    .prepare("PRAGMA foreign_key_list(playlist_tracks)")
+    .all() as Array<{ table: string; from: string }>;
+  const hasTrackFk = fks.some(
+    (fk) => fk.table === "unified_tracks" && fk.from === "unified_track_id",
+  );
+  if (!hasTrackFk) return;
+
+  logMigration("Dropping unified_track_id FK from playlist_tracks table");
+  db.exec(`
+    CREATE TABLE playlist_tracks_new (
+      playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      unified_track_id TEXT NOT NULL,
+      added_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (playlist_id, position)
+    );
+    INSERT INTO playlist_tracks_new (playlist_id, position, unified_track_id, added_at)
+      SELECT playlist_id, position, unified_track_id, added_at FROM playlist_tracks;
+    DROP TABLE playlist_tracks;
+    ALTER TABLE playlist_tracks_new RENAME TO playlist_tracks;
+  `);
+}
+
 export function createDatabase(dbPath: string): Database.Database {
   // Ensure the directory exists
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -308,6 +341,9 @@ export function createDatabase(dbPath: string): Database.Database {
 
   // Issue #242: add sync_operations.details for orphan-audit persistence
   migrateSyncOperations(db);
+
+  // Issue #242: drop playlist_tracks' unified_track_id FK (CASCADE hazard)
+  migratePlaylistTracks(db);
 
   return db;
 }
