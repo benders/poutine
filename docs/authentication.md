@@ -74,7 +74,7 @@ Either form authenticates a user identically. Unknown user and bad credentials b
 - **`requireSubsonicAuth`** — returns errors as Subsonic XML/JSON envelopes with HTTP 200 (Subsonic protocol convention).
 - **`requireSubsonicAuthBinary`** — returns errors as real HTTP status codes (401). Used by `stream` and `getCoverArt` where a 200 body would be interpreted as corrupt audio/image data.
 
-Routes register via `binaryRoute()` in `subsonic.ts` to get the binary variant.
+Routes register via `binaryRoute()` in `routes/subsonic/index.ts` to get the binary variant.
 
 ## Trusted in-process auth (`x-poutine-internal`)
 

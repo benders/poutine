@@ -8,7 +8,7 @@ device, and library browsing from Player UIs.
 
 Source: [OpenSubsonic spec](https://opensubsonic.netlify.app/) (extensions
 section), cross-referenced against the current implementation in
-`hub/src/routes/subsonic.ts` and `docs/opensubsonic.md`.
+`hub/src/routes/subsonic/` and `docs/opensubsonic.md`.
 
 ## Today's surface
 
@@ -129,7 +129,7 @@ hints.
 `unified_tracks` / `track_sources` already (or trivially fetchable from the
 source Navidrome via `getSong`).
 
-**Effort:** **M** — single mapper change in `subsonic.ts`; tests for each
+**Effort:** **M** — single mapper change in `routes/subsonic/builders.ts`; tests for each
 field. `replayGain` requires a column add and a sync-mapper pull from
 Navidrome.
 
@@ -188,7 +188,7 @@ mechanism, instead of inventing a private JWT shape.
 Storage + endpoint missing.
 
 **Effort:** **M** — new `api_keys` table, key issuance via `/admin/*`, dual
-auth path in `subsonic.ts`.
+auth path in `routes/subsonic/index.ts`.
 
 ### P2 — `getPlayQueue` / `savePlayQueue`
 

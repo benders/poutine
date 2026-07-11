@@ -48,7 +48,7 @@ See [authentication.md](authentication.md) for the full auth reference.
 
 ## Endpoint compatibility
 
-All endpoints support both GET and POST, with and without the `.view` suffix (e.g. `/rest/ping` and `/rest/ping.view` are equivalent). Implementation lives in `hub/src/routes/subsonic.ts`.
+All endpoints support both GET and POST, with and without the `.view` suffix (e.g. `/rest/ping` and `/rest/ping.view` are equivalent). Implementation lives in `hub/src/routes/subsonic/` (endpoint-family modules; plugin entry `index.ts`).
 
 ### System
 
