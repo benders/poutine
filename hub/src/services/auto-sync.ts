@@ -3,7 +3,7 @@ import type { Config } from "../config.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { syncLocal } from "../library/sync-local.js";
 import { syncPeer } from "../library/sync-peer.js";
-import { mergeLibraries } from "../library/merge.js";
+import { runMergePipeline } from "../library/merge-pipeline.js";
 import { gossipFromPeer } from "../federation/gossip.js";
 import { SyncOperationService } from "./sync-operations.js";
 import { LastFmClient } from "./lastfm.js";
@@ -120,11 +120,14 @@ export class AutoSyncService {
           this.lastFmClient ?? null,
           this.fanartTvClient ?? null,
         );
-        mergeLibraries(this.db);
+        const orphanReport = runMergePipeline(this.db, {
+          logger: { warn: (msg) => this.log.error(msg), info: (msg) => this.log.info(msg) },
+        });
         this.log.info(
           `AutoSync complete: ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks`,
         );
         if (operationId && this.syncOpService) {
+          this.syncOpService.setDetails(operationId, orphanReport);
           this.syncOpService.complete(operationId, result.artistCount, result.albumCount, result.trackCount, result.errors);
         }
       } catch (err) {
@@ -198,7 +201,11 @@ export class AutoSyncService {
           this.log.error(`AutoSync peer poll ${peer.id}: ${String(err)}`);
         }
       }
-      if (anySynced) mergeLibraries(this.db);
+      if (anySynced) {
+        runMergePipeline(this.db, {
+          logger: { warn: (msg) => this.log.error(msg), info: (msg) => this.log.info(msg) },
+        });
+      }
     } finally {
       this.peerRunning = false;
     }

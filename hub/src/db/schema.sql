@@ -306,7 +306,8 @@ CREATE TABLE IF NOT EXISTS sync_operations (
   artist_count INTEGER DEFAULT 0,
   album_count INTEGER DEFAULT 0,
   track_count INTEGER DEFAULT 0,
-  errors TEXT                       -- JSON array of error strings
+  errors TEXT,                      -- JSON array of error strings
+  details TEXT                      -- JSON: orphan audit counts (#242)
 );
 
 -- ============================================================

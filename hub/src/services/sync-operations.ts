@@ -132,6 +132,17 @@ export class SyncOperationService {
   }
 
   /**
+   * Persist arbitrary JSON details on a sync operation row (e.g. the
+   * post-merge orphan-audit report, #242). Separate from complete()/fail()
+   * so callers can attach details before the terminal status is known.
+   */
+  setDetails(operationId: string, details: unknown): void {
+    this.db
+      .prepare(`UPDATE sync_operations SET details = ? WHERE id = ?`)
+      .run(JSON.stringify(details), operationId);
+  }
+
+  /**
    * Mark a sync operation as failed.
    */
   fail(operationId: string, errors: string[] = []): void {

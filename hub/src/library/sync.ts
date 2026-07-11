@@ -6,7 +6,7 @@ import { syncPeer } from "./sync-peer.js";
 import type { FederationFetcher } from "./sync-peer.js";
 import type { SyncOperationType } from "../services/sync-operations.js";
 import { SyncOperationService } from "../services/sync-operations.js";
-import { mergeLibraries } from "./merge.js";
+import { runMergePipeline } from "./merge-pipeline.js";
 import { gossipFromPeer } from "../federation/gossip.js";
 import type { LastFmClient } from "../services/lastfm.js";
 import type { FanartTvClient } from "../services/fanarttv.js";
@@ -117,9 +117,15 @@ export async function syncAll(
     }
   }
 
-  mergeLibraries(db);
+  const orphanReport = runMergePipeline(db, {
+    logger: {
+      warn: (msg) => console.warn(`[sync] ${msg}`),
+      info: (msg) => console.log(`[sync] ${msg}`),
+    },
+  });
 
   if (operationId && syncOpService) {
+    syncOpService.setDetails(operationId, orphanReport);
     syncOpService.complete(operationId, localResult.artistCount, localResult.albumCount, localResult.trackCount, localResult.errors);
   }
 

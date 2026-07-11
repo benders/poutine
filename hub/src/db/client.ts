@@ -259,6 +259,21 @@ function migrateStreamOperations(db: Database.Database): void {
   }
 }
 
+/**
+ * Issue #242: additive column so mergeLibraries()/runMergePipeline() can
+ * persist post-merge orphan-audit counts alongside the sync operation that
+ * triggered them.
+ */
+function migrateSyncOperations(db: Database.Database): void {
+  const cols = db
+    .prepare("PRAGMA table_info(sync_operations)")
+    .all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "details")) {
+    logMigration("Adding details column to sync_operations table");
+    db.exec("ALTER TABLE sync_operations ADD COLUMN details TEXT");
+  }
+}
+
 export function createDatabase(dbPath: string): Database.Database {
   // Ensure the directory exists
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -290,6 +305,9 @@ export function createDatabase(dbPath: string): Database.Database {
 
   // Issue #121: rewrite stream_operations schema
   migrateStreamOperations(db);
+
+  // Issue #242: add sync_operations.details for orphan-audit persistence
+  migrateSyncOperations(db);
 
   return db;
 }
