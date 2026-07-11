@@ -4,7 +4,7 @@ import { createAccessToken, createRefreshToken, verifyRefreshToken, verifyToken 
 import { syncAll } from "../library/sync.js";
 import { SyncOperationService } from "../services/sync-operations.js";
 import { StreamTrackingService } from "../services/stream-tracking.js";
-import { runMergePipeline } from "../library/merge-pipeline.js";
+import { runMergePipelineAsync } from "../library/merge-pipeline.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { APP_VERSION, FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
 import {
@@ -648,7 +648,7 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
         )
         .run();
     })();
-    runMergePipeline(app.db, { logger: { warn: (msg) => app.log.warn(msg), info: (msg) => app.log.info(msg) } });
+    await runMergePipelineAsync(app.db, { logger: { warn: (msg) => app.log.warn(msg), info: (msg) => app.log.info(msg) } });
     return { deleted: true };
   });
 

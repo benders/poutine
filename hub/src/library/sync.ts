@@ -6,7 +6,7 @@ import { syncPeer } from "./sync-peer.js";
 import type { FederationFetcher } from "./sync-peer.js";
 import type { SyncOperationType } from "../services/sync-operations.js";
 import { SyncOperationService } from "../services/sync-operations.js";
-import { runMergePipeline } from "./merge-pipeline.js";
+import { runMergePipelineAsync } from "./merge-pipeline.js";
 import { gossipFromPeer } from "../federation/gossip.js";
 import type { LastFmClient } from "../services/lastfm.js";
 import type { FanartTvClient } from "../services/fanarttv.js";
@@ -117,7 +117,7 @@ export async function syncAll(
     }
   }
 
-  const pipelineReport = runMergePipeline(db, {
+  const pipelineReport = await runMergePipelineAsync(db, {
     logger: {
       warn: (msg) => console.warn(`[sync] ${msg}`),
       info: (msg) => console.log(`[sync] ${msg}`),

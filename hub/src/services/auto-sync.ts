@@ -3,7 +3,7 @@ import type { Config } from "../config.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { syncLocal } from "../library/sync-local.js";
 import { syncPeer } from "../library/sync-peer.js";
-import { runMergePipeline } from "../library/merge-pipeline.js";
+import { runMergePipelineAsync } from "../library/merge-pipeline.js";
 import { gossipFromPeer } from "../federation/gossip.js";
 import { SyncOperationService } from "./sync-operations.js";
 import { LastFmClient } from "./lastfm.js";
@@ -120,7 +120,7 @@ export class AutoSyncService {
           this.lastFmClient ?? null,
           this.fanartTvClient ?? null,
         );
-        const pipelineReport = runMergePipeline(this.db, {
+        const pipelineReport = await runMergePipelineAsync(this.db, {
           logger: { warn: (msg) => this.log.error(msg), info: (msg) => this.log.info(msg) },
         });
         this.log.info(
@@ -202,7 +202,7 @@ export class AutoSyncService {
         }
       }
       if (anySynced) {
-        runMergePipeline(this.db, {
+        await runMergePipelineAsync(this.db, {
           logger: { warn: (msg) => this.log.error(msg), info: (msg) => this.log.info(msg) },
         });
       }

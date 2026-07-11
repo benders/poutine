@@ -12,6 +12,7 @@
     "typecheck": "pnpm --filter hub typecheck && pnpm --filter frontend typecheck",
     "verify": "pnpm typecheck && pnpm lint:boundary && pnpm test",
     "verify:full": "pnpm verify && pnpm test:federation",
+    "test:integration": "pnpm --filter hub test:integration",
     "hub:up": "docker compose up -d --build",
     "hub:up:fresh": "docker compose up -d --build --force-recreate",
     "hub:logs": "bash scripts/hub-native-macos.sh logs",
