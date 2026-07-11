@@ -1,13 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { SubsonicClient } from "../src/adapters/subsonic.js";
 
-const client = new SubsonicClient({
-  url: "https://navidrome-west.slackworks.com",
-  username: "poutine",
-  password: "Kb43H_JB",
-});
+// Requires a reachable Navidrome — configure via env, never hardcode
+// credentials here. Skipped entirely (e.g. in CI) when unset.
+const url = process.env.NAVIDROME_TEST_URL;
+const username = process.env.NAVIDROME_TEST_USER ?? "poutine";
+const password = process.env.NAVIDROME_TEST_PASSWORD ?? "";
 
-describe("SubsonicClient integration (real Navidrome)", () => {
+const client = new SubsonicClient({ url: url ?? "http://unset.invalid", username, password });
+
+describe.skipIf(!url)("SubsonicClient integration (real Navidrome)", () => {
   it("ping returns ok status", async () => {
     const result = await client.ping();
     expect(result.status).toBe("ok");
