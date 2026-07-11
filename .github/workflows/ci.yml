@@ -38,6 +38,9 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      - name: Hub integration tests (merge-worker, #242)
+        run: pnpm test:integration
+
   federation:
     runs-on: ubuntu-latest
     timeout-minutes: 20

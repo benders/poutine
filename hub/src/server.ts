@@ -5,6 +5,7 @@ import fastifyStatic from "@fastify/static";
 import { loadConfig } from "./config.js";
 import { APP_VERSION, FEDERATION_API_VERSION } from "./version.js";
 import { createDatabase } from "./db/client.js";
+import { shutdownMergeWorker } from "./library/merge-pipeline.js";
 import { createPlayerDatabase, defaultPlayerDbPath } from "./db/player-db.js";
 import {
   createPlayerSettings,
@@ -649,6 +650,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     // Await so byebye packets actually leave the socket before close().
     if (ssdpAdvertiser) await ssdpAdvertiser.stop();
     process.off("SIGHUP", sighupHandler);
+    // Terminate any in-flight merge worker (#242 Phase 3) before closing the
+    // main connection — the worker holds its own handle to the same file.
+    await shutdownMergeWorker();
     db.close();
   });
 
