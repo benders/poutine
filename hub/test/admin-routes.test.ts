@@ -390,6 +390,209 @@ describe("admin — delete peer data", () => {
   });
 });
 
+// ── /api/admin/hub/peers/:id lifecycle (issue #244, Phase 2) ─────────────────────────
+
+describe("admin — peer lifecycle", () => {
+  let app: FastifyInstance;
+  let token: string;
+
+  function seedPeer(id: string, lifecycle = "active") {
+    app.db
+      .prepare(
+        `INSERT OR IGNORE INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status, public_key, lifecycle)
+         VALUES (?, ?, ?, 'subsonic', '', 'admin-1', 'online', 'ed25519:${Buffer.alloc(32, 7).toString("base64")}', ?)`,
+      )
+      .run(id, id, `http://${id}.example.com`, lifecycle);
+    app.peerRegistry.reload();
+  }
+
+  beforeEach(async () => {
+    app = await buildApp(testConfig);
+    await app.ready();
+    seedAdmin(app);
+    token = await loginAs(app, "owner", "adminpass");
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("POST /peers/:id/disable → sets lifecycle=disabled and reloads the registry", async () => {
+    seedPeer("peer-a");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/peer-a/disable",
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id: "peer-a", lifecycle: "disabled" });
+    expect(app.peerRegistry.peers.get("peer-a")?.lifecycle).toBe("disabled");
+  });
+
+  it("disable → enable round trip returns to active and reloads the registry", async () => {
+    seedPeer("peer-b");
+    await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/peer-b/disable",
+      headers: authHeader(token),
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/peer-b/enable",
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id: "peer-b", lifecycle: "active" });
+    expect(app.peerRegistry.peers.get("peer-b")?.lifecycle).toBe("active");
+  });
+
+  it("POST /peers/:id/disable for unknown id → 404", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/nonexistent/disable",
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("POST /peers/local/disable → rejected (400)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/local/disable",
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("tombstoned peer cannot be disabled", async () => {
+    seedPeer("peer-c", "tombstoned");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/peer-c/disable",
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("tombstoned peer cannot be enabled", async () => {
+    seedPeer("peer-d", "tombstoned");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/peer-d/enable",
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("unauthenticated request → 401", async () => {
+    seedPeer("peer-e");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/peer-e/disable",
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("authenticated non-admin user → 403", async () => {
+    seedPeer("peer-e2");
+    const enc = setPassword("userpass", app.passwordKey);
+    app.db
+      .prepare(
+        "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 0)",
+      )
+      .run("user-1", "regular", enc);
+    const userToken = await loginAs(app, "regular", "userpass");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/peer-e2/disable",
+      headers: authHeader(userToken),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("DELETE /peers/:id → tombstones the peer and writes a verifiable signed tombstone", async () => {
+    seedPeer("peer-f");
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/peer-f",
+      headers: authHeader(token),
+      payload: { reason: "spamming gossip" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toMatchObject({ id: "peer-f", lifecycle: "tombstoned" });
+    expect(body.tombstone.reason).toBe("spamming gossip");
+    expect(app.peerRegistry.peers.get("peer-f")?.lifecycle).toBe("tombstoned");
+
+    const row = app.db
+      .prepare("SELECT * FROM peer_tombstones WHERE instance_id = 'peer-f'")
+      .get() as {
+      instance_id: string;
+      removed_by: string;
+      reason: string | null;
+      created_at: string;
+      signature: string;
+    };
+    expect(row).toBeTruthy();
+    const { verifyTombstone } = await import("../src/federation/tombstones.js");
+    const { createPublicKey } = await import("node:crypto");
+    expect(
+      verifyTombstone(
+        {
+          instanceId: row.instance_id,
+          removedBy: row.removed_by,
+          reason: row.reason,
+          createdAt: row.created_at,
+          signature: row.signature,
+        },
+        createPublicKey(app.privateKey),
+      ),
+    ).toBe(true);
+  });
+
+  it("DELETE /peers/:id is idempotent — deleting an already-tombstoned peer doesn't error or duplicate the row", async () => {
+    seedPeer("peer-g");
+    const first = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/peer-g",
+      headers: authHeader(token),
+    });
+    expect(first.statusCode).toBe(200);
+    const firstCreatedAt = first.json().tombstone.createdAt;
+
+    const second = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/peer-g",
+      headers: authHeader(token),
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().tombstone.createdAt).toBe(firstCreatedAt);
+
+    const count = app.db
+      .prepare("SELECT COUNT(*) AS n FROM peer_tombstones WHERE instance_id = 'peer-g'")
+      .get() as { n: number };
+    expect(count.n).toBe(1);
+  });
+
+  it("DELETE /peers/:id for unknown id → 404", async () => {
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/nonexistent",
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("DELETE /peers/local → rejected (400)", async () => {
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/local",
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
 // ── /api/admin/hub/sync ───────────────────────────────────────────────────────────────
 
 describe("admin — sync", () => {
