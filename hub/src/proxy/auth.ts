@@ -12,8 +12,8 @@
 
 import crypto from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { FEDERATION_API_VERSION } from "../version.js";
 import { canonicalSigningPayload, verifyRequest } from "../federation/signing.js";
+import { MIN_FEDERATION_API_VERSION } from "../federation/peer-auth.js";
 import { verifyToken } from "../auth/jwt.js";
 import { verifyPassword, getStoredPassword } from "../auth/passwords.js";
 import type { PeerRegistry } from "../federation/peers.js";
@@ -101,7 +101,11 @@ export function createRequireProxyAuth(deps: {
         return;
       }
 
-      // Enforce minimum federation API version
+      // Enforce the minimum federation API version — the FLOOR, not the
+      // current version. Comparing against FEDERATION_API_VERSION here would
+      // cut older-but-supported peers off from /proxy/* on every protocol
+      // bump (a v6 peer must keep streaming from a v7 hub while the floor
+      // stays 5). Mirrors MIN_FEDERATION_API_VERSION in federation/peer-auth.ts.
       const versionCheckEnabled = process.env.POUTINE_DISABLE_VERSION_CHECK !== "true";
       if (versionCheckEnabled) {
         const apiVersionHeader = request.headers["poutine-api-version"];
@@ -110,13 +114,23 @@ export function createRequireProxyAuth(deps: {
           : apiVersionHeader;
         const peerApiVersion = rawVersion !== undefined ? parseInt(String(rawVersion), 10) : NaN;
 
-        if (isNaN(peerApiVersion) || peerApiVersion < FEDERATION_API_VERSION) {
+        if (isNaN(peerApiVersion) || peerApiVersion < MIN_FEDERATION_API_VERSION) {
           const gotVersion = isNaN(peerApiVersion) ? "(none)" : String(peerApiVersion);
           reply.code(403).send({
-            error: `Peer ${instanceId} apiVersion ${gotVersion} is below minimum required ${FEDERATION_API_VERSION}`,
+            error: `Peer ${instanceId} apiVersion ${gotVersion} is below minimum required ${MIN_FEDERATION_API_VERSION}`,
           });
           return;
         }
+      }
+
+      // #244: locally disabled/tombstoned peers are refused here too — the
+      // matching gate for /federation/* lives in federation/peer-auth.ts.
+      // Deliberately AFTER signature verification (only the key holder
+      // learns it is non-active) with the same uniform 403 body, so the
+      // caller cannot distinguish "disabled" from "tombstoned".
+      if (peer.lifecycle !== "active") {
+        reply.code(403).send({ error: "forbidden" });
+        return;
       }
 
       request.proxyAuth = { kind: "peer", peerId: instanceId };

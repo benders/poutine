@@ -7,6 +7,7 @@
 // trust. Newly discovered peers are inserted into `instances` as enabled.
 
 import type Database from "better-sqlite3";
+import type { KeyObject } from "node:crypto";
 import type { Peer, PeerRegistry } from "./peers.js";
 import type { FederationFetcher } from "../library/sync-peer.js";
 import {
@@ -15,6 +16,7 @@ import {
   type InvitationPayload,
 } from "./invitations.js";
 import { parsePeerPublicKey } from "./signing.js";
+import { verifyTombstone, type TombstoneRecord } from "./tombstones.js";
 
 export interface GossipPeerEntry {
   id: string;
@@ -27,8 +29,20 @@ export interface GossipPeerEntry {
   inviter_public_key: string;
 }
 
+// #244 Phase 3: a gossiped tombstone. Wire-additive to GossipResponse — a v5/v6
+// responder simply omits `tombstones`, and gossipFromPeer treats an absent
+// field as an empty list.
+export interface GossipTombstoneEntry {
+  instance_id: string;
+  removed_by: string;
+  reason: string | null;
+  created_at: string;
+  signature: string;
+}
+
 interface GossipResponse {
   peers: GossipPeerEntry[];
+  tombstones?: GossipTombstoneEntry[];
 }
 
 export interface GossipLogger {
@@ -40,9 +54,173 @@ export interface GossipResult {
   added: string[];
   rejected: number;
   alreadyKnown: number;
+  tombstonesAdded: number;
 }
 
 export type IngestOutcome = "added" | "alreadyKnown" | "rejected";
+
+/**
+ * #244: true if `instanceId` is tombstoned — either it has a row in
+ * `peer_tombstones`, or we still hold an `instances` row for it with
+ * `lifecycle = 'tombstoned'`. Minimal local-only check; full tombstone
+ * semantics (signed records propagated cluster-wide) are Phase 3.
+ */
+function isLocallyTombstoned(db: Database.Database, instanceId: string): boolean {
+  const tombstoned = db
+    .prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = ?")
+    .get(instanceId);
+  if (tombstoned) return true;
+  const row = db
+    .prepare("SELECT lifecycle FROM instances WHERE id = ?")
+    .get(instanceId) as { lifecycle: string } | undefined;
+  return row?.lifecycle === "tombstoned";
+}
+
+/**
+ * #244 Phase 3: re-admission check. A locally tombstoned instance id can
+ * come back if the invitation now being gossiped for it was issued *after*
+ * the eviction — proof that the instance was re-invited post-tombstone.
+ * Requires a signed `peer_tombstones` row to compare against; a bare
+ * `instances.lifecycle = 'tombstoned'` with no tombstone row (e.g. set
+ * directly in a test, or pre-Phase-3 data) has no provenance to compare and
+ * stays blocked. Pure check — deliberately no side effects, because at the
+ * point it runs the entry's invitation signature has NOT been verified yet;
+ * the caller clears the tombstone only after full validation, so a forged
+ * `issued_at` on an otherwise-invalid entry cannot un-evict anyone.
+ */
+function invitationPostdatesTombstone(
+  db: Database.Database,
+  instanceId: string,
+  invitationPayload: unknown,
+): boolean {
+  const issuedAt = (invitationPayload as { issued_at?: unknown } | undefined)?.issued_at;
+  if (typeof issuedAt !== "string") return false;
+  const tombstone = db
+    .prepare("SELECT created_at FROM peer_tombstones WHERE instance_id = ?")
+    .get(instanceId) as { created_at: string } | undefined;
+  if (!tombstone) return false;
+  return new Date(issuedAt).getTime() > new Date(tombstone.created_at).getTime();
+}
+
+/**
+ * #244 Phase 3: validate and ingest one gossiped tombstone. Trust model: any
+ * hub whose pinned pubkey we can resolve (ourselves, or a peer we know —
+ * including disabled ones, since disabled is local policy, not a trust
+ * revocation) may evict any other instance id. A hub we've already evicted
+ * cannot evict others. We never accept a tombstone naming ourselves — a peer
+ * cannot evict the local hub from its own instance. Deliberately does NOT
+ * run the merge pipeline — gossip happens every sync cycle and merging on
+ * every cycle is too heavy; content disappears at the next merge (the same
+ * sync call runs one right after gossip).
+ */
+export function ingestGossipTombstone(
+  db: Database.Database,
+  registry: PeerRegistry,
+  entry: unknown,
+  ctx: { sourceLabel: string },
+  log?: GossipLogger,
+): IngestOutcome {
+  const { sourceLabel } = ctx;
+  if (!entry || typeof entry !== "object") return "rejected";
+  const e = entry as Partial<GossipTombstoneEntry>;
+  if (
+    typeof e.instance_id !== "string" ||
+    typeof e.removed_by !== "string" ||
+    typeof e.created_at !== "string" ||
+    typeof e.signature !== "string" ||
+    (e.reason !== null && e.reason !== undefined && typeof e.reason !== "string")
+  ) {
+    return "rejected";
+  }
+
+  if (e.instance_id === registry.instanceId) {
+    log?.warn?.(`${sourceLabel}: refused tombstone naming this hub's own instance id`);
+    return "rejected";
+  }
+
+  // Already on file (relayed by more than one peer) — nothing to do.
+  if (db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = ?").get(e.instance_id)) {
+    return "alreadyKnown";
+  }
+
+  // A tombstone older than the invitation we hold for that instance is
+  // stale — the instance was re-invited after this eviction (#244
+  // re-admission). Rejecting it is what lets the mesh converge after a
+  // re-admission: without this, any hub still relaying the old tombstone
+  // would re-evict the peer, flipping it back and forth forever.
+  const inst = db
+    .prepare("SELECT invitation_payload FROM instances WHERE id = ?")
+    .get(e.instance_id) as { invitation_payload: string | null } | undefined;
+  if (inst?.invitation_payload) {
+    let issuedAt: unknown;
+    try {
+      issuedAt = (JSON.parse(inst.invitation_payload) as { issued_at?: unknown }).issued_at;
+    } catch {
+      issuedAt = undefined; // unparseable stored payload — treat as no invitation
+    }
+    if (
+      typeof issuedAt === "string" &&
+      new Date(issuedAt).getTime() > new Date(e.created_at).getTime()
+    ) {
+      log?.info?.(
+        `${sourceLabel}: stale tombstone for ${e.instance_id} rejected — local invitation postdates it`,
+      );
+      return "rejected";
+    }
+  }
+
+  let removerPublicKey: KeyObject | undefined;
+  if (e.removed_by === registry.instanceId) {
+    removerPublicKey = parsePeerPublicKey(registry.publicKeySpec);
+  } else {
+    removerPublicKey = registry.peers.get(e.removed_by)?.publicKey;
+  }
+  if (!removerPublicKey) {
+    log?.warn?.(
+      `${sourceLabel}: tombstone for ${e.instance_id} rejected — remover ${e.removed_by} is not a known peer`,
+    );
+    return "rejected";
+  }
+
+  if (isLocallyTombstoned(db, e.removed_by)) {
+    log?.warn?.(
+      `${sourceLabel}: tombstone for ${e.instance_id} rejected — remover ${e.removed_by} is locally tombstoned`,
+    );
+    return "rejected";
+  }
+
+  const record: TombstoneRecord = {
+    instanceId: e.instance_id,
+    removedBy: e.removed_by,
+    reason: e.reason ?? null,
+    createdAt: e.created_at,
+    signature: e.signature,
+  };
+  if (!verifyTombstone(record, removerPublicKey)) {
+    log?.warn?.(`${sourceLabel}: tombstone for ${e.instance_id} signature invalid`);
+    return "rejected";
+  }
+
+  // Relay verbatim — keep the original signature/remover/timestamp, we are
+  // not re-signing on their behalf.
+  db.prepare(
+    `INSERT INTO peer_tombstones (instance_id, removed_by, reason, created_at, signature)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(instance_id) DO NOTHING`,
+  ).run(record.instanceId, record.removedBy, record.reason, record.createdAt, record.signature);
+
+  const instRow = db
+    .prepare("SELECT lifecycle FROM instances WHERE id = ?")
+    .get(e.instance_id) as { lifecycle: string } | undefined;
+  if (instRow && instRow.lifecycle !== "tombstoned") {
+    db.prepare(
+      "UPDATE instances SET lifecycle = 'tombstoned', lifecycle_changed_at = datetime('now') WHERE id = ?",
+    ).run(e.instance_id);
+  }
+
+  log?.info?.(`${sourceLabel}: relayed tombstone for ${e.instance_id} (removed by ${e.removed_by})`);
+  return "added";
+}
 
 /**
  * Validate a single gossip entry and insert it into `instances` if new.
@@ -70,6 +248,20 @@ export function ingestGossipEntry(
   // Cheap id-check first: if we already know this peer there's nothing to do,
   // and validating an entry we'd throw away wastes log-warn noise.
   if (typeof e.id === "string" && knownIds.has(e.id)) return "alreadyKnown";
+
+  // #244: refuse to re-introduce an instance id we've locally evicted, unless
+  // the invitation now being gossiped for it postdates our tombstone (Phase
+  // 3 re-admission — proof the instance was re-invited after eviction).
+  // Pure check only at this point — the tombstone is cleared further down,
+  // after the entry's invitation signature has actually been verified.
+  let readmit = false;
+  if (typeof e.id === "string" && isLocallyTombstoned(db, e.id)) {
+    if (!invitationPostdatesTombstone(db, e.id, e.invitation_payload)) {
+      log?.info?.(`${sourceLabel}: suppressed re-introduction of tombstoned peer ${e.id}`);
+      return "rejected";
+    }
+    readmit = true;
+  }
   if (
     typeof e.id !== "string" ||
     typeof e.url !== "string" ||
@@ -94,6 +286,15 @@ export function ingestGossipEntry(
     p.inviter_public_key !== e.inviter_public_key
   ) {
     log?.warn?.(`${sourceLabel}: entry ${e.id} inviter fields do not match payload`);
+    return "rejected";
+  }
+
+  // #244: an inviter we've locally tombstoned must not be allowed to grow
+  // the mesh — an evicted hub could otherwise keep vouching for new peers.
+  // Disabled inviters are NOT rejected here: disabled is local-only policy,
+  // not a trust revocation, so their invitations still verify.
+  if (isLocallyTombstoned(db, p.inviter_id)) {
+    log?.warn?.(`${sourceLabel}: entry ${e.id} rejected — inviter ${p.inviter_id} is locally tombstoned`);
     return "rejected";
   }
 
@@ -141,11 +342,33 @@ export function ingestGossipEntry(
       .get() as { next: number }
   ).next;
   try {
-    db.prepare(
+    // The entry is fully verified — only now is it safe to act on the
+    // re-admission the postdated invitation proves. ON CONFLICT is scoped to
+    // tombstoned rows (mirrors the handshake upsert in routes/federation.ts):
+    // the kept-through-eviction row is refreshed and flipped back to
+    // 'active'; any other conflicting row (e.g. one outside the registry
+    // snapshot because it has no public_key) is left untouched, matching the
+    // pre-#244 behavior where the plain INSERT threw.
+    if (readmit) {
+      db.prepare("DELETE FROM peer_tombstones WHERE instance_id = ?").run(e.id);
+    }
+    const info = db.prepare(
       `INSERT INTO instances
          (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id,
           public_key, invitation_payload, invitation_signature, inviter_id, inviter_url, inviter_public_key)
-       VALUES (?, ?, ?, 'subsonic', '', ?, 'offline', ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, 'subsonic', '', ?, 'offline', ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         url = excluded.url,
+         public_key = excluded.public_key,
+         invitation_payload = excluded.invitation_payload,
+         invitation_signature = excluded.invitation_signature,
+         inviter_id = excluded.inviter_id,
+         inviter_url = excluded.inviter_url,
+         inviter_public_key = excluded.inviter_public_key,
+         lifecycle = 'active',
+         lifecycle_changed_at = datetime('now'),
+         updated_at = datetime('now')
+       WHERE instances.lifecycle = 'tombstoned'`,
     ).run(
       e.id,
       e.id,
@@ -159,8 +382,16 @@ export function ingestGossipEntry(
       e.inviter_url,
       e.inviter_public_key,
     );
+    if (info.changes === 0) {
+      log?.warn?.(`${sourceLabel}: entry ${e.id} conflicts with an existing non-readmission row`);
+      return "rejected";
+    }
     knownIds.add(e.id);
-    log?.info?.(`${sourceLabel}: added ${e.id} (via inviter ${e.inviter_id})`);
+    if (readmit) {
+      log?.info?.(`${sourceLabel}: cleared tombstone for ${e.id} — invitation postdates eviction`);
+    } else {
+      log?.info?.(`${sourceLabel}: added ${e.id} (via inviter ${e.inviter_id})`);
+    }
     return "added";
   } catch (err) {
     log?.warn?.(`${sourceLabel}: insert failed for ${e.id}: ${String(err)}`);
@@ -180,7 +411,7 @@ export async function gossipFromPeer(
   asUser: string,
   log?: GossipLogger,
 ): Promise<GossipResult> {
-  const result: GossipResult = { added: [], rejected: 0, alreadyKnown: 0 };
+  const result: GossipResult = { added: [], rejected: 0, alreadyKnown: 0, tombstonesAdded: 0 };
   const res = await federatedFetch(peer, "/federation/peers", { asUser });
   if (!res.ok) {
     throw new Error(`gossip ${peer.id}: HTTP ${res.status}`);
@@ -192,7 +423,18 @@ export async function gossipFromPeer(
   }
 
   const localId = registry.instanceId;
-  const knownIds = new Set<string>(["local", localId, ...registry.peers.keys()]);
+  // Tombstoned peer ids are deliberately excluded from "known" — they must
+  // still be re-evaluated by ingestGossipEntry so a postdated re-invitation
+  // can clear the tombstone (#244 Phase 3 re-admission). Disabled peers stay
+  // in knownIds: disabled is local-only policy, not something gossip should
+  // ever re-validate or reinsert.
+  const knownIds = new Set<string>([
+    "local",
+    localId,
+    ...Array.from(registry.peers.values())
+      .filter((p) => p.lifecycle !== "tombstoned")
+      .map((p) => p.id),
+  ]);
 
   const owner = db.prepare("SELECT id FROM users LIMIT 1").get() as
     | { id: string }
@@ -203,7 +445,7 @@ export async function gossipFromPeer(
   }
 
   const sourceLabel = `gossip ${peer.id}`;
-  let inserted = false;
+  let changed = false;
   for (const entry of body.peers) {
     const outcome = ingestGossipEntry(
       db,
@@ -214,13 +456,24 @@ export async function gossipFromPeer(
     );
     if (outcome === "added") {
       result.added.push((entry as GossipPeerEntry).id);
-      inserted = true;
+      changed = true;
     } else if (outcome === "alreadyKnown") {
       result.alreadyKnown++;
     } else {
       result.rejected++;
     }
   }
-  if (inserted) registry.reload();
+
+  // #244 Phase 3: absent on a v5/v6 responder — treat as no tombstones.
+  const tombstones = Array.isArray(body.tombstones) ? body.tombstones : [];
+  for (const entry of tombstones) {
+    const outcome = ingestGossipTombstone(db, registry, entry, { sourceLabel }, log);
+    if (outcome === "added") {
+      result.tombstonesAdded++;
+      changed = true;
+    }
+  }
+
+  if (changed) registry.reload();
   return result;
 }

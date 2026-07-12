@@ -481,6 +481,12 @@ export async function readNavidromeViaProxy(
   if (result.errors.length === 0) {
     _deleteStale(db, instanceId, seenTrackRemoteIds, seenAlbumRemoteIds, seenArtistRemoteIds);
 
+    // #157: result.trackCount was incremented once per upsertTrack() call,
+    // which overshoots when the same song is revisited across overlapping
+    // album listings (multi-disc, compilations). seenTrackRemoteIds is the
+    // de-duplicated count and matches instance_tracks after _deleteStale.
+    result.trackCount = seenTrackRemoteIds.size;
+
     const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(1);
     const syncMessage = `Synced ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks in ${elapsedSec} seconds`;
 

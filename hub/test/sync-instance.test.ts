@@ -280,3 +280,103 @@ describe("multi-instance merge via proxy", () => {
     expect(sources[0].instance_id).toBe("local");
   });
 });
+
+// ── #157: track_count must be the deduplicated count ─────────────────────────
+
+describe("readNavidromeViaProxy trackCount de-duplication (#157)", () => {
+  let db: Database.Database;
+  let nav: http.Server;
+  let port: number;
+  let ownerId: string;
+
+  beforeEach(async () => {
+    db = createDatabase(":memory:");
+    ownerId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, ?)",
+    ).run(ownerId, "admin", "fakehash", 1);
+    db.prepare(
+      "INSERT INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run("dup-inst", "Dup Instance", "http://dup", "subsonic", "", ownerId, "online");
+
+    // One artist with two albums whose track listings both include the same
+    // song id — reproduces the overlapping-album-listing condition from #157
+    // (multi-disc / compilation quirks in real Navidrome data).
+    ({ server: nav, port } = await startFakeNavidrome((req, res) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const p = url.pathname;
+      const albumId = url.searchParams.get("id");
+
+      if (p.includes("getArtists")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(subsonicOk({
+          artists: { index: [{ name: "D", artist: [{ id: "art1", name: "Dup Artist", albumCount: 2 }] }] },
+        }));
+        return;
+      }
+      if (p.includes("getArtist")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(subsonicOk({
+          artist: {
+            id: "art1",
+            name: "Dup Artist",
+            albumCount: 2,
+            album: [
+              { id: "alb1", name: "Album One", songCount: 1, duration: 240 },
+              { id: "alb2", name: "Album Two", songCount: 1, duration: 240 },
+            ],
+          },
+        }));
+        return;
+      }
+      if (p.includes("getAlbum")) {
+        // Both albums list the SAME song id — the duplicate-upsert condition.
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(subsonicOk({
+          album: {
+            id: albumId,
+            name: albumId === "alb1" ? "Album One" : "Album Two",
+            artist: "Dup Artist",
+            artistId: "art1",
+            songCount: 1,
+            duration: 240,
+            song: [{
+              id: "dup-song",
+              title: "Duplicated Track",
+              artist: "Dup Artist",
+              track: 1,
+              duration: 240,
+              bitRate: 320,
+              suffix: "mp3",
+            }],
+          },
+        }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(subsonicOk({}));
+    }));
+  });
+
+  afterEach(async () => {
+    db.close();
+    await new Promise<void>((resolve) => nav.close(() => resolve()));
+  });
+
+  it("reports the deduplicated track count, not the visit count", async () => {
+    const result = await readNavidromeViaProxy(db, "dup-inst", makeProxyFetch(port));
+    expect(result.errors).toHaveLength(0);
+    // The song was visited twice (once per album) but is one distinct track.
+    expect(result.trackCount).toBe(1);
+
+    const rowCount = db
+      .prepare("SELECT COUNT(*) AS c FROM instance_tracks WHERE instance_id = 'dup-inst'")
+      .get() as { c: number };
+    expect(rowCount.c).toBe(1);
+
+    const instanceRow = db
+      .prepare("SELECT track_count FROM instances WHERE id = 'dup-inst'")
+      .get() as { track_count: number };
+    expect(instanceRow.track_count).toBe(1);
+  });
+});

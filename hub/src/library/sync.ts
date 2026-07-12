@@ -75,6 +75,9 @@ export async function syncAll(
     if (queue.length === 0) break;
     for (const peer of queue) {
       processed.add(peer.id);
+      // #244: disabled/tombstoned peers are skipped — no sync operations row,
+      // no health check, no proxy calls.
+      if (peer.lifecycle !== "active") continue;
       let peerOperationId: string | null = null;
       if (syncOpService) {
         peerOperationId = syncOpService.start(operationType, "peer", peer.id);

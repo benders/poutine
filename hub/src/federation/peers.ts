@@ -10,12 +10,19 @@ import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
 import { parsePeerPublicKey } from "./signing.js";
 
+// Peer admission state (issue #244) — orthogonal to the DB `status` column
+// (online/offline/degraded), which tracks liveness. `lifecycle` tracks
+// whether we still admit this peer at all: active (normal), disabled
+// (local-only policy, reversible), tombstoned (evicted).
+export type PeerLifecycle = "active" | "disabled" | "tombstoned";
+
 export interface Peer {
   id: string;
   url: string;       // hub base URL, no trailing slash
   proxyUrl: string;  // base URL for /proxy/* calls; equals url since v5
   publicKey: KeyObject;
   publicKeySpec: string; // original "ed25519:<base64>" string for logging
+  lifecycle: PeerLifecycle;
 }
 
 export interface PeerRegistry {
@@ -29,8 +36,13 @@ interface InstanceRow {
   id: string;
   url: string;
   public_key: string;
+  lifecycle: PeerLifecycle;
 }
 
+// Snapshot includes non-active peers on purpose — gossip provenance pinning
+// (gossip.ts) needs a disabled/tombstoned inviter's pubkey to still be
+// resolvable. Consumers that must not act on non-active peers (sync, inbound
+// auth, proxy) gate explicitly on `peer.lifecycle` (#244).
 function buildSnapshot(
   db: Database.Database,
   instanceId: string,
@@ -39,7 +51,7 @@ function buildSnapshot(
   const peers = new Map<string, Peer>();
   const rows = db
     .prepare(
-      "SELECT id, url, public_key FROM instances WHERE id != 'local' AND public_key IS NOT NULL",
+      "SELECT id, url, public_key, lifecycle FROM instances WHERE id != 'local' AND public_key IS NOT NULL",
     )
     .all() as InstanceRow[];
 
@@ -59,6 +71,7 @@ function buildSnapshot(
       proxyUrl: url,
       publicKey,
       publicKeySpec: row.public_key,
+      lifecycle: row.lifecycle,
     });
   }
   return peers;

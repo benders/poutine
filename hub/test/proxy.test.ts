@@ -199,6 +199,73 @@ describe("proxy — auth accept: Ed25519 peer signature", () => {
     // Navidrome stub returns 200 regardless — we just care auth passed (not 401)
     expect(res.statusCode).toBe(200);
   });
+
+  it("accepts a peer at the version floor, not just the current version (v5 vs v7)", async () => {
+    // Regression for the #244 bump: the check must compare against
+    // MIN_FEDERATION_API_VERSION (5), or every protocol bump cuts
+    // older-but-supported peers off from /proxy/*.
+    const url = "/proxy/rest/ping?f=json";
+    const headers = {
+      ...makePeerHeaders({ privateKey: setup.privKeyA, instanceId: "peer-a", url }),
+      "poutine-api-version": "5",
+    };
+    const res = await setup.app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("rejects a peer below the version floor", async () => {
+    const url = "/proxy/rest/ping?f=json";
+    const headers = {
+      ...makePeerHeaders({ privateKey: setup.privKeyA, instanceId: "peer-a", url }),
+      "poutine-api-version": "4",
+    };
+    const res = await setup.app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("proxy — lifecycle gate on peer auth (#244)", () => {
+  let setup: TestSetup;
+
+  beforeEach(async () => {
+    setup = await buildTestSetup();
+  });
+
+  afterEach(async () => {
+    await teardown(setup);
+  });
+
+  function signedPing() {
+    const url = "/proxy/rest/ping?f=json";
+    const headers = makePeerHeaders({
+      privateKey: setup.privKeyA,
+      instanceId: "peer-a",
+      url,
+    });
+    return setup.app.inject({ method: "GET", url, headers });
+  }
+
+  it("refuses a disabled peer's validly signed request with a uniform 403", async () => {
+    setup.app.db
+      .prepare("UPDATE instances SET lifecycle = 'disabled' WHERE id = 'peer-a'")
+      .run();
+    setup.app.peerRegistry.reload();
+
+    const res = await signedPing();
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "forbidden" });
+  });
+
+  it("refuses a tombstoned peer with the identical 403 body as disabled", async () => {
+    setup.app.db
+      .prepare("UPDATE instances SET lifecycle = 'tombstoned' WHERE id = 'peer-a'")
+      .run();
+    setup.app.peerRegistry.reload();
+
+    const res = await signedPing();
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "forbidden" });
+  });
 });
 
 describe("proxy — auth accept: JWT", () => {

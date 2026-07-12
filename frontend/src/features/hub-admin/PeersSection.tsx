@@ -1,17 +1,54 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getPeers, triggerSync, deletePeerData } from "@/lib/api";
+import { getPeers, triggerSync, deletePeerData, disablePeer, enablePeer, removePeer } from "@/lib/api";
 import type { Peer } from "@/lib/api";
 import { formatTimeAgo } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { Server, Wifi, WifiOff, RefreshCw, Trash2 } from "lucide-react";
+import { Server, Wifi, WifiOff, RefreshCw, Trash2, Ban, Play, XCircle } from "lucide-react";
 
-function PeerRow({ peer }: { peer: Peer }) {
+function LifecycleBadge({ peer }: { peer: Peer }) {
+  if (peer.lifecycle === "disabled") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-warning/10 text-warning">
+        <Ban className="w-3 h-3" />
+        Disabled
+      </span>
+    );
+  }
+  if (peer.lifecycle === "tombstoned") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-error/10 text-error">
+        <XCircle className="w-3 h-3" />
+        Removed
+      </span>
+    );
+  }
+  return null;
+}
+
+function PeerRow({
+  peer,
+  onDisable,
+  onEnable,
+  onRemove,
+  disablePending,
+  enablePending,
+  removePending,
+}: {
+  peer: Peer;
+  onDisable: (id: string) => void;
+  onEnable: (id: string) => void;
+  onRemove: (id: string) => void;
+  disablePending: boolean;
+  enablePending: boolean;
+  removePending: boolean;
+}) {
   const statusConfig =
     peer.status === "online"
       ? { className: "bg-success/10 text-success", icon: <Wifi className="w-3 h-3" />, label: "Online" }
       : { className: "bg-error/10 text-error", icon: <WifiOff className="w-3 h-3" />, label: peer.status };
 
   const hasCounts = peer.trackCount > 0 || peer.artistCount > 0 || peer.albumCount > 0;
+  const tombstoned = peer.lifecycle === "tombstoned";
 
   return (
     <div className="px-4 py-3 bg-surface border border-border rounded-lg">
@@ -29,6 +66,7 @@ function PeerRow({ peer }: { peer: Peer }) {
               {statusConfig.icon}
               {statusConfig.label}
             </span>
+            <LifecycleBadge peer={peer} />
           </div>
           <p className="text-xs text-text-muted truncate">{peer.url}</p>
           {(peer.appVersion || peer.apiVersion) && (
@@ -40,6 +78,49 @@ function PeerRow({ peer }: { peer: Peer }) {
         </div>
         <div className="hidden sm:block text-xs text-text-secondary shrink-0">
           {peer.lastSeen ? `Last seen ${formatTimeAgo(peer.lastSeen)}` : "Never synced"}
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {!tombstoned && peer.lifecycle === "active" && (
+            <button
+              onClick={() => onDisable(peer.id)}
+              disabled={disablePending}
+              className="flex items-center gap-1 px-2 py-1.5 bg-surface border border-border hover:bg-surface-hover rounded-lg text-xs text-text-primary transition-colors disabled:opacity-50"
+              title="Stop syncing from and proxying to this peer"
+            >
+              <Ban className="w-3.5 h-3.5" />
+              Disable
+            </button>
+          )}
+          {!tombstoned && peer.lifecycle === "disabled" && (
+            <button
+              onClick={() => onEnable(peer.id)}
+              disabled={enablePending}
+              className="flex items-center gap-1 px-2 py-1.5 bg-surface border border-border hover:bg-surface-hover rounded-lg text-xs text-text-primary transition-colors disabled:opacity-50"
+              title="Resume syncing and proxying to this peer"
+            >
+              <Play className="w-3.5 h-3.5" />
+              Enable
+            </button>
+          )}
+          {!tombstoned && (
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Remove peer "${peer.id}"? This is irreversible — the peer will need a new invitation to rejoin.`,
+                  )
+                ) {
+                  onRemove(peer.id);
+                }
+              }}
+              disabled={removePending}
+              className="flex items-center gap-1 px-2 py-1.5 bg-surface border border-error/40 hover:bg-error/10 rounded-lg text-xs text-error transition-colors disabled:opacity-50"
+              title="Evict this peer permanently"
+            >
+              <XCircle className="w-3.5 h-3.5" />
+              Remove
+            </button>
+          )}
         </div>
       </div>
       {hasCounts && (
@@ -84,6 +165,25 @@ export function PeersSection() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-peers"] });
     },
+  });
+
+  const invalidatePeers = () => {
+    queryClient.invalidateQueries({ queryKey: ["admin-peers"] });
+    queryClient.invalidateQueries({ queryKey: ["albumList2"] });
+    queryClient.invalidateQueries({ queryKey: ["artists"] });
+  };
+
+  const disableMutation = useMutation({
+    mutationFn: (id: string) => disablePeer(id),
+    onSuccess: invalidatePeers,
+  });
+  const enableMutation = useMutation({
+    mutationFn: (id: string) => enablePeer(id),
+    onSuccess: invalidatePeers,
+  });
+  const removeMutation = useMutation({
+    mutationFn: (id: string) => removePeer(id),
+    onSuccess: invalidatePeers,
   });
 
   return (
@@ -150,7 +250,18 @@ export function PeersSection() {
             or paste one you've received.
           </p>
         )}
-        {peers?.map((peer) => <PeerRow key={peer.id} peer={peer} />)}
+        {peers?.map((peer) => (
+          <PeerRow
+            key={peer.id}
+            peer={peer}
+            onDisable={(id) => disableMutation.mutate(id)}
+            onEnable={(id) => enableMutation.mutate(id)}
+            onRemove={(id) => removeMutation.mutate(id)}
+            disablePending={disableMutation.isPending && disableMutation.variables === peer.id}
+            enablePending={enableMutation.isPending && enableMutation.variables === peer.id}
+            removePending={removeMutation.isPending && removeMutation.variables === peer.id}
+          />
+        ))}
       </div>
     </section>
   );

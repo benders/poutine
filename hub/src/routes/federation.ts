@@ -157,6 +157,28 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "Invitee id collides with this hub" });
     }
 
+    // #244 Phase 3 re-admission: a locally tombstoned instance id may not
+    // redeem a new invitation unless that invitation was issued *after* the
+    // tombstone — proof the invitee was genuinely re-invited post-eviction.
+    // No tombstone row on file (e.g. lifecycle set directly, pre-Phase-3
+    // data) means there's no provenance to compare against, so it stays
+    // blocked rather than trusting the claim.
+    const existingInstance = app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = ?")
+      .get(invitee.id) as { lifecycle: string } | undefined;
+    if (existingInstance?.lifecycle === "tombstoned") {
+      const tombstoneRow = app.db
+        .prepare("SELECT created_at FROM peer_tombstones WHERE instance_id = ?")
+        .get(invitee.id) as { created_at: string } | undefined;
+      const issuedAt = new Date(signed.payload.issued_at).getTime();
+      const clears =
+        tombstoneRow !== undefined && issuedAt > new Date(tombstoneRow.created_at).getTime();
+      if (!clears) {
+        return reply.code(403).send({ error: "Instance is tombstoned by this hub" });
+      }
+      app.db.prepare("DELETE FROM peer_tombstones WHERE instance_id = ?").run(invitee.id);
+    }
+
     // SSRF guard: refuse to fetch /api/health unless the URL is a public
     // http(s) endpoint. Open invites otherwise let any caller probe internal
     // hosts via the inviter (issue #156).
@@ -212,12 +234,31 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
     ).next;
 
     const tx = app.db.transaction(() => {
+      // ON CONFLICT only fires for the re-admission path above (a
+      // previously tombstoned instance id whose row we kept) — any other
+      // conflict (still-active/disabled id) is a genuine collision the
+      // caller should see as a 409, so lifecycle is only forced to 'active'
+      // here, never touched for a row that wasn't tombstoned.
       app.db
         .prepare(
           `INSERT INTO instances
              (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id, server_version,
               public_key, invitation_payload, invitation_signature, inviter_id, inviter_url, inviter_public_key)
-           VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             url = excluded.url,
+             status = 'online',
+             server_version = excluded.server_version,
+             public_key = excluded.public_key,
+             invitation_payload = excluded.invitation_payload,
+             invitation_signature = excluded.invitation_signature,
+             inviter_id = excluded.inviter_id,
+             inviter_url = excluded.inviter_url,
+             inviter_public_key = excluded.inviter_public_key,
+             lifecycle = 'active',
+             lifecycle_changed_at = datetime('now'),
+             updated_at = datetime('now')
+           WHERE instances.lifecycle = 'tombstoned'`,
         )
         .run(
           invitee.id,
@@ -345,7 +386,29 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
       inviter_public_key: r.inviter_public_key,
     }));
 
-    return { peers };
+    // #244 Phase 3: sibling field, additive to the v5/v6 contract — an older
+    // peer reads only `body.peers` and never notices this. Straight from
+    // peer_tombstones; each row already carries its original signature.
+    const tombstoneRows = app.db
+      .prepare(
+        "SELECT instance_id, removed_by, reason, created_at, signature FROM peer_tombstones",
+      )
+      .all() as Array<{
+      instance_id: string;
+      removed_by: string;
+      reason: string | null;
+      created_at: string;
+      signature: string;
+    }>;
+    const tombstones = tombstoneRows.map((r) => ({
+      instance_id: r.instance_id,
+      removed_by: r.removed_by,
+      reason: r.reason,
+      created_at: r.created_at,
+      signature: r.signature,
+    }));
+
+    return { peers, tombstones };
   });
 
   // POST /federation/peers/announce — immediate-discovery push (issue #163).
@@ -378,10 +441,14 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
     if (!owner) {
       return reply.code(500).send({ error: "No user row for instance ownership" });
     }
+    // #244 Phase 3: exclude tombstoned peers from "known" so a postdated
+    // re-invitation can clear the tombstone (see gossip.ts knownIds).
     const knownIds = new Set<string>([
       "local",
       app.peerRegistry.instanceId,
-      ...app.peerRegistry.peers.keys(),
+      ...Array.from(app.peerRegistry.peers.values())
+        .filter((p) => p.lifecycle !== "tombstoned")
+        .map((p) => p.id),
     ]);
     const sourceLabel = `announce from ${request.peer.id}`;
     const outcome = ingestGossipEntry(

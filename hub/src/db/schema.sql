@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS instances (
   inviter_id TEXT,
   inviter_url TEXT,
   inviter_public_key TEXT,
+  -- Peer lifecycle (issue #244): admission state, orthogonal to the liveness
+  -- `status` column above. active = normal member; disabled = local-only
+  -- policy that stops sync/proxy/inbound for this peer (reversible, rows
+  -- kept, instant re-enable); tombstoned = peer evicted (Phase 3 gossips
+  -- this; here it only blocks local re-introduction). Never conflate with
+  -- `status`, which liveness/health-checks churn constantly.
+  lifecycle TEXT NOT NULL DEFAULT 'active', -- active | disabled | tombstoned
+  lifecycle_changed_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -77,6 +85,24 @@ CREATE TABLE IF NOT EXISTS invitations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_invitations_nonce ON invitations(nonce);
+
+-- ============================================================
+-- Federation: Peer Tombstones (issue #244)
+-- ============================================================
+-- Local record of peers this hub has evicted (lifecycle='tombstoned').
+-- Phase 3 gossips these so eviction propagates cluster-wide; this phase only
+-- stores them and uses presence here (or a matching instances.lifecycle row)
+-- to refuse re-introduction of the same instance id via gossip/announce.
+-- signature is removed_by's Ed25519 signature over the canonical tombstone
+-- payload — format defined in Phase 3.
+
+CREATE TABLE IF NOT EXISTS peer_tombstones (
+  instance_id TEXT PRIMARY KEY,
+  removed_by TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  signature TEXT NOT NULL
+);
 
 -- ============================================================
 -- Raw Instance Data (per-instance mirror)

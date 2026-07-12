@@ -17,6 +17,8 @@ import {
 import { randomUUID } from "node:crypto";
 import { normalizeLanUrl } from "../services/sonos-settings.js";
 import { requireAuth } from "../auth/middleware.js";
+import { createTombstone } from "../federation/tombstones.js";
+import type { PeerLifecycle } from "../federation/peers.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -416,6 +418,7 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
         id: peer.id,
         url: peer.url,
         publicKey: peer.publicKeySpec,
+        lifecycle: peer.lifecycle,
         status: alive ? "online" : "offline",
         lastSeen: row?.last_seen ?? null,
         lastSyncOk: row?.last_sync_ok != null ? row.last_sync_ok === 1 : null,
@@ -428,6 +431,125 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       };
     });
   });
+
+  // Shared lookup + guard for the three lifecycle-mutating routes below.
+  // Returns the current lifecycle row, or replies and returns null if the
+  // request should be rejected.
+  function loadPeerForLifecycleChange(
+    peerId: string,
+    reply: FastifyReply,
+  ): { lifecycle: PeerLifecycle } | null {
+    if (peerId === "local") {
+      reply.code(400).send({ error: "Cannot change lifecycle of the local instance" });
+      return null;
+    }
+    const row = app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = ?")
+      .get(peerId) as { lifecycle: PeerLifecycle } | undefined;
+    if (!row) {
+      reply.code(404).send({ error: "Peer not found" });
+      return null;
+    }
+    return row;
+  }
+
+  // POST /admin/peers/:peerId/disable — reversible local-only admission
+  // policy (#244 Phase 2). Stops sync/proxy/inbound for the peer immediately
+  // (enforcement is Phase 1); content disappears from the merged catalog on
+  // the next merge, which we run inline so the effect is immediate.
+  app.post<{ Params: { peerId: string } }>(
+    "/peers/:peerId/disable",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { peerId } = request.params;
+      const peer = loadPeerForLifecycleChange(peerId, reply);
+      if (!peer) return;
+      if (peer.lifecycle === "tombstoned") {
+        return reply.code(409).send({ error: "Peer is tombstoned; disable/enable no longer applies" });
+      }
+      app.db
+        .prepare(
+          "UPDATE instances SET lifecycle = 'disabled', lifecycle_changed_at = datetime('now') WHERE id = ?",
+        )
+        .run(peerId);
+      app.peerRegistry.reload();
+      await runMergePipelineAsync(app.db, {
+        logger: { warn: (msg) => app.log.warn(msg), info: (msg) => app.log.info(msg) },
+      });
+      return { id: peerId, lifecycle: "disabled" };
+    },
+  );
+
+  // POST /admin/peers/:peerId/enable — reverse of disable. Triggers the
+  // merge pipeline so the peer's tracks reappear without waiting for the
+  // next scheduled sync.
+  app.post<{ Params: { peerId: string } }>(
+    "/peers/:peerId/enable",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { peerId } = request.params;
+      const peer = loadPeerForLifecycleChange(peerId, reply);
+      if (!peer) return;
+      if (peer.lifecycle === "tombstoned") {
+        return reply.code(409).send({ error: "Peer is tombstoned; it cannot be re-enabled" });
+      }
+      app.db
+        .prepare(
+          "UPDATE instances SET lifecycle = 'active', lifecycle_changed_at = datetime('now') WHERE id = ?",
+        )
+        .run(peerId);
+      app.peerRegistry.reload();
+      await runMergePipelineAsync(app.db, {
+        logger: { warn: (msg) => app.log.warn(msg), info: (msg) => app.log.info(msg) },
+      });
+      return { id: peerId, lifecycle: "active" };
+    },
+  );
+
+  // DELETE /admin/peers/:peerId — evict the peer (tombstone). Not
+  // reversible via enable. Writes a signed peer_tombstones row (Phase 3
+  // gossips this) and runs the merge pipeline so the peer's content
+  // disappears from the merged catalog immediately. Idempotent: deleting an
+  // already-tombstoned peer returns the existing tombstone rather than
+  // erroring (the INSERT is a no-op on PK conflict).
+  app.delete<{ Params: { peerId: string }; Body: { reason?: string } }>(
+    "/peers/:peerId",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { peerId } = request.params;
+      const peer = loadPeerForLifecycleChange(peerId, reply);
+      if (!peer) return;
+
+      const alreadyTombstoned = peer.lifecycle === "tombstoned";
+      if (!alreadyTombstoned) {
+        app.db
+          .prepare(
+            "UPDATE instances SET lifecycle = 'tombstoned', lifecycle_changed_at = datetime('now') WHERE id = ?",
+          )
+          .run(peerId);
+      }
+      const tombstone = createTombstone(app.db, app.privateKey, {
+        instanceId: peerId,
+        removedBy: app.peerRegistry.instanceId,
+        reason: request.body?.reason ?? null,
+      });
+      app.peerRegistry.reload();
+      if (!alreadyTombstoned) {
+        await runMergePipelineAsync(app.db, {
+          logger: { warn: (msg) => app.log.warn(msg), info: (msg) => app.log.info(msg) },
+        });
+      }
+      return {
+        id: peerId,
+        lifecycle: "tombstoned",
+        tombstone: {
+          removedBy: tombstone.removedBy,
+          reason: tombstone.reason,
+          createdAt: tombstone.createdAt,
+        },
+      };
+    },
+  );
 
   // POST /admin/peers/invite — issue a signed invitation (federation v5, #147).
   // Body: { ourUrl: string, inviteeUrl?: string, expiresInSec?: number }
@@ -506,6 +628,30 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
           .send({ error: "Invitation issuer is this hub" });
       }
 
+      // #244 re-admission, invitee side: if WE have tombstoned the inviter,
+      // accepting its invitation is only allowed when the invitation
+      // postdates our tombstone — the same rule the inviter-side handshake
+      // applies (see routes/federation.ts). Checked before the network call
+      // so a refused accept never contacts the evicted hub.
+      const existingInviter = app.db
+        .prepare("SELECT lifecycle FROM instances WHERE id = ?")
+        .get(signed.payload.inviter_id) as { lifecycle: PeerLifecycle } | undefined;
+      if (existingInviter?.lifecycle === "tombstoned") {
+        const tombstoneRow = app.db
+          .prepare("SELECT created_at FROM peer_tombstones WHERE instance_id = ?")
+          .get(signed.payload.inviter_id) as { created_at: string } | undefined;
+        const clears =
+          tombstoneRow !== undefined &&
+          new Date(signed.payload.issued_at).getTime() >
+            new Date(tombstoneRow.created_at).getTime();
+        if (!clears) {
+          return reply.code(403).send({ error: "Inviter is tombstoned by this hub" });
+        }
+        app.db
+          .prepare("DELETE FROM peer_tombstones WHERE instance_id = ?")
+          .run(signed.payload.inviter_id);
+      }
+
       const proof = signInviteeProof(app.privateKey, signed.payload.nonce);
       const handshakeUrl = `${signed.payload.inviter_url}/federation/handshake`;
       const ourBaseUrl = ourUrl.replace(/\/+$/, "");
@@ -557,12 +703,33 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       ).next;
       const url = signed.payload.inviter_url.replace(/\/+$/, "");
       try {
+        // Idempotent: re-accepting from an already-known inviter refreshes
+        // our stored provenance to the fresh invitation instead of erroring
+        // on the PK. This matters for #244 re-admission — a re-invited hub
+        // still has the inviter's row from before its eviction, and the
+        // fresh payload is what our own gossip re-emits so OTHER hubs'
+        // postdating checks can clear their tombstones too. lifecycle flips
+        // to 'active' only from 'tombstoned' (cleared above); a locally
+        // disabled inviter stays disabled — accept doesn't override that
+        // local policy.
         app.db
           .prepare(
             `INSERT INTO instances
                (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id,
                 public_key, invitation_payload, invitation_signature, inviter_id, inviter_url, inviter_public_key)
-             VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               url = excluded.url,
+               status = 'online',
+               public_key = excluded.public_key,
+               invitation_payload = excluded.invitation_payload,
+               invitation_signature = excluded.invitation_signature,
+               inviter_id = excluded.inviter_id,
+               inviter_url = excluded.inviter_url,
+               inviter_public_key = excluded.inviter_public_key,
+               lifecycle = CASE WHEN instances.lifecycle = 'tombstoned' THEN 'active' ELSE instances.lifecycle END,
+               lifecycle_changed_at = CASE WHEN instances.lifecycle = 'tombstoned' THEN datetime('now') ELSE instances.lifecycle_changed_at END,
+               updated_at = datetime('now')`,
           )
           .run(
             signed.payload.inviter_id,

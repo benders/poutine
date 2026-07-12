@@ -157,10 +157,13 @@ export interface User {
   createdAt: string;
 }
 
+export type PeerLifecycle = "active" | "disabled" | "tombstoned";
+
 export interface Peer {
   id: string;
   url: string;
   publicKey: string;
+  lifecycle: PeerLifecycle;
   status: string;
   lastSeen: string | null;
   lastSyncOk: boolean | null;
@@ -268,6 +271,31 @@ export function triggerSync() {
 
 export async function deletePeerData(): Promise<void> {
   await apiFetch("/api/admin/hub/peers/data", { method: "DELETE" });
+}
+
+export function disablePeer(id: string) {
+  return apiFetch<{ id: string; lifecycle: PeerLifecycle }>(
+    `/api/admin/hub/peers/${id}/disable`,
+    { method: "POST" },
+  );
+}
+
+export function enablePeer(id: string) {
+  return apiFetch<{ id: string; lifecycle: PeerLifecycle }>(
+    `/api/admin/hub/peers/${id}/enable`,
+    { method: "POST" },
+  );
+}
+
+export function removePeer(id: string, reason?: string) {
+  return apiFetch<{
+    id: string;
+    lifecycle: PeerLifecycle;
+    tombstone: { removedBy: string; reason: string | null; createdAt: string };
+  }>(`/api/admin/hub/peers/${id}`, {
+    method: "DELETE",
+    body: reason ? JSON.stringify({ reason }) : undefined,
+  });
 }
 
 export function generateInvitation(opts: {
