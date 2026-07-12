@@ -114,8 +114,14 @@ function ChangePasswordForm({
     >
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <label className="block text-sm text-text-secondary mb-1">New password</label>
+          <label
+            htmlFor={`new-password-${user.id}`}
+            className="block text-sm text-text-secondary mb-1"
+          >
+            New password
+          </label>
           <input
+            id={`new-password-${user.id}`}
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -126,8 +132,14 @@ function ChangePasswordForm({
           />
         </div>
         <div>
-          <label className="block text-sm text-text-secondary mb-1">Confirm</label>
+          <label
+            htmlFor={`confirm-password-${user.id}`}
+            className="block text-sm text-text-secondary mb-1"
+          >
+            Confirm
+          </label>
           <input
+            id={`confirm-password-${user.id}`}
             type="password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}

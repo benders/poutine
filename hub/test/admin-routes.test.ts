@@ -370,6 +370,31 @@ describe("admin — users CRUD", () => {
     });
     expect(res.statusCode).toBe(401);
   });
+
+  it("PUT /api/admin/hub/users/:id/password as a non-admin guest → 403, password unchanged", async () => {
+    const guestPassword = "guestpass1";
+    const guestEnc = setPassword(guestPassword, app.passwordKey);
+    app.db
+      .prepare(
+        "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 0)",
+      )
+      .run("guest-1", "guest", guestEnc);
+    const guestToken = await loginAs(app, "guest", guestPassword);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/admin/hub/users/admin-1/password",
+      headers: authHeader(guestToken),
+      payload: { password: "newpassword1" },
+    });
+    expect(res.statusCode).toBe(403);
+
+    const row = app.db
+      .prepare("SELECT password_enc FROM users WHERE id = ?")
+      .get("admin-1") as { password_enc: string };
+    const { verifyPassword } = await import("../src/auth/passwords.js");
+    expect(verifyPassword(row.password_enc, "adminpass", app.passwordKey)).toBe(true);
+  });
 });
 
 // ── /api/admin/hub/peers ──────────────────────────────────────────────────────────────
