@@ -970,6 +970,125 @@ describe("gossip tombstone propagation (#244 Phase 3)", () => {
   });
 });
 
+describe("invitee-side re-accept (#244)", () => {
+  let hubA: Hub;
+  let hubB: Hub;
+
+  beforeEach(async () => {
+    hubA = await startHub("rac-a");
+    hubB = await startHub("rac-b");
+    await admit(hubA, hubB);
+  });
+
+  afterEach(async () => {
+    await hubA.app.close();
+    await hubB.app.close();
+    for (const f of [hubA.keyPath, hubB.keyPath]) {
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  async function mintInvitation(): Promise<string> {
+    const resp = await hubA.app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/invite",
+      headers: { authorization: `Bearer ${hubA.token}` },
+      payload: { ourUrl: hubA.url, inviteeUrl: hubB.url, expiresInSec: 600 },
+    });
+    expect(resp.statusCode).toBe(200);
+    return (resp.json() as { invitation: string }).invitation;
+  }
+
+  function acceptOnB(invitation: string) {
+    return hubB.app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/accept",
+      headers: { authorization: `Bearer ${hubB.token}` },
+      payload: { invitation, ourUrl: hubB.url },
+    });
+  }
+
+  function storedInvitationIssuedAt(): string {
+    const row = hubB.app.db
+      .prepare("SELECT invitation_payload FROM instances WHERE id = 'rac-a'")
+      .get() as { invitation_payload: string };
+    return (JSON.parse(row.invitation_payload) as { issued_at: string }).issued_at;
+  }
+
+  it("re-accepting from an already-known inviter succeeds and refreshes stored provenance (was a 409)", async () => {
+    const before = storedInvitationIssuedAt();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const res = await acceptOnB(await mintInvitation());
+    expect(res.statusCode).toBe(200);
+
+    const after = storedInvitationIssuedAt();
+    expect(new Date(after).getTime()).toBeGreaterThan(new Date(before).getTime());
+  });
+
+  it("an invitee that tombstoned the inviter re-admits it on accepting a postdated invitation", async () => {
+    const del = await hubB.app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/rac-a",
+      headers: { authorization: `Bearer ${hubB.token}` },
+    });
+    expect(del.statusCode).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const res = await acceptOnB(await mintInvitation());
+    expect(res.statusCode).toBe(200);
+
+    const row = hubB.app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = 'rac-a'")
+      .get() as { lifecycle: string };
+    expect(row.lifecycle).toBe("active");
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'rac-a'").get(),
+    ).toBeUndefined();
+  });
+
+  it("refuses an invitation issued before the invitee's own tombstone of the inviter (403, no network call)", async () => {
+    const staleInvitation = await mintInvitation();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const del = await hubB.app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/rac-a",
+      headers: { authorization: `Bearer ${hubB.token}` },
+    });
+    expect(del.statusCode).toBe(200);
+
+    const res = await acceptOnB(staleInvitation);
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "Inviter is tombstoned by this hub" });
+
+    const row = hubB.app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = 'rac-a'")
+      .get() as { lifecycle: string };
+    expect(row.lifecycle).toBe("tombstoned");
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'rac-a'").get(),
+    ).toBeDefined();
+  });
+
+  it("a locally disabled inviter stays disabled through a re-accept", async () => {
+    const dis = await hubB.app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/rac-a/disable",
+      headers: { authorization: `Bearer ${hubB.token}` },
+    });
+    expect(dis.statusCode).toBe(200);
+
+    const res = await acceptOnB(await mintInvitation());
+    expect(res.statusCode).toBe(200);
+
+    const row = hubB.app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = 'rac-a'")
+      .get() as { lifecycle: string };
+    expect(row.lifecycle).toBe("disabled");
+  });
+});
+
 describe("peer tombstone re-admission (#244 Phase 3)", () => {
   let hubA: Hub;
   let hubB: Hub;

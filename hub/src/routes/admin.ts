@@ -628,6 +628,30 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
           .send({ error: "Invitation issuer is this hub" });
       }
 
+      // #244 re-admission, invitee side: if WE have tombstoned the inviter,
+      // accepting its invitation is only allowed when the invitation
+      // postdates our tombstone — the same rule the inviter-side handshake
+      // applies (see routes/federation.ts). Checked before the network call
+      // so a refused accept never contacts the evicted hub.
+      const existingInviter = app.db
+        .prepare("SELECT lifecycle FROM instances WHERE id = ?")
+        .get(signed.payload.inviter_id) as { lifecycle: PeerLifecycle } | undefined;
+      if (existingInviter?.lifecycle === "tombstoned") {
+        const tombstoneRow = app.db
+          .prepare("SELECT created_at FROM peer_tombstones WHERE instance_id = ?")
+          .get(signed.payload.inviter_id) as { created_at: string } | undefined;
+        const clears =
+          tombstoneRow !== undefined &&
+          new Date(signed.payload.issued_at).getTime() >
+            new Date(tombstoneRow.created_at).getTime();
+        if (!clears) {
+          return reply.code(403).send({ error: "Inviter is tombstoned by this hub" });
+        }
+        app.db
+          .prepare("DELETE FROM peer_tombstones WHERE instance_id = ?")
+          .run(signed.payload.inviter_id);
+      }
+
       const proof = signInviteeProof(app.privateKey, signed.payload.nonce);
       const handshakeUrl = `${signed.payload.inviter_url}/federation/handshake`;
       const ourBaseUrl = ourUrl.replace(/\/+$/, "");
@@ -679,12 +703,33 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       ).next;
       const url = signed.payload.inviter_url.replace(/\/+$/, "");
       try {
+        // Idempotent: re-accepting from an already-known inviter refreshes
+        // our stored provenance to the fresh invitation instead of erroring
+        // on the PK. This matters for #244 re-admission — a re-invited hub
+        // still has the inviter's row from before its eviction, and the
+        // fresh payload is what our own gossip re-emits so OTHER hubs'
+        // postdating checks can clear their tombstones too. lifecycle flips
+        // to 'active' only from 'tombstoned' (cleared above); a locally
+        // disabled inviter stays disabled — accept doesn't override that
+        // local policy.
         app.db
           .prepare(
             `INSERT INTO instances
                (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id,
                 public_key, invitation_payload, invitation_signature, inviter_id, inviter_url, inviter_public_key)
-             VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               url = excluded.url,
+               status = 'online',
+               public_key = excluded.public_key,
+               invitation_payload = excluded.invitation_payload,
+               invitation_signature = excluded.invitation_signature,
+               inviter_id = excluded.inviter_id,
+               inviter_url = excluded.inviter_url,
+               inviter_public_key = excluded.inviter_public_key,
+               lifecycle = CASE WHEN instances.lifecycle = 'tombstoned' THEN 'active' ELSE instances.lifecycle END,
+               lifecycle_changed_at = CASE WHEN instances.lifecycle = 'tombstoned' THEN datetime('now') ELSE instances.lifecycle_changed_at END,
+               updated_at = datetime('now')`,
           )
           .run(
             signed.payload.inviter_id,
