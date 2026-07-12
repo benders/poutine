@@ -6,27 +6,35 @@ Federated music player. Mesh of independently-operated hubs; each bundles a priv
 
 One Docker Compose stack per participant. Two services: hub (Fastify + SQLite, serves SPA on same port) and internal Navidrome (music files + transcoder, never exposed).
 
-```
-┌──────────────────────────────────────────┐
-│  Poutine Hub (one container)             │
-│    ├─ React SPA (static)                 │
-│    ├─ /rest/*         Subsonic API       │
-│    ├─ /proxy/*        Proxy tier         │
-│    ├─ /federation/*   Federation API     │
-│    ├─ /admin/*        Auth (#226)        │
-│    ├─ /api/admin/hub/*    Hub admin      │
-│    ├─ /api/admin/player/* Player admin   │
-│    ├─ /external-art/* fanart.tv/Last.fm  │
-│    ├─ SQLite hub.db    (data + art cache)│
-│    └─ SQLite player.db (DLNA UUID, cast) │
-├──────────────────────────────────────────┤
-│  Internal Docker network (not exposed)   │
-│    └─ Navidrome                          │
-└──────────────────────────────────────────┘
-       ▲                       ▲
-       │ Subsonic              │ Ed25519-signed
-       ▼                       ▼
-  Web/mobile clients      Peer hubs
+```mermaid
+flowchart TB
+    clients["Web / mobile clients<br/>(SPA or any Subsonic app)"]
+    peers["Peer hubs"]
+    renderers["Sonos / DLNA renderers (LAN)"]
+
+    subgraph container["Poutine Hub (one container, one process)"]
+        subgraph hub["Hub context"]
+            rest["/rest/* Subsonic API"]
+            fed["/federation/* + /proxy/*"]
+            hubadmin["/admin/* auth · /api/admin/hub/*"]
+            art["/external-art/* fanart.tv / Last.fm"]
+            hubdb[("hub.db<br/>users · peers · catalog · art cache")]
+        end
+        subgraph player["Player context"]
+            sonos["/api/sonos/* · /dlna/*"]
+            playeradmin["/api/admin/player/*"]
+            playerdb[("player.db<br/>DLNA UDN · cast key · settings")]
+        end
+    end
+    navidrome["Navidrome (internal Docker network, never exposed)"]
+
+    clients -- "Subsonic u+p / u+t+s" --> rest
+    peers -- "Ed25519-signed" --> fed
+    renderers -- "stream + cast token" --> rest
+    sonos -- "SOAP / SSDP" --> renderers
+    rest --> hubdb
+    sonos --> playerdb
+    fed -- "Subsonic" --> navidrome
 ```
 
 Navidrome credentials live in env vars, not the DB. SPA + API on one port.
@@ -57,7 +65,7 @@ The admin SPA exposes **two distinct top-level destinations** that never co-exis
 | `/admin/hub`   | `frontend/src/features/hub-admin/`   | Instance, peers, invitations, users, art cache, activity retention |
 | `/admin/player`| `frontend/src/features/player-admin/`| LAN URL, Sonos casting, DLNA (#217), cast device settings  |
 
-`/admin/player` is gated on a `GET /player/health` probe (added in #216). When that probe is absent or non-200, the route renders a "Player not deployed on this host" placeholder and the sidebar destination hides — making the Hub/Player split visible to operators well before #220 lifts Player into its own plugin/process.
+`/admin/player` is gated on a `GET /player/health` probe (added in #216). When that probe is absent or non-200, the route renders a "Player not deployed on this host" placeholder and the sidebar destination hides. Today both sides always run in one process, so the probe always answers — but the gate means a future Hub-only deployment degrades gracefully with zero frontend changes.
 
 Bounded directories may not cross-import. ESLint-level enforcement landed in #221 (`frontend/eslint.config.js` — `no-restricted-imports` between `features/hub-admin/`, `features/player-admin/`, and `features/player/`). The earlier tactical test in `frontend/src/features/feature-boundaries.test.ts` is kept as a belt-and-braces guard. Shared pure-UI helpers live in `features/shared/`.
 
@@ -74,7 +82,27 @@ Cross-namespace requests (e.g. `POST /api/admin/player/users`) return 404 — th
 
 ## Hub/Player boundary enforcement (#221)
 
-The directory boundary is mechanically enforced by ESLint, so a future PR cannot accidentally reintroduce the violations that phases #213–#220 removed.
+The backend is two bounded contexts in one process (#212, delivered via #213–#221 + #226). Player reaches Hub state through exactly one door — `HubSubsonicCaller` — and owns its own SQLite file. Everything else is a lint error:
+
+```mermaid
+flowchart LR
+    subgraph Player["Player context"]
+        proutes["routes/sonos.ts · routes/dlna.ts"]
+        psvc["services: sonos-* · dlna-* · cast-tokens ·<br/>didl · soap · ssdp-advertiser · player-settings"]
+        pdb[("player.db<br/>handle capability-injected;<br/>opener db/player-db.ts is the sole<br/>better-sqlite3 carve-out")]
+    end
+    caller["HubSubsonicCaller<br/>services/hub-subsonic-caller.ts<br/>HTTP-shaped app.inject()"]
+    subgraph Hub["Hub context"]
+        rest["/rest/* Subsonic"]
+        hdb[("hub.db")]
+        adapter["adapters/subsonic<br/>(in-process SubsonicClient —<br/>Hub → Navidrome only)"]
+    end
+    proutes --> caller --> rest --> hdb
+    psvc --> pdb
+    proutes -. "❌ forbidden by lint: better-sqlite3,<br/>app.db, adapters/subsonic, hub/src/db/*" .-> hdb
+```
+
+The lift into a separate process is a wiring change: swap `app.inject()` for a loopback `fetch()` inside `HubSubsonicCaller` and move the Player mounts — no Player code touches Hub internals. The directory boundary is mechanically enforced by ESLint, so a future PR cannot accidentally reintroduce the violations that phases #213–#220 removed.
 
 | Boundary                                                                                                                                          | Enforced by                                                                            |
 |---------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
@@ -133,7 +161,7 @@ instance_tracks   ─┘              unified_release_groups
 
 Both handles are opened at entry-point boot (`buildApp` in `hub/src/server.ts`) and capability-injected into the owning code paths. Hub code holds zero references to `player.db`; Player code holds zero references to `hub.db`. Override `player.db` location via `PLAYER_DATABASE_PATH` env (default: `dirname(DATABASE_PATH)/player.db`).
 
-Phase 3 (#217) migrates Player-owned rows out of `hub.db.settings` into `player.db.player_settings` on first boot under the new code (idempotent gap-fill — never overwrites an existing player.db value). Legacy `sonos_*`/`lan_url` rows in `hub.db.settings` are left in place but are no longer the source of truth; cleanup of those rows lands in a later admin-SPA phase.
+Phase 3 (#217) migrated Player-owned rows out of `hub.db.settings` into `player.db.player_settings` on first boot under the new code (idempotent gap-fill — never overwrites an existing player.db value). Legacy `sonos_*`/`lan_url` rows may still exist in `hub.db.settings` on long-lived deployments; they are inert dead data — nothing reads them (see [pitfalls.md](pitfalls.md#sqlite-quirks)).
 
 | Table                                  | Purpose                                                         |
 |----------------------------------------|------------------------------------------------------------------|
