@@ -60,6 +60,10 @@ The body's `accessToken` goes into `localStorage` for `Authorization` header use
 
 `POST /admin/logout` — clears both cookies, returns 204. The SPA also clears `accessToken`, `subsonicUser`, and `subsonicPass` from `localStorage`.
 
+### Password update
+
+`PUT /api/admin/hub/users/:id/password` (admin-only) with `{ password }`. Re-encrypts via `setPassword` and updates `users.password_enc`. Returns 204. Validates `password.length >= 8`. An admin can target their own id; when they do, the `subsonicCredentials` cached in `localStorage` are now stale — the admin must log out and back in to refresh them. JWTs remain valid until expiry (no forced revocation).
+
 ## Subsonic auth flow
 
 `/rest/*` accepts only Subsonic-style query params; there is no JWT path.
