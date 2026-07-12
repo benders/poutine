@@ -1,9 +1,10 @@
 /**
- * Tests for peer lifecycle state (issue #244, Phase 1).
+ * Tests for peer lifecycle state (issue #244, Phases 1-3).
  *
  * Covers: instances.lifecycle migration, inbound peer-auth enforcement,
  * merge exclusion of non-active instances (with disable/enable round trip),
- * gossip suppression of tombstoned peers/inviters, and sync/pollPeers skip.
+ * gossip suppression of tombstoned peers/inviters, sync/pollPeers skip, and
+ * (Phase 3) gossiped tombstone propagation + re-admission.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -18,9 +19,20 @@ import { runMergePipeline } from "../src/library/merge-pipeline.js";
 import { syncAll } from "../src/library/sync.js";
 import { AutoSyncService } from "../src/services/auto-sync.js";
 import { SyncOperationService } from "../src/services/sync-operations.js";
-import { ingestGossipEntry, type GossipPeerEntry } from "../src/federation/gossip.js";
-import { createInvitation } from "../src/federation/invitations.js";
-import { loadOrCreatePrivateKey } from "../src/federation/signing.js";
+import { createTombstone, tombstonePayload } from "../src/federation/tombstones.js";
+import {
+  ingestGossipEntry,
+  ingestGossipTombstone,
+  gossipFromPeer,
+  type GossipPeerEntry,
+  type GossipTombstoneEntry,
+} from "../src/federation/gossip.js";
+import {
+  createInvitation,
+  decodeInvitation,
+  signInviteeProof,
+} from "../src/federation/invitations.js";
+import { loadOrCreatePrivateKey, signRequest } from "../src/federation/signing.js";
 import { admit, startHub, tmpPath, type Hub } from "./helpers/hub-setup.js";
 
 describe("instances.lifecycle migration (#244)", () => {
@@ -553,5 +565,508 @@ describe("AutoSyncService.pollPeers skips non-active peers (#244)", () => {
       .prepare("SELECT last_seen FROM instances WHERE id = ?")
       .get("lcp-b") as { last_seen: string | null };
     expect(row.last_seen).toBeNull();
+  });
+});
+
+describe("GET /federation/peers exposes tombstones (#244 Phase 3)", () => {
+  let hubA: Hub;
+  let hubB: Hub;
+  let hubC: Hub;
+
+  beforeEach(async () => {
+    hubA = await startHub("gtp-a");
+    hubB = await startHub("gtp-b");
+    hubC = await startHub("gtp-c");
+    await admit(hubA, hubB);
+    await admit(hubA, hubC);
+  });
+
+  afterEach(async () => {
+    await hubA.app.close();
+    await hubB.app.close();
+    await hubC.app.close();
+    for (const f of [hubA.keyPath, hubB.keyPath, hubC.keyPath]) {
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  it("includes a sibling tombstones array carrying the original signature", async () => {
+    const del = await hubA.app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/gtp-c",
+      headers: { authorization: `Bearer ${hubA.token}` },
+    });
+    expect(del.statusCode).toBe(200);
+
+    const stored = hubA.app.db
+      .prepare("SELECT signature FROM peer_tombstones WHERE instance_id = 'gtp-c'")
+      .get() as { signature: string };
+
+    const aAsPeer = hubB.app.peerRegistry.peers.get("gtp-a")!;
+    const res = await hubB.app.federatedFetch(aAsPeer, "/federation/peers", {
+      asUser: "admin-gtp-b",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      peers: unknown[];
+      tombstones: Array<{
+        instance_id: string;
+        removed_by: string;
+        reason: string | null;
+        created_at: string;
+        signature: string;
+      }>;
+    };
+    const entry = body.tombstones.find((t) => t.instance_id === "gtp-c");
+    expect(entry).toBeDefined();
+    expect(entry!.removed_by).toBe("gtp-a");
+    expect(entry!.signature).toBe(stored.signature);
+  });
+});
+
+describe("gossip tombstone propagation (#244 Phase 3)", () => {
+  let hubA: Hub;
+  let hubB: Hub;
+  let hubC: Hub;
+
+  beforeEach(async () => {
+    hubA = await startHub("gts-a");
+    hubB = await startHub("gts-b");
+    hubC = await startHub("gts-c");
+    await admit(hubA, hubB);
+    await admit(hubA, hubC);
+    await admit(hubB, hubC);
+  });
+
+  afterEach(async () => {
+    await hubA.app.close();
+    await hubB.app.close();
+    await hubC.app.close();
+    for (const f of [hubA.keyPath, hubB.keyPath, hubC.keyPath]) {
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  it("hub-b gains hub-a's tombstone of hub-c via gossip, with the original signature, and hub-c flips to tombstoned locally", async () => {
+    const del = await hubA.app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/gts-c",
+      headers: { authorization: `Bearer ${hubA.token}` },
+    });
+    expect(del.statusCode).toBe(200);
+
+    const original = hubA.app.db
+      .prepare("SELECT signature, created_at FROM peer_tombstones WHERE instance_id = 'gts-c'")
+      .get() as { signature: string; created_at: string };
+
+    const peerA = hubB.app.peerRegistry.peers.get("gts-a")!;
+    const result = await gossipFromPeer(
+      hubB.app.db,
+      hubB.app.peerRegistry,
+      peerA,
+      hubB.app.federatedFetch,
+      "admin-gts-b",
+    );
+    expect(result.tombstonesAdded).toBe(1);
+
+    const row = hubB.app.db
+      .prepare("SELECT removed_by, signature, created_at FROM peer_tombstones WHERE instance_id = 'gts-c'")
+      .get() as { removed_by: string; signature: string; created_at: string };
+    expect(row.removed_by).toBe("gts-a");
+    expect(row.signature).toBe(original.signature);
+    expect(row.created_at).toBe(original.created_at);
+
+    const cRow = hubB.app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = 'gts-c'")
+      .get() as { lifecycle: string };
+    expect(cRow.lifecycle).toBe("tombstoned");
+  });
+
+  it("rejects a tombstone entry with a bad signature", async () => {
+    const del = await hubA.app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/gts-c",
+      headers: { authorization: `Bearer ${hubA.token}` },
+    });
+    expect(del.statusCode).toBe(200);
+
+    const row = hubA.app.db
+      .prepare(
+        "SELECT instance_id, removed_by, reason, created_at FROM peer_tombstones WHERE instance_id = 'gts-c'",
+      )
+      .get() as { instance_id: string; removed_by: string; reason: string | null; created_at: string };
+
+    const tampered: GossipTombstoneEntry = {
+      instance_id: row.instance_id,
+      removed_by: row.removed_by,
+      reason: row.reason,
+      created_at: row.created_at,
+      signature: Buffer.from("not-a-real-signature").toString("base64"),
+    };
+
+    const outcome = ingestGossipTombstone(hubB.app.db, hubB.app.peerRegistry, tampered, {
+      sourceLabel: "test",
+    });
+    expect(outcome).toBe("rejected");
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'gts-c'").get(),
+    ).toBeUndefined();
+  });
+
+  it("rejects a tombstone from an unknown remover", () => {
+    const entry: GossipTombstoneEntry = {
+      instance_id: "gts-c",
+      removed_by: "totally-unknown-hub",
+      reason: null,
+      created_at: new Date().toISOString(),
+      signature: Buffer.from("whatever").toString("base64"),
+    };
+    const outcome = ingestGossipTombstone(hubB.app.db, hubB.app.peerRegistry, entry, {
+      sourceLabel: "test",
+    });
+    expect(outcome).toBe("rejected");
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'gts-c'").get(),
+    ).toBeUndefined();
+  });
+
+  it("rejects a tombstone naming the receiving hub's own instance id", () => {
+    // hub-a claims to have evicted hub-b itself.
+    const record = createTombstone(hubA.app.db, hubA.app.privateKey, {
+      instanceId: "gts-b",
+      removedBy: "gts-a",
+    });
+    const entry: GossipTombstoneEntry = {
+      instance_id: record.instanceId,
+      removed_by: record.removedBy,
+      reason: record.reason,
+      created_at: record.createdAt,
+      signature: record.signature,
+    };
+    const outcome = ingestGossipTombstone(hubB.app.db, hubB.app.peerRegistry, entry, {
+      sourceLabel: "test",
+    });
+    expect(outcome).toBe("rejected");
+    const selfRow = hubB.app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = 'local'")
+      .get() as { lifecycle: string } | undefined;
+    // 'local' row is untouched (not evaluated at all — the reject happens
+    // before any DB write) and hub-b never tombstones its own instance id.
+    expect(selfRow?.lifecycle ?? "active").not.toBe("tombstoned");
+  });
+
+  it("rejects a tombstone whose remover is itself locally tombstoned", () => {
+    // hub-b has already evicted hub-a locally.
+    hubB.app.db
+      .prepare("UPDATE instances SET lifecycle = 'tombstoned' WHERE id = 'gts-a'")
+      .run();
+    hubB.app.db
+      .prepare(
+        `INSERT INTO peer_tombstones (instance_id, removed_by, reason, created_at, signature)
+         VALUES ('gts-a', 'gts-b', NULL, datetime('now'), 'placeholder-sig')`,
+      )
+      .run();
+    hubB.app.peerRegistry.reload();
+
+    // hub-a (now locally tombstoned by hub-b) tries to vouch for evicting hub-c.
+    const record = createTombstone(hubA.app.db, hubA.app.privateKey, {
+      instanceId: "gts-c",
+      removedBy: "gts-a",
+    });
+    const entry: GossipTombstoneEntry = {
+      instance_id: record.instanceId,
+      removed_by: record.removedBy,
+      reason: record.reason,
+      created_at: record.createdAt,
+      signature: record.signature,
+    };
+    const outcome = ingestGossipTombstone(hubB.app.db, hubB.app.peerRegistry, entry, {
+      sourceLabel: "test",
+    });
+    expect(outcome).toBe("rejected");
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'gts-c'").get(),
+    ).toBeUndefined();
+  });
+
+  it("ingests peers fine when the gossip response has no tombstones field (v6 responder), and processes tombstones when present (v7 responder)", async () => {
+    const peerA = hubB.app.peerRegistry.peers.get("gts-a")!;
+
+    const del = await hubA.app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/gts-c",
+      headers: { authorization: `Bearer ${hubA.token}` },
+    });
+    expect(del.statusCode).toBe(200);
+    const tombstoneRow = hubA.app.db
+      .prepare(
+        "SELECT instance_id, removed_by, reason, created_at, signature FROM peer_tombstones WHERE instance_id = 'gts-c'",
+      )
+      .get() as GossipTombstoneEntry;
+
+    // Simulate a v6 responder: same peers payload, `tombstones` key absent.
+    const v6Fetch = (async () =>
+      new Response(JSON.stringify({ peers: [] }), { status: 200 })) as typeof hubB.app.federatedFetch;
+    const v6Result = await gossipFromPeer(hubB.app.db, hubB.app.peerRegistry, peerA, v6Fetch, "admin-gts-b");
+    expect(v6Result.tombstonesAdded).toBe(0);
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'gts-c'").get(),
+    ).toBeUndefined();
+
+    // Simulate a v7 responder carrying the tombstone.
+    const v7Fetch = (async () =>
+      new Response(JSON.stringify({ peers: [], tombstones: [tombstoneRow] }), {
+        status: 200,
+      })) as typeof hubB.app.federatedFetch;
+    const v7Result = await gossipFromPeer(hubB.app.db, hubB.app.peerRegistry, peerA, v7Fetch, "admin-gts-b");
+    expect(v7Result.tombstonesAdded).toBe(1);
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'gts-c'").get(),
+    ).toBeDefined();
+  });
+
+  it("rejects a stale tombstone when the locally stored invitation postdates it", () => {
+    // hub-b holds gts-c's invitation from beforeEach. A validly signed
+    // tombstone created BEFORE that invitation is stale — without this
+    // rejection, any lagging hub relaying an old tombstone would re-evict a
+    // peer that was deliberately re-admitted, and the mesh never converges.
+    const createdAt = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const entry: GossipTombstoneEntry = {
+      instance_id: "gts-c",
+      removed_by: "gts-a",
+      reason: null,
+      created_at: createdAt,
+      signature: signRequest(
+        hubA.app.privateKey,
+        tombstonePayload({ instanceId: "gts-c", removedBy: "gts-a", createdAt }),
+      ),
+    };
+    const outcome = ingestGossipTombstone(hubB.app.db, hubB.app.peerRegistry, entry, {
+      sourceLabel: "test",
+    });
+    expect(outcome).toBe("rejected");
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'gts-c'").get(),
+    ).toBeUndefined();
+    const row = hubB.app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = 'gts-c'")
+      .get() as { lifecycle: string };
+    expect(row.lifecycle).toBe("active");
+  });
+
+  it("does not clear a tombstone for a forged re-admission entry whose invitation signature is invalid", async () => {
+    // hub-b evicts gts-c locally.
+    const del = await hubB.app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/gts-c",
+      headers: { authorization: `Bearer ${hubB.token}` },
+    });
+    expect(del.statusCode).toBe(200);
+
+    // Take hub-a's genuine gossip entry for gts-c and forge a postdated
+    // issued_at. The postdating check alone would clear the tombstone, but
+    // the tampered payload no longer matches the inviter's signature — the
+    // entry must be rejected with the tombstone fully intact.
+    const peerA = hubB.app.peerRegistry.peers.get("gts-a")!;
+    const res = await hubB.app.federatedFetch(peerA, "/federation/peers", {
+      asUser: "admin-gts-b",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { peers: GossipPeerEntry[] };
+    const genuine = body.peers.find((p) => p.id === "gts-c")!;
+    const forged = {
+      ...genuine,
+      invitation_payload: {
+        ...genuine.invitation_payload,
+        issued_at: new Date(Date.now() + 3600_000).toISOString(),
+      },
+    };
+
+    const owner = hubB.app.db.prepare("SELECT id FROM users LIMIT 1").get() as { id: string };
+    const outcome = ingestGossipEntry(hubB.app.db, hubB.app.peerRegistry, forged, {
+      sourceLabel: "test",
+      ownerId: owner.id,
+      knownIds: new Set<string>(["local", "gts-b", "gts-a"]),
+    });
+    expect(outcome).toBe("rejected");
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'gts-c'").get(),
+    ).toBeDefined();
+    const row = hubB.app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = 'gts-c'")
+      .get() as { lifecycle: string };
+    expect(row.lifecycle).toBe("tombstoned");
+  });
+
+  it("re-admits a tombstoned peer via gossip when the invitation postdates the eviction, then rejects the stale tombstone relay", async () => {
+    // 1. hub-a evicts gts-c; hub-b learns via gossip.
+    const del = await hubA.app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/gts-c",
+      headers: { authorization: `Bearer ${hubA.token}` },
+    });
+    expect(del.statusCode).toBe(200);
+    const staleTombstone = hubA.app.db
+      .prepare(
+        "SELECT instance_id, removed_by, reason, created_at, signature FROM peer_tombstones WHERE instance_id = 'gts-c'",
+      )
+      .get() as GossipTombstoneEntry;
+    const peerA = hubB.app.peerRegistry.peers.get("gts-a")!;
+    await gossipFromPeer(hubB.app.db, hubB.app.peerRegistry, peerA, hubB.app.federatedFetch, "admin-gts-b");
+    expect(
+      (hubB.app.db.prepare("SELECT lifecycle FROM instances WHERE id = 'gts-c'").get() as { lifecycle: string })
+        .lifecycle,
+    ).toBe("tombstoned");
+
+    // 2. hub-a re-invites hub-c — the fresh invitation's issued_at must
+    // strictly postdate the tombstone's created_at (both ms precision).
+    await new Promise((r) => setTimeout(r, 20));
+    const inviteResp = await hubA.app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/invite",
+      headers: { authorization: `Bearer ${hubA.token}` },
+      payload: { ourUrl: hubA.url, inviteeUrl: hubC.url, expiresInSec: 600 },
+    });
+    expect(inviteResp.statusCode).toBe(200);
+    const { invitation } = inviteResp.json() as { invitation: string };
+    const decoded = decodeInvitation(invitation);
+    const proof = signInviteeProof(hubC.app.privateKey, decoded.payload.nonce);
+    const handshake = await hubA.app.inject({
+      method: "POST",
+      url: "/federation/handshake",
+      payload: {
+        invitation,
+        invitee: {
+          id: "gts-c",
+          url: hubC.url,
+          public_key: hubC.app.publicKeySpec,
+          proof_signature: proof,
+        },
+      },
+    });
+    expect(handshake.statusCode).toBe(200);
+
+    // 3. hub-b gossips from hub-a again → the entry's fresh invitation
+    // postdates hub-b's tombstone, so gossip re-admits gts-c.
+    await gossipFromPeer(hubB.app.db, hubB.app.peerRegistry, peerA, hubB.app.federatedFetch, "admin-gts-b");
+    expect(
+      (hubB.app.db.prepare("SELECT lifecycle FROM instances WHERE id = 'gts-c'").get() as { lifecycle: string })
+        .lifecycle,
+    ).toBe("active");
+    expect(
+      hubB.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'gts-c'").get(),
+    ).toBeUndefined();
+
+    // 4. Convergence: a lagging hub relaying the ORIGINAL tombstone must not
+    // re-evict — the stored (fresh) invitation postdates it.
+    const outcome = ingestGossipTombstone(hubB.app.db, hubB.app.peerRegistry, staleTombstone, {
+      sourceLabel: "lagging-hub",
+    });
+    expect(outcome).toBe("rejected");
+    expect(
+      (hubB.app.db.prepare("SELECT lifecycle FROM instances WHERE id = 'gts-c'").get() as { lifecycle: string })
+        .lifecycle,
+    ).toBe("active");
+  });
+});
+
+describe("peer tombstone re-admission (#244 Phase 3)", () => {
+  let hubA: Hub;
+  let hubB: Hub;
+
+  beforeEach(async () => {
+    hubA = await startHub("ra-a");
+    hubB = await startHub("ra-b");
+  });
+
+  afterEach(async () => {
+    await hubA.app.close();
+    await hubB.app.close();
+    for (const f of [hubA.keyPath, hubB.keyPath]) {
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  // Exercises hub-a's /federation/handshake handler directly (the code this
+  // phase changed) rather than routing through hub-b's /peers/accept, which
+  // additionally mirrors the inviter locally on hub-b's own side — a
+  // separate, pre-existing concern this phase does not touch.
+  function buildHandshakeBody(invitation: string) {
+    const decoded = decodeInvitation(invitation);
+    const proof = signInviteeProof(hubB.app.privateKey, decoded.payload.nonce);
+    return {
+      invitation,
+      invitee: {
+        id: "ra-b",
+        url: hubB.url,
+        public_key: hubB.app.publicKeySpec,
+        proof_signature: proof,
+      },
+    };
+  }
+
+  it("refuses a handshake invitation issued before the tombstone, and accepts one issued after — clearing the tombstone", async () => {
+    // Mint (but don't redeem) an invitation before hub-b is ever admitted —
+    // this is the "issued before eviction" invitation, redeemed later.
+    const earlyInviteResp = await hubA.app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/invite",
+      headers: { authorization: `Bearer ${hubA.token}` },
+      payload: { ourUrl: hubA.url, inviteeUrl: hubB.url, expiresInSec: 600 },
+    });
+    expect(earlyInviteResp.statusCode).toBe(200);
+    const { invitation: earlyInvitation } = earlyInviteResp.json() as { invitation: string };
+
+    // Admit hub-b for real via a separate (later) invitation, then evict it.
+    await admit(hubA, hubB);
+    const del = await hubA.app.inject({
+      method: "DELETE",
+      url: "/api/admin/hub/peers/ra-b",
+      headers: { authorization: `Bearer ${hubA.token}` },
+    });
+    expect(del.statusCode).toBe(200);
+
+    // Redeem the OLD invitation (issued before the tombstone) directly
+    // against hub-a's handshake handler — must be refused.
+    const staleHandshake = await hubA.app.inject({
+      method: "POST",
+      url: "/federation/handshake",
+      payload: buildHandshakeBody(earlyInvitation),
+    });
+    expect(staleHandshake.statusCode).toBe(403);
+    expect(staleHandshake.json()).toEqual({ error: "Instance is tombstoned by this hub" });
+
+    const stillTombstoned = hubA.app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = 'ra-b'")
+      .get() as { lifecycle: string };
+    expect(stillTombstoned.lifecycle).toBe("tombstoned");
+    expect(
+      hubA.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'ra-b'").get(),
+    ).toBeDefined();
+
+    // Issue a fresh invitation (issued after the tombstone) and redeem it —
+    // must clear the tombstone and re-admit as active.
+    const freshInviteResp = await hubA.app.inject({
+      method: "POST",
+      url: "/api/admin/hub/peers/invite",
+      headers: { authorization: `Bearer ${hubA.token}` },
+      payload: { ourUrl: hubA.url, inviteeUrl: hubB.url, expiresInSec: 600 },
+    });
+    expect(freshInviteResp.statusCode).toBe(200);
+    const { invitation: freshInvitation } = freshInviteResp.json() as { invitation: string };
+    const freshHandshake = await hubA.app.inject({
+      method: "POST",
+      url: "/federation/handshake",
+      payload: buildHandshakeBody(freshInvitation),
+    });
+    expect(freshHandshake.statusCode).toBe(200);
+
+    const readmitted = hubA.app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = 'ra-b'")
+      .get() as { lifecycle: string };
+    expect(readmitted.lifecycle).toBe("active");
+    expect(
+      hubA.app.db.prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = 'ra-b'").get(),
+    ).toBeUndefined();
   });
 });

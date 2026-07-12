@@ -60,6 +60,8 @@ Endpoint coverage detail: [opensubsonic.md](opensubsonic.md).
 | Gossip pinning the inviter pubkey to whatever the gossip claims                                                                   | #156      | Trust is transitive only via the invitation chain — only pin from known inviters; verify embedded signature          |
 | Trusting `String(remoteErr)` from a peer in a 502                                                                                 | #156      | Same as external fetches — never echo upstream error text                                                            |
 | Changing a `/federation/*` contract without bumping `FEDERATION_API_VERSION` in `hub/src/version.ts` and updating federation-api.md | recurring | Contract is the doc; the doc is the contract. Bump both together                                                     |
+| Adding a peer-facing gate to `federation/peer-auth.ts` and assuming `/proxy/*` is covered                                          | #244      | `/proxy/*` has its own auth path (`proxy/auth.ts`); every peer-level policy must land in BOTH. Only the federation suite catches the gap |
+| Version-gating peers against `FEDERATION_API_VERSION` instead of the floor                                                        | #244      | Compare against `MIN_FEDERATION_API_VERSION` — the current version silently cuts supported older peers off at every bump |
 
 Full protocol: [federation-api.md](federation-api.md).
 

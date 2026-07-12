@@ -489,6 +489,88 @@ POUTINE_PASS="$SUB_PASS" \
 POUTINE_TARGETS="hub-a=http://localhost:3011,hub-b=http://localhost:3012,hub-c=http://localhost:3013" \
   "$HARNESS_DIR/run.sh"
 
+# ── Peer lifecycle: tombstone gossip propagation (issue #244 Phase 3) ───────
+# Deliberately the LAST scenario: it evicts hub-c from the mesh, so anything
+# running after it (e.g. the py-sonic harness driving all three hubs) would
+# see a degraded federation — hub-c's proxy streams to a/b start failing 403.
+# hub-a evicts hub-c via the admin API. After hub-b's next sync (which
+# gossips hub-a's peer list, now including the tombstone), hub-b must:
+#   - locally tombstone hub-c too (gossiped eviction, not just hub-a's own)
+#   - drop hub-c's content from its merged catalog (same sync's merge step)
+#   - start refusing hub-c's own inbound federation requests with 403
+
+echo ""
+echo "==> Testing tombstone gossip propagation (hub-a evicts hub-c)..."
+
+JWT_B=$(login_only 3012)
+JWT_C=$(login_only 3013)
+
+echo "  Tombstoning hub-c from hub-a..."
+TOMBSTONE_RESP=$(curl -sf -X DELETE "http://localhost:3011/api/admin/hub/peers/poutine-c" \
+  -H "Authorization: Bearer $JWT_A" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"federation test eviction"}')
+if ! echo "$TOMBSTONE_RESP" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['lifecycle'] == 'tombstoned', f'expected tombstoned lifecycle, got {d}'
+print(f'  hub-a tombstone response: {d}')
+"; then
+  echo "ERROR: DELETE peer did not report lifecycle=tombstoned" >&2
+  echo "Response: $TOMBSTONE_RESP" >&2
+  exit 1
+fi
+
+echo "  Triggering a hub-b sync so it gossips the tombstone from hub-a..."
+curl -sf -X POST "http://localhost:3012/api/admin/hub/sync" -H "Authorization: Bearer $JWT_B" > /dev/null
+
+echo "  Verifying hub-b locally tombstoned hub-c after gossip..."
+PEERS_B=$(curl -sf "http://localhost:3012/api/admin/hub/peers" -H "Authorization: Bearer $JWT_B")
+if ! echo "$PEERS_B" | python3 -c "
+import sys, json
+peers = json.load(sys.stdin)
+match = [p for p in peers if p['id'] == 'poutine-c']
+assert match, f'poutine-c missing from hub-b peers: {peers}'
+assert match[0]['lifecycle'] == 'tombstoned', f'hub-b did not gossip the tombstone: {match[0]}'
+print(f'  hub-b now sees poutine-c as: {match[0][\"lifecycle\"]}')
+"; then
+  echo "ERROR: hub-b did not pick up hub-a's tombstone of hub-c via gossip" >&2
+  echo "Response: $PEERS_B" >&2
+  exit 1
+fi
+
+echo "  Verifying hub-c's content dropped out of hub-b's merged catalog..."
+ALBUMS_B=$(curl -sf \
+  "http://localhost:3012/rest/getAlbumList2?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&type=alphabeticalByName&size=500")
+if ! echo "$ALBUMS_B" | python3 -c "
+import sys, json
+albums = [a['name'] for a in json.load(sys.stdin)['subsonic-response'].get('albumList2', {}).get('album', [])]
+assert 'Third Album' not in albums, f'hub-c content still present on hub-b after tombstone gossip: {albums}'
+print('  hub-b albums after tombstone: ' + ', '.join(sorted(albums)))
+"; then
+  echo "ERROR: hub-c content did not disappear from hub-b's catalog after tombstone gossip" >&2
+  echo "Response: $ALBUMS_B" >&2
+  exit 1
+fi
+
+echo "  Verifying hub-c's own sync against hub-b now fails (403, refused peer)..."
+SYNC_C=$(curl -s -X POST "http://localhost:3013/api/admin/hub/sync" -H "Authorization: Bearer $JWT_C")
+if ! echo "$SYNC_C" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+peers = d.get('peers', [])
+match = [p for p in peers if p.get('instanceId') == 'poutine-b']
+assert match, f'no peer sync report for poutine-b in hub-c sync response: {d}'
+p = match[0]
+assert p.get('errors'), f'expected hub-c sync against tombstoned hub-b to fail: {p}'
+print(f'  hub-c sync against hub-b failed as expected: {p[\"errors\"]}')
+"; then
+  echo "ERROR: hub-c was not refused by hub-b after the tombstone propagated" >&2
+  echo "Response: $SYNC_C" >&2
+  exit 1
+fi
+
+
 echo ""
 echo "==> All assertions passed!"
 PASSED=1

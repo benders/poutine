@@ -17,7 +17,7 @@ declare module "fastify" {
  * be admitted to a v5 cluster — they lack the invitation provenance fields
  * and are removed by the v5 migration on first boot.
  */
-const MIN_FEDERATION_API_VERSION = 5;
+export const MIN_FEDERATION_API_VERSION = 5;
 
 export function createRequirePeerAuth(deps: {
   registry: PeerRegistry;
@@ -101,9 +101,9 @@ export function createRequirePeerAuth(deps: {
       return;
     }
 
-    // #244: peers that are locally disabled or tombstoned are refused inbound
-    // (this gate covers both /federation/* and /proxy/*, since both mount
-    // requirePeerAuth). Deliberately AFTER signature verification: only the
+    // #244: peers that are locally disabled or tombstoned are refused inbound.
+    // This gate covers /federation/*; /proxy/* has its own auth path with the
+    // matching gate (proxy/auth.ts). Deliberately AFTER signature verification: only the
     // peer actually holding the key learns it has been disabled — an
     // unauthenticated probe naming a non-active instance id gets the same
     // 401s as any other unsigned request. Uniform 403 body — the caller must
