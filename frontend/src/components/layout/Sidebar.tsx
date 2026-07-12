@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/stores/auth";
-import { peerDisplayName } from "@/lib/api";
+import { peerDisplayName, getPlayerHealth } from "@/lib/api";
 import { getMusicFolders } from "@/lib/subsonic";
 import {
   Library,
@@ -14,16 +14,28 @@ import {
   Server,
   Activity,
   Star,
+  Flame,
   ListMusic,
+  Speaker,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { APP_VERSION } from "@/version";
 import { NavGroup, NavGroupItem } from "./NavGroup";
 
-const flatNav = [
+interface NavItem {
+  to: string;
+  icon: typeof Users;
+  label: string;
+  adminOnly?: boolean;
+}
+
+// #232: `/activity` is admin-only — the page renders fine for any logged-in
+// user but the data it consumes is admin-gated, so hide it for non-admins
+// rather than render a broken view.
+const flatNav: NavItem[] = [
   { to: "/artists", icon: Users, label: "Artists" },
   { to: "/search", icon: Search, label: "Search" },
-  { to: "/activity", icon: Activity, label: "Activity" },
+  { to: "/activity", icon: Activity, label: "Activity", adminOnly: true },
 ];
 
 export function Sidebar() {
@@ -36,6 +48,18 @@ export function Sidebar() {
     retry: false,
     enabled: !!user,
     staleTime: 60_000,
+  });
+
+  // Player gate (#216). When the Player isn't deployed on this host
+  // (a future outcome of #220), hide the "Player" sidebar destination
+  // entirely — the route itself still renders a placeholder if someone
+  // navigates directly.
+  const { data: playerHealth } = useQuery({
+    queryKey: ["player-health"],
+    queryFn: getPlayerHealth,
+    retry: false,
+    enabled: !!user,
+    staleTime: 30_000,
   });
 
   const handleLogout = () => {
@@ -63,6 +87,7 @@ export function Sidebar() {
           <NavGroupItem to="/library/all" label="All" />
           <NavGroupItem to="/library/random" label="Random" icon={Shuffle} />
           <NavGroupItem to="/library/favorites" label="Favorites" icon={Star} />
+          <NavGroupItem to="/library/most-played" label="Most Played" icon={Flame} />
           {folders?.map((folder) => (
             <NavGroupItem
               key={folder.id}
@@ -86,7 +111,9 @@ export function Sidebar() {
           />
         </NavGroup>
 
-        {flatNav.map((item) => (
+        {flatNav
+          .filter((item) => !item.adminOnly || user?.isAdmin)
+          .map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -104,21 +131,23 @@ export function Sidebar() {
           </NavLink>
         ))}
 
-        {user && (
-          <NavLink
-            to="/admin"
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-                isActive
-                  ? "bg-accent-muted text-accent"
-                  : "text-text-secondary hover:bg-surface-hover hover:text-text-primary",
-              )
-            }
+        {user?.isAdmin && (
+          <NavGroup
+            label="Settings"
+            icon={Settings}
+            to="/admin/hub"
+            storageKey="sidebar:settings:open"
+            defaultOpen={false}
           >
-            <Settings className="w-4 h-4" />
-            Settings
-          </NavLink>
+            <NavGroupItem to="/admin/hub" label="Hub" icon={Server} />
+            {playerHealth && (
+              <NavGroupItem
+                to="/admin/player"
+                label="Player"
+                icon={Speaker}
+              />
+            )}
+          </NavGroup>
         )}
       </nav>
 

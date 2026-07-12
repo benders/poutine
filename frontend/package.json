@@ -1,14 +1,15 @@
 {
   "name": "@poutine/frontend",
   "private": true,
-  "version": "0.4.5",
+  "version": "0.5.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "lint:boundary": "eslint --config eslint.boundary.config.js src/features/",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },

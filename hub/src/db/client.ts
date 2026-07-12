@@ -81,6 +81,42 @@ function ensureColumns(db: Database.Database): void {
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_instances_musicfolder_id ON instances(musicfolder_id) WHERE musicfolder_id IS NOT NULL",
   );
 
+  // Issue #147: peer federation fields. Hard-cut from peers.yaml — peers are
+  // now DB-authoritative and admitted via signed invitations.
+  for (const col of [
+    "public_key",
+    "invitation_payload",
+    "invitation_signature",
+    "inviter_id",
+    "inviter_url",
+    "inviter_public_key",
+  ] as const) {
+    if (!instanceColNames.has(col)) {
+      logMigration(`Adding ${col} column to instances table`);
+      db.exec(`ALTER TABLE instances ADD COLUMN ${col} TEXT`);
+    }
+  }
+
+  // Drop legacy peer rows that pre-date federation v5. They have no
+  // public_key (the column didn't exist) so they can't be authenticated; the
+  // only honest move under the hard-cut decision is to remove them. Operators
+  // re-invite peers under the new flow. CASCADE clears instance_* mirror rows.
+  const legacyPeers = db
+    .prepare(
+      "SELECT id FROM instances WHERE id != 'local' AND public_key IS NULL",
+    )
+    .all() as Array<{ id: string }>;
+  if (legacyPeers.length > 0) {
+    logMigration(
+      `Removing ${legacyPeers.length} legacy peer instance row(s) without federation v5 invitation provenance: ${legacyPeers.map((r) => r.id).join(", ")}. Re-invite peers via /admin/peers/invite.`,
+    );
+    const del = db.prepare("DELETE FROM instances WHERE id = ?");
+    const tx = db.transaction((ids: string[]) => {
+      for (const id of ids) del.run(id);
+    });
+    tx(legacyPeers.map((r) => r.id));
+  }
+
   const trackSourceCols = db
     .prepare("PRAGMA table_info(track_sources)")
     .all() as Array<{ name: string }>;
@@ -120,6 +156,31 @@ function ensureColumns(db: Database.Database): void {
       );
     `);
   }
+
+  // #199: hi-res metadata for Sonos cast-time capability gate. Three nullable
+  // columns each on instance_tracks and track_sources; populated by the next
+  // sync pass (no backfill — missing rows behave as pre-#199, i.e. silent
+  // pass-through, which is what the gate falls back to when unknown).
+  const instanceTrackCols = db
+    .prepare("PRAGMA table_info(instance_tracks)")
+    .all() as Array<{ name: string }>;
+  const instanceTrackColNames = new Set(instanceTrackCols.map((c) => c.name));
+  for (const col of ["sampling_rate", "bit_depth", "channel_count"] as const) {
+    if (!instanceTrackColNames.has(col)) {
+      logMigration(`Adding ${col} column to instance_tracks table`);
+      db.exec(`ALTER TABLE instance_tracks ADD COLUMN ${col} INTEGER`);
+    }
+  }
+  const trackSourceColsAfter = db
+    .prepare("PRAGMA table_info(track_sources)")
+    .all() as Array<{ name: string }>;
+  const trackSourceColNamesAfter = new Set(trackSourceColsAfter.map((c) => c.name));
+  for (const col of ["sampling_rate", "bit_depth", "channel_count"] as const) {
+    if (!trackSourceColNamesAfter.has(col)) {
+      logMigration(`Adding ${col} column to track_sources table`);
+      db.exec(`ALTER TABLE track_sources ADD COLUMN ${col} INTEGER`);
+    }
+  }
 }
 
 /**
@@ -149,6 +210,9 @@ function migrateTrackSources(db: Database.Database): void {
       format TEXT,
       bitrate INTEGER,
       size INTEGER,
+      sampling_rate INTEGER,
+      bit_depth INTEGER,
+      channel_count INTEGER,
       preferred INTEGER NOT NULL DEFAULT 0,
       UNIQUE(unified_track_id, instance_track_id)
     );
@@ -195,6 +259,87 @@ function migrateStreamOperations(db: Database.Database): void {
   }
 }
 
+/**
+ * Issue #242: additive column so mergeLibraries()/runMergePipeline() can
+ * persist post-merge orphan-audit counts alongside the sync operation that
+ * triggered them.
+ */
+function migrateSyncOperations(db: Database.Database): void {
+  const cols = db
+    .prepare("PRAGMA table_info(sync_operations)")
+    .all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "details")) {
+    logMigration("Adding details column to sync_operations table");
+    db.exec("ALTER TABLE sync_operations ADD COLUMN details TEXT");
+  }
+}
+
+/**
+ * Issue #242: drop the `unified_track_id` FK (+ implicit CASCADE) on
+ * playlist_tracks. unified_tracks is cleared and rebuilt on every merge —
+ * the FK meant a merge CASCADE-DELETEd every playlist row. playlist_tracks
+ * now follows the same no-FK/orphans-dropped-at-read convention as
+ * user_stars/play_events, with rows carried across merges by id-remap
+ * instead of relying on referential integrity.
+ */
+function migratePlaylistTracks(db: Database.Database): void {
+  const fks = db
+    .prepare("PRAGMA foreign_key_list(playlist_tracks)")
+    .all() as Array<{ table: string; from: string }>;
+  const hasTrackFk = fks.some(
+    (fk) => fk.table === "unified_tracks" && fk.from === "unified_track_id",
+  );
+  if (!hasTrackFk) return;
+
+  logMigration("Dropping unified_track_id FK from playlist_tracks table");
+  db.exec(`
+    CREATE TABLE playlist_tracks_new (
+      playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      unified_track_id TEXT NOT NULL,
+      added_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (playlist_id, position)
+    );
+    INSERT INTO playlist_tracks_new (playlist_id, position, unified_track_id, added_at)
+      SELECT playlist_id, position, unified_track_id, added_at FROM playlist_tracks;
+    DROP TABLE playlist_tracks;
+    ALTER TABLE playlist_tracks_new RENAME TO playlist_tracks;
+  `);
+}
+
+/**
+ * Issue #244: peer lifecycle state (active/disabled/tombstoned), orthogonal
+ * to the pre-existing liveness `status` column. Additive columns on
+ * `instances` plus the new `peer_tombstones` table (idempotent CREATE, so
+ * fresh DBs already carrying it from schema.sql are unaffected).
+ */
+function migrateInstancesLifecycle(db: Database.Database): void {
+  const cols = db
+    .prepare("PRAGMA table_info(instances)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("lifecycle")) {
+    logMigration("Adding lifecycle column to instances table");
+    db.exec(
+      "ALTER TABLE instances ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'",
+    );
+  }
+  if (!names.has("lifecycle_changed_at")) {
+    logMigration("Adding lifecycle_changed_at column to instances table");
+    db.exec("ALTER TABLE instances ADD COLUMN lifecycle_changed_at TEXT");
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS peer_tombstones (
+      instance_id TEXT PRIMARY KEY,
+      removed_by TEXT NOT NULL,
+      reason TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      signature TEXT NOT NULL
+    );
+  `);
+}
+
 export function createDatabase(dbPath: string): Database.Database {
   // Ensure the directory exists
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -226,6 +371,15 @@ export function createDatabase(dbPath: string): Database.Database {
 
   // Issue #121: rewrite stream_operations schema
   migrateStreamOperations(db);
+
+  // Issue #242: add sync_operations.details for orphan-audit persistence
+  migrateSyncOperations(db);
+
+  // Issue #242: drop playlist_tracks' unified_track_id FK (CASCADE hazard)
+  migratePlaylistTracks(db);
+
+  // Issue #244: add instances.lifecycle/lifecycle_changed_at + peer_tombstones
+  migrateInstancesLifecycle(db);
 
   return db;
 }

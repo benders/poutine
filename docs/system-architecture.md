@@ -1,127 +1,188 @@
 # System architecture
 
-Poutine is a federated music player: a small mesh of independently-operated hubs, each of which bundles an internal Navidrome and exposes a merged view of the whole federation to its users. For the federation protocol contract, see [federation-api.md](federation-api.md). For hub engineering details (conventions, env vars, gotchas), see [hub-internals.md](hub-internals.md).
+Federated music player. Mesh of independently-operated hubs; each bundles a private Navidrome and exposes a merged view of the federation. Protocol: [federation-api.md](federation-api.md). Engineering details: [hub-internals.md](hub-internals.md).
 
-## Deployment model
+## Deployment
 
-Every participant runs their own hub. Each hub is a single Docker Compose stack with two services: the hub itself (Fastify + SQLite, serving the SPA on the same port) and an internal Navidrome (music files, transcoder).
+One Docker Compose stack per participant. Two services: hub (Fastify + SQLite, serves SPA on same port) and internal Navidrome (music files + transcoder, never exposed).
 
 ```
 ┌──────────────────────────────────────────┐
 │  Poutine Hub (one container)             │
-│    ├─ React SPA (static files)           │
-│    ├─ Subsonic API     /rest/*           │
-│    ├─ Proxy tier       /proxy/*          │
-│    ├─ Federation API   /federation/*     │
-│    ├─ Admin API        /admin/*          │
-│    └─ SQLite (data + art cache)          │
+│    ├─ React SPA (static)                 │
+│    ├─ /rest/*         Subsonic API       │
+│    ├─ /proxy/*        Proxy tier         │
+│    ├─ /federation/*   Federation API     │
+│    ├─ /admin/*        Auth (#226)        │
+│    ├─ /api/admin/hub/*    Hub admin      │
+│    ├─ /api/admin/player/* Player admin   │
+│    ├─ /external-art/* fanart.tv/Last.fm  │
+│    ├─ SQLite hub.db    (data + art cache)│
+│    └─ SQLite player.db (DLNA UUID, cast) │
 ├──────────────────────────────────────────┤
 │  Internal Docker network (not exposed)   │
-│    └─ Navidrome (music files, transcoder)│
+│    └─ Navidrome                          │
 └──────────────────────────────────────────┘
-         ▲                       ▲
-         │ Subsonic (clients)    │ Ed25519-signed federation
-         ▼                       ▼
-    Web / mobile clients     Other hubs (peers)
+       ▲                       ▲
+       │ Subsonic              │ Ed25519-signed
+       ▼                       ▼
+  Web/mobile clients      Peer hubs
 ```
 
-Only the hub's HTTP port is exposed. Navidrome is internal-only. Navidrome credentials come from env vars — they are not stored in the hub database. The SPA and API are served from the same port; there is no separate nginx container in the default deployment.
+Navidrome credentials live in env vars, not the DB. SPA + API on one port.
 
-## Three layers
+## Layers
 
-### Clients
+**Clients** — React SPA or any Subsonic-compatible app. Both speak `/rest/*` via `u+p` or `u+t+s` (MD5 token+salt). SPA logs in at `/admin/login`; see [authentication.md](authentication.md).
 
-The React SPA (served by the hub) or any third-party Subsonic-compatible app. Both speak to `/rest/*` using standard Subsonic auth — `u+p` (plaintext / `enc:<hex>`) or `u+t+s` (MD5 token+salt). The SPA uses `u+t+s` after the user logs in via `/admin/login` (see [authentication.md](authentication.md)).
+**Hub** — Fastify + better-sqlite3:
 
-### Hub
+| Concern        | Responsibility                                                                            |
+|----------------|-------------------------------------------------------------------------------------------|
+| Client API     | SPA + Subsonic `/rest/*` over unified library                                             |
+| Sync + merge   | `syncLocal` from local Navidrome; `/proxy/rest/*` from peers; merge into unified tables   |
+| Auto-sync      | `AutoSyncService`: trigger on Navidrome scan complete; fan out to peers per `SYNC_INTERVAL_MS` |
+| Stream/art     | Route to source's Navidrome via `/proxy/*` (local or peer)                                |
+| External art   | `/external-art/*`: fanart.tv (MBID) → Last.fm fallback → `art_cache`                      |
+| Admin          | `/api/admin/hub/*` and `/api/admin/player/*` (owner-only). `/admin/*` reserved for auth (refresh-cookie path). |
 
-Fastify + better-sqlite3. Four concerns:
+**Navidrome** — private per hub. Driven entirely through Subsonic (`getArtists`, `getAlbum`, `stream`, `getCoverArt`, `getScanStatus`, `startScan`). Its native `/api/*` is unused.
 
-| Concern            | Responsibility                                                                                                     |
-|--------------------|---------------------------------------------------------------------------------------------------------------------|
-| Client API         | Serve the SPA and the Subsonic `/rest/*` surface over a unified library view                                        |
-| Sync + merge       | Pull from local Navidrome (`syncLocal`) and each peer's Navidrome via `/proxy/rest/*`; merge into unified tables; dedup across instances |
-| Stream / art proxy | Route stream and cover-art requests to the correct source (local Navidrome via `/proxy/*`, or peer Navidrome via peer's `/proxy/*`) |
-| Admin              | Owner-only management: sync trigger, peer list, cache stats, instance identity                                      |
+## SPA admin split (issue #216, Phase 2 of #212)
 
-Engineering details (directory layout, service classes, env vars) live in [hub-internals.md](hub-internals.md).
+The admin SPA exposes **two distinct top-level destinations** that never co-exist on the same page:
 
-### Navidrome
+| Route          | Bounded dir              | Owns                                                       |
+|----------------|--------------------------|------------------------------------------------------------|
+| `/admin/hub`   | `frontend/src/features/hub-admin/`   | Instance, peers, invitations, users, art cache, activity retention |
+| `/admin/player`| `frontend/src/features/player-admin/`| LAN URL, Sonos casting, DLNA (#217), cast device settings  |
 
-Per-hub private music server. Bundled in Docker Compose, reachable only over the internal network. The hub drives it entirely via the Subsonic API (`getArtists`, `getAlbum`, `stream`, `getCoverArt`, `getScanStatus`, `startScan`). Navidrome's native `/api/*` REST API is not used.
+`/admin/player` is gated on a `GET /player/health` probe (added in #216). When that probe is absent or non-200, the route renders a "Player not deployed on this host" placeholder and the sidebar destination hides — making the Hub/Player split visible to operators well before #220 lifts Player into its own plugin/process.
 
-## Federation model
+Bounded directories may not cross-import. ESLint-level enforcement landed in #221 (`frontend/eslint.config.js` — `no-restricted-imports` between `features/hub-admin/`, `features/player-admin/`, and `features/player/`). The earlier tactical test in `frontend/src/features/feature-boundaries.test.ts` is kept as a belt-and-braces guard. Shared pure-UI helpers live in `features/shared/`.
 
-Hubs are peers listed in each other's `peers.yaml`, authenticated by Ed25519 public keys. Every `/federation/*` (and `/proxy/*`) request is signed by the sender. Peer-to-peer means:
+<a id="admin-namespaces"></a>
+Backend endpoint paths exposed under three mounts, partitioned per namespace since #226:
 
-- No central registry or directory.
-- Small, trusted networks (4–12 participants).
-- Each hub has a stable instance ID and a long-lived Ed25519 keypair.
-- Adding a peer is a two-sided manual config change (both hubs edit their `peers.yaml`, exchanging public keys and reachable `proxy_url`s).
+| Mount                | Owner    | What lives here                                                                                |
+|----------------------|----------|-----------------------------------------------------------------------------------------------|
+| `/admin/*`           | auth     | Auth only (`/login`, `/refresh`, `/logout`, `/me`). Kept because the refresh cookie path is bound to `/admin/refresh`. Hub and Player admin handlers do **not** mount here. |
+| `/api/admin/hub/*`   | Hub      | Auth + users, peers, invitations, sync, cache, activity, instance, activity retention. SPA's `features/hub-admin/` is the only frontend consumer. |
+| `/api/admin/player/*`| Player   | Auth + Sonos enable/volume-cap, LAN URL, future DLNA toggles. SPA's `features/player-admin/` is the only frontend consumer. |
 
-The `/federation/*` surface carries only peer identity/auth in v3. Content (audio streams, cover art) and catalog metadata travel through `/proxy/*`:
+Cross-namespace requests (e.g. `POST /api/admin/player/users`) return 404 — the handler isn't mounted there. The three plugins (`authRoutes`, `hubAdminRoutes`, `playerAdminRoutes`) live in `hub/src/routes/admin.ts`. This finishes the Hub/Player boundary at the request level, so lifting Player into its own process is a wiring change.
 
-| Route              | Purpose                                                                                   |
-|--------------------|-------------------------------------------------------------------------------------------|
-| `/federation/*`    | Peer identity and signing only — no content endpoints in v3 (see [federation-api.md](federation-api.md)) |
-| `/proxy/rest/*`    | Authenticated transparent proxy to local Navidrome — used by both local clients and peers for catalog sync and streaming |
+## Hub/Player boundary enforcement (#221)
 
-Contract details (headers, signing payload, error codes): [federation-api.md](federation-api.md). `/proxy/*` auth modes: [hub-internals.md#proxy](hub-internals.md#proxy).
+The directory boundary is mechanically enforced by ESLint, so a future PR cannot accidentally reintroduce the violations that phases #213–#220 removed.
 
-Cross-hub share IDs for albums and artists are resolved entirely locally by each hub against its synced `instance_*` tables — no federation RPC. See [hub-internals.md#share-ids](hub-internals.md#share-ids).
+| Boundary                                                                                                                                          | Enforced by                                                                            |
+|---------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| Player BE files (`hub/src/routes/{sonos,dlna}.ts`, `hub/src/services/{sonos-*,dlna-*,cast-tokens,didl,soap,ssdp-advertiser,player-settings}.ts`) may not runtime-import `better-sqlite3`, the in-process `adapters/subsonic`, or hub DB modules (`db/preferred-source*`, `db/client*`, `db/schema*`). | `hub/eslint.config.js` (`no-restricted-imports`).                                      |
+| `hub/src/db/player-db.ts` carve-out: the Player DB opener is allowed to import `better-sqlite3`. Type-only imports (`import type Database from "better-sqlite3"`) are allowed everywhere because they erase at compile time. | Same config — `allowTypeImports: true` + per-file ignore.                              |
+| Frontend `features/hub-admin/**`, `features/player-admin/**`, and `features/player/**` may not cross-import. `features/shared/` is importable from any side. | `frontend/eslint.config.js` (`no-restricted-imports`).                                 |
+| CI: `pnpm lint:boundary` runs both configs (stripped down to just the boundary rules so unrelated lint noise can't drown out a regression). Also wired into `pnpm verify` and the GitHub Actions `unit` job. | `package.json` + `.github/workflows/ci.yml`.                                           |
+| Belt-and-braces: programmatic tests (`hub/test/boundary-lint.test.ts`, `frontend/src/features/boundary-lint.test.ts`) prove the rules fire on stub violating sources. | Vitest (`pnpm test`).                                                                  |
+
+If a new Player file is added (e.g. another route or service), extend the `playerFiles` glob in `hub/eslint.config.js`. If a new exception is unavoidable, document the carve-out inline in the config — do not silently relax the rule.
+
+## Federation
+
+Peers stored in `instances` (DB-authoritative since v0.5.0 / federation v5), authenticated by Ed25519 pubkey. Every `/federation/*` and `/proxy/*` request is signed.
+
+**Peer lifecycle (issue #244, Phases 1–3).** `instances.lifecycle` (`active` | `disabled` | `tombstoned`) is admission state, kept deliberately separate from `instances.status` (`online`/`offline`/`degraded`), which is liveness churned constantly by health checks and auto-sync — never conflate the two. `active` is the default; `disabled` is reversible local-only policy (stops syncing from, proxying to, and accepting requests from the peer); `tombstoned` marks an evicted peer. Enforcement points: non-active peers are rejected inbound with a uniform `403 {error:"forbidden"}` — `federation/peer-auth.ts` gates `/federation/*` and `proxy/auth.ts` gates `/proxy/*` (two separate auth paths; a gate in one does NOT cover the other); `sync.ts`/`auto-sync.ts` skip non-active peers before any health check or sync operation; `merge.ts` excludes non-active instances' rows from the three `instance_*` reads (rows are kept, not deleted — re-enabling a peer needs no re-sync, the next merge just re-includes it with the same deterministic ids). Admin surface: `POST /api/admin/hub/peers/:id/{disable,enable}` and `DELETE /api/admin/hub/peers/:id` (owner-only) mutate `lifecycle`, reload the in-process `PeerRegistry`, and run the merge pipeline inline so content appears/disappears immediately rather than at the next sync. `DELETE` also writes a signed row to `peer_tombstones` via `federation/tombstones.ts` (`createTombstone`/`verifyTombstone`).
+
+**Phase 3: tombstone gossip.** `GET /federation/peers` (federation v7) gains a sibling `tombstones` array so eviction propagates cluster-wide, not just locally. `gossip.ts`'s `ingestGossipTombstone` verifies each entry against the remover's pinned pubkey, refuses tombstones naming the receiver's own instance id, and refuses removers that are themselves locally tombstoned (an evicted hub cannot evict others) — otherwise any admitted hub may evict any other known instance (small, mutually-trusted mesh; no quorum). Ingest never runs the merge pipeline (too heavy for a per-sync-cycle operation) — content drops at the next merge, which the same sync call runs right after gossip. `ingestGossipEntry` also refuses to re-introduce a locally tombstoned instance id, and rejects any entry whose inviter is locally tombstoned (disabled inviters remain trusted — disabled is local policy, not a trust revocation) — both unless **re-admission** applies: an invitation postdating the tombstone's `created_at` clears the tombstone and re-admits the instance as `active`, checked identically at the handshake path (`routes/federation.ts`) and the gossip path. Full contract, wire shape, and trust-model rationale: [federation-api.md](federation-api.md#tombstone-gossip-v7).
+
+- No central registry; small trusted networks (4–12).
+- Stable instance ID + long-lived Ed25519 keypair per hub.
+- Admission: one signed invitation (issue → accept → gossip propagates).
+
+| Route                    | Purpose                                                                |
+|--------------------------|------------------------------------------------------------------------|
+| `/federation/handshake`  | Signed-invitation peer admission                                       |
+| `/federation/peers`      | Gossip — verify embedded invitation against named inviter's pubkey     |
+| `/federation/stream/:id` | Cross-peer audio stream                                                |
+| `/proxy/rest/*`          | Authenticated proxy to local Navidrome (clients and peers both use it) |
+
+Contract: [federation-api.md](federation-api.md). Share IDs resolve locally against synced `instance_*` tables — no RPC. See [hub-internals.md#share-ids](hub-internals.md#share-ids).
 
 ## Data model
 
-Two tables per entity — one "raw" (per-instance), one "unified" (deduped across instances):
+Catalog tables come in pairs: `instance_*` (raw per-instance) and `unified_*` (deduped by MBID, then normalized name).
 
 ```
-instance_artists    ─┐
-instance_albums     ─┼─ merge.ts ─> unified_artists
-instance_tracks     ─┘              unified_release_groups
-                                    unified_releases
-                                    unified_tracks
-                                    track_sources   (keyed by instance_id)
+instance_artists  ─┐
+instance_albums   ─┼─ merge.ts ─> unified_artists         ◀── unified_artist_sources
+instance_tracks   ─┘              unified_release_groups
+                                  unified_releases        ◀── unified_release_sources
+                                  unified_tracks
+                                  track_sources           (keyed by instance_id)
 ```
 
-`track_sources` is the branching point for streaming: each row records which instance (local or peer) holds a copy of a unified track. `instance_id = 'local'` means the bundled Navidrome; a peer's instance ID means that peer's Navidrome. `selectBestSource()` scores sources by format quality → bitrate → local tie-break. Deduplication rules and encoding conventions are documented in [hub-internals.md#federation](hub-internals.md#federation).
+`track_sources` is the streaming branch point. Source selection runs at merge time, not stream time: `mergeLibraries()` flags one row per unified track `preferred = 1` (ranked format → bitrate → local tie-break). Stream routes read that row. Merge rules: [hub-internals.md#federation](hub-internals.md#federation).
 
-## Play flow (source selection)
+`unified_*_sources` join tables back the "which peers own this" UI and the Subsonic MusicFolders mapping (one folder per peer).
+
+**Dual-DB split (issue #212, Phases 1+3 in #215, #217).** Two SQLite files open side-by-side, no `ATTACH`, no cross-joins:
+
+| File         | Owner   | Path (default)            | Holds                                                                                                      |
+|--------------|---------|---------------------------|------------------------------------------------------------------------------------------------------------|
+| `hub.db`     | Hub BE  | `DATABASE_PATH`           | Users, peers, catalog (`instance_*`/`unified_*`), `settings` (Hub-only: activity retention, art-cache cap, JWT secret), activity, cache |
+| `player.db`  | Player  | sibling of `hub.db`       | `player_settings` (key/value): DLNA UDN, cast token HMAC key, `sonos_enabled`, `sonos_volume_cap`, `lan_url`, `dlna_enabled`, `dlna_friendly_name` |
+
+Both handles are opened at entry-point boot (`buildApp` in `hub/src/server.ts`) and capability-injected into the owning code paths. Hub code holds zero references to `player.db`; Player code holds zero references to `hub.db`. Override `player.db` location via `PLAYER_DATABASE_PATH` env (default: `dirname(DATABASE_PATH)/player.db`).
+
+Phase 3 (#217) migrates Player-owned rows out of `hub.db.settings` into `player.db.player_settings` on first boot under the new code (idempotent gap-fill — never overwrites an existing player.db value). Legacy `sonos_*`/`lan_url` rows in `hub.db.settings` are left in place but are no longer the source of truth; cleanup of those rows lands in a later admin-SPA phase.
+
+| Table                                  | Purpose                                                         |
+|----------------------------------------|------------------------------------------------------------------|
+| `users`                                | Local accounts; AES-256-GCM password (reversible for `u+t+s`)    |
+| `instances`                            | Peer registry: id, pubkey, proxy URL, version, last-seen/sync    |
+| `invitations`                          | Nonce-tracked signed invitations (consumed once)                 |
+| `settings`                             | Singleton key/value (instance metadata, JWT secret ref)          |
+| `playlists`, `playlist_tracks`         | User playlists over unified track IDs                            |
+| `user_stars`                           | Per-user stars (artist/album/track unified IDs)                  |
+| `art_cache`                            | LRU on-disk cache for cover art + external artwork               |
+| `sync_operations`, `stream_operations` | Per-peer sync state + recent stream activity                     |
+| `play_events`                          | Durable per-user play history (Subsonic `playCount`/`played`, #197) |
+
+## Play flow
 
 ```
-1. Client POSTs play for unified track ID <uuid>
-2. Hub looks up track_sources for the unified track
-3. selectBestSource picks the winning source
-4. If source.instance_id === 'local':
-     proxy /proxy/rest/stream from the bundled Navidrome (JWT auth)
-   If source.instance_id === <peer-id>:
-     sign & GET /proxy/rest/stream on the chosen peer's proxy_url (Ed25519 auth)
-5. Response is piped to the client (no buffering in the hub)
+1. Client requests unified track ID
+2. Hub reads the track_sources row flagged preferred = 1 (chosen at merge time)
+3. Local source  → /proxy/rest/stream on local Navidrome (JWT auth)
+   Peer source   → signed GET /proxy/rest/stream on peer (Ed25519)
+4. Response piped to client (no hub buffering)
 ```
 
-Transcoding happens on whichever Navidrome owns the bytes, never on the hub.
+Transcoding happens on the Navidrome that owns the bytes.
+
+**Sonos casting sink (issue #108):** optional alternative to local browser playback. Off by default; toggled at runtime from the Admin page (`sonos_enabled` setting, #184). When enabled, the player route mints a short-lived HMAC cast token bound to the unified track id + originating user, builds `${lan_url}/rest/stream.view?id=t<uuid>&castToken=…` (LAN URL is an admin setting, #209), and issues SOAP `SetAVTransportURI + Play` on the device. The Sonos device fetches the stream from the hub's Subsonic endpoint directly (no Player relay since #218), reusing the same source-selection + transcoding pipeline. Since #220, the cast planner resolves track metadata + source format via Hub Subsonic over an in-process loopback `app.inject()` call (the shared `HubSubsonicCaller` in `services/hub-subsonic-caller.ts`) — `routes/sonos.ts` no longer imports the in-process `SubsonicClient` adapter or queries `app.db` directly. See [hub-internals.md](hub-internals.md#sonos-integration-issue-108).
+
+**DLNA MediaServer (issue #175):** optional. When `DLNA_ENABLED=true`, Poutine advertises itself as a UPnP `MediaServer:1` on the LAN (SSDP + SOAP/ContentDirectory). Clients like Windows Media Player, Xbox, Kodi, VLC, and BubbleUPnP can browse the merged library. Since #218, DIDL `res@uri` points at `${lan_url}/rest/stream.view?id=t<uuid>&castToken=…&dlna=1`; renderers fetch bytes directly from the Hub Subsonic stream endpoint. Since #219, the ContentDirectory service reads via Subsonic HTTP only (in-process `app.inject()` to the hub's own `/rest/*`) — no direct DB access in `services/dlna-objects.ts`, so the Player side of the boundary is one step closer to splitting into its own process. DLNA has no user identity, so the embedded cast token is bound to a configurable pseudo-user — see [hub-internals.md](hub-internals.md#dlna-mediaserver-issue-175).
 
 ## Auth model
 
-| Concern         | Approach                                                             |
-|-----------------|----------------------------------------------------------------------|
-| User passwords  | AES-256-GCM (reversible — needed for Subsonic `u+t+s`). Key on disk. |
-| Session tokens  | JWT for `/admin/*` only: 15 min access + 7 d refresh                 |
-| Subsonic auth   | `u+p` or `u+t+s` (MD5 token+salt). SPA + 3rd-party clients use either |
-| Peer auth       | Ed25519 signature on every `/federation/*` and `/proxy/*` request    |
-| Proxy auth      | Unified: Ed25519 (peers) → JWT (admin) → Subsonic `u+p`/`u+t+s`     |
-| Navidrome auth  | Env-var creds, never in DB; internal network only                    |
-| Transport       | HTTPS required in prod for peer-to-peer reachability                 |
+| Concern        | Approach                                                          |
+|----------------|-------------------------------------------------------------------|
+| User passwords | AES-256-GCM, on-disk key                                          |
+| Session tokens | JWT for `/admin/*`: 15 min access + 7 d refresh                   |
+| Subsonic       | `u+p` or `u+t+s`                                                  |
+| Peer           | Ed25519 signature on every `/federation/*` and `/proxy/*`         |
+| Proxy          | Ed25519 (peers) → JWT (admin) → Subsonic `u+p`/`u+t+s`           |
+| Navidrome      | Env-var creds, internal network only                              |
+| Transport      | HTTPS required in prod                                            |
 
-Flow details: [authentication.md](authentication.md). `/proxy/*` auth detail: [hub-internals.md#proxy](hub-internals.md#proxy).
+Detail: [authentication.md](authentication.md), [hub-internals.md#proxy](hub-internals.md#proxy).
 
 ## Scale envelope
 
-Small by design. The merge algorithm, fan-out sync, and unified SQLite tables are tuned for the 4–12 hub range.
-
-| Dimension                  | Target                                             |
-|----------------------------|----------------------------------------------------|
-| Peer hubs                  | 4–12                                               |
-| Concurrent users per hub   | ~20–50                                             |
-| Per-hub library            | ~50k tracks                                        |
-| Merged library             | ~200k–600k tracks                                  |
-| Sync cadence               | On Navidrome scan completion (auto) or on demand  |
+| Dimension         | Target                                  |
+|-------------------|------------------------------------------|
+| Peer hubs         | 4–12                                    |
+| Users per hub     | ~20–50                                  |
+| Per-hub library   | ~50k tracks                             |
+| Merged library    | ~200k–600k tracks                       |
+| Sync cadence      | On Navidrome scan complete or on demand |

@@ -88,11 +88,24 @@ def test_get_artists(conn):
 
 
 def test_get_album_list2_recent(conn):
+    # `recent` = most-recently-played and is empty until something is played
+    # (#197). Scrobble a song, then its album must appear in the recent list.
+    seed = conn.getAlbumList2(ltype="newest", size=1)["albumList2"]["album"]
+    if isinstance(seed, list):
+        seed = seed[0]
+    album_id = seed["id"]
+    songs = conn.getAlbum(id=album_id)["album"].get("song", [])
+    if isinstance(songs, dict):
+        songs = [songs]
+    conn.scrobble(sid=songs[0]["id"])
+
     r = conn.getAlbumList2(ltype="recent", size=10)
     albums = r["albumList2"].get("album", [])
     if isinstance(albums, dict):
         albums = [albums]
-    assert len(albums) > 0
+    assert any(a["id"] == album_id for a in albums), (
+        "played album missing from type=recent"
+    )
 
 
 def test_search3(conn):
@@ -102,7 +115,7 @@ def test_search3(conn):
 
 
 def test_get_album_with_songs(conn):
-    r = conn.getAlbumList2(ltype="recent", size=1)
+    r = conn.getAlbumList2(ltype="newest", size=1)
     album_meta = r["albumList2"]["album"]
     if isinstance(album_meta, list):
         album_meta = album_meta[0]
@@ -119,7 +132,7 @@ def test_get_album_with_songs(conn):
 
 
 def test_stream_returns_audio_bytes(conn):
-    r = conn.getAlbumList2(ltype="recent", size=1)
+    r = conn.getAlbumList2(ltype="newest", size=1)
     album = r["albumList2"]["album"]
     if isinstance(album, list):
         album = album[0]
@@ -171,7 +184,7 @@ def test_get_artist_detail(conn):
 
 
 def test_get_song(conn):
-    album = conn.getAlbumList2(ltype="recent", size=1)["albumList2"]["album"]
+    album = conn.getAlbumList2(ltype="newest", size=1)["albumList2"]["album"]
     if isinstance(album, list):
         album = album[0]
     songs = conn.getAlbum(id=album["id"])["album"].get("song", [])
@@ -197,7 +210,7 @@ def test_get_artist_info2(conn):
 
 
 def test_download_returns_audio_bytes(conn):
-    album = conn.getAlbumList2(ltype="recent", size=1)["albumList2"]["album"]
+    album = conn.getAlbumList2(ltype="newest", size=1)["albumList2"]["album"]
     if isinstance(album, list):
         album = album[0]
     songs = conn.getAlbum(id=album["id"])["album"].get("song", [])
@@ -208,7 +221,7 @@ def test_download_returns_audio_bytes(conn):
 
 
 def test_get_cover_art(conn):
-    album = conn.getAlbumList2(ltype="recent", size=1)["albumList2"]["album"]
+    album = conn.getAlbumList2(ltype="newest", size=1)["albumList2"]["album"]
     if isinstance(album, list):
         album = album[0]
     cover = album.get("coverArt") or album["id"]
@@ -233,7 +246,7 @@ def test_get_playlists_stub(conn):
 
 
 def test_scrobble_stub(conn):
-    album = conn.getAlbumList2(ltype="recent", size=1)["albumList2"]["album"]
+    album = conn.getAlbumList2(ltype="newest", size=1)["albumList2"]["album"]
     if isinstance(album, list):
         album = album[0]
     songs = conn.getAlbum(id=album["id"])["album"].get("song", [])
@@ -279,6 +292,38 @@ def test_opensubsonic_envelope_fields(conn):
     assert "serverVersion" in env
 
 
+def test_get_opensubsonic_extensions(conn):
+    """#236: capability negotiation endpoint. Spec marks it callable WITHOUT
+    auth so clients (Symfonium, Feishin, Amperfy) can feature-detect pre-login.
+    Must list transcodeOffset and must NOT list formPost (no form-body parser)."""
+    import json
+    import urllib.request
+
+    base = f"{conn._baseUrl}:{conn._port}/rest/getOpenSubsonicExtensions"
+
+    # No credentials at all — still returns ok.
+    env = json.loads(
+        urllib.request.urlopen(f"{base}?v=1.16.1&c=poutine-compat&f=json").read()
+    )["subsonic-response"]
+    assert env["status"] == "ok"
+    exts = env["openSubsonicExtensions"]
+    if isinstance(exts, dict):
+        exts = [exts]
+    names = {e["name"] for e in exts}
+    assert "transcodeOffset" in names
+    assert "formPost" not in names
+    offset = next(e for e in exts if e["name"] == "transcodeOffset")
+    versions = offset["versions"]
+    if isinstance(versions, int):
+        versions = [versions]
+    assert 1 in versions
+
+    # XML form nests <versions> under the named extension element.
+    xml = urllib.request.urlopen(f"{base}.view?v=1.16.1&c=poutine-compat&f=xml").read()
+    assert b'name="transcodeOffset"' in xml
+    assert b"<versions>1</versions>" in xml
+
+
 def test_view_suffix_equivalence(conn):
     import json, urllib.request
     qs = f"u={conn._username}&p={conn._rawPass}&v=1.16.1&c=poutine-compat&f=json"
@@ -296,7 +341,7 @@ def test_xml_format_supported(conn):
 
 def test_star_unstar_round_trip(conn):
     """Issue #104: star a song, see it in getStarred2, unstar, gone."""
-    r = conn.getAlbumList2(ltype="recent", size=1)
+    r = conn.getAlbumList2(ltype="newest", size=1)
     albums = r["albumList2"].get("album", [])
     if isinstance(albums, dict):
         albums = [albums]
@@ -337,7 +382,7 @@ def test_star_unstar_round_trip(conn):
 
 def test_get_album_list2_starred(conn):
     """Issue #104: getAlbumList2?type=starred returns only starred albums."""
-    r = conn.getAlbumList2(ltype="recent", size=1)
+    r = conn.getAlbumList2(ltype="newest", size=1)
     albums = r["albumList2"].get("album", [])
     if isinstance(albums, dict):
         albums = [albums]

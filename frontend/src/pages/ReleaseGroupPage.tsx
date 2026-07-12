@@ -4,7 +4,7 @@ import { getAlbum, artUrl } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
-import { Play, Plus, ChevronRight, Disc, ChevronDown, ChevronUp, FileAudio, Info } from "lucide-react";
+import { Play, Pause, Plus, ChevronRight, Disc, ChevronDown, ChevronUp, FileAudio, Info } from "lucide-react";
 import { useState } from "react";
 import { ShareIdButton } from "@/components/ShareIdButton";
 import { StarButton } from "@/components/StarButton";
@@ -21,7 +21,8 @@ function hashColor(name: string): string {
 
 export function ReleaseGroupPage() {
   const { id } = useParams<{ id: string }>();
-  const { playTracks, addToQueue } = usePlayer();
+  const { playTracks, addToQueue, queue, currentIndex, isPlaying } = usePlayer();
+  const currentTrackId = currentIndex >= 0 ? queue[currentIndex]?.id : undefined;
   const [expandedTrackId, setExpandedTrackId] = useState<string | null>(null);
   const [showAlbumMetadata, setShowAlbumMetadata] = useState(false);
 
@@ -163,10 +164,13 @@ export function ReleaseGroupPage() {
                 key={song.id}
                 song={song}
                 index={index}
+                albumArtistId={album.artistId}
                 onPlay={() => playTracks(album.songs, index)}
                 onAddToQueue={() => addToQueue(song)}
                 isExpanded={expandedTrackId === song.id}
                 onToggleMetadata={() => toggleTrackMetadata(song.id)}
+                isCurrent={currentTrackId === song.id}
+                isPlaying={isPlaying}
               />
             ))}
           </tbody>
@@ -189,32 +193,69 @@ function MetadataField({ label, value }: { label: string; value: string | undefi
 function SongRow({
   song,
   index,
+  albumArtistId,
   onPlay,
   onAddToQueue,
   isExpanded,
   onToggleMetadata,
+  isCurrent,
+  isPlaying,
 }: {
   song: SubsonicSong;
   index: number;
+  albumArtistId: string;
   onPlay: () => void;
   onAddToQueue: () => void;
   isExpanded: boolean;
   onToggleMetadata: () => void;
+  isCurrent: boolean;
+  isPlaying: boolean;
 }) {
+  // Compilations and "feat." tracks: show the track artist under the title
+  // when it differs from the album's release-group artist. (#138)
+  const showTrackArtist = !!song.artistId && song.artistId !== albumArtistId;
   return (
     <>
       <tr className="group border-b border-border/50 last:border-0 hover:bg-surface-hover transition-colors">
         <td className="py-2.5 px-4 text-sm text-text-muted">
-          <span className="group-hover:hidden">{song.track ?? index + 1}</span>
-          <button
-            onClick={onPlay}
-            className="hidden group-hover:block text-text-primary hover:text-accent cursor-pointer"
-          >
-            <Play className="w-3.5 h-3.5 fill-current" />
-          </button>
+          {isCurrent ? (
+            <button
+              onClick={onPlay}
+              className="group/play block text-accent hover:text-accent cursor-pointer"
+              title={isPlaying ? "Pause" : "Play"}
+            >
+              {isPlaying ? (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current group-hover/play:hidden" />
+                  <Pause className="w-3.5 h-3.5 fill-current hidden group-hover/play:block" />
+                </>
+              ) : (
+                <Play className="w-3.5 h-3.5 fill-current" />
+              )}
+            </button>
+          ) : (
+            <>
+              <span className="group-hover:hidden">{song.track ?? index + 1}</span>
+              <button
+                onClick={onPlay}
+                className="hidden group-hover:block text-text-primary hover:text-accent cursor-pointer"
+                title="Play"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+              </button>
+            </>
+          )}
         </td>
         <td className="py-2.5 px-4">
           <p className="text-sm text-text-primary">{song.title}</p>
+          {showTrackArtist && (
+            <Link
+              to={`/artists/${song.artistId}`}
+              className="text-xs text-text-muted hover:text-accent transition-colors"
+            >
+              {song.artist}
+            </Link>
+          )}
         </td>
         <td className="py-2.5 px-4 text-sm text-text-muted">
           {song.suffix && <span className="uppercase">{song.suffix}</span>}

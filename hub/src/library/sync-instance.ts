@@ -14,6 +14,8 @@ import type Database from "better-sqlite3";
 import { USER_AGENT } from "../version.js";
 import type { SyncResult } from "./sync.js";
 import type { LastFmClient } from "../services/lastfm.js";
+import { FanartTvClient } from "../services/fanarttv.js";
+import type { FanartTvClient as FanartTvClientType } from "../services/fanarttv.js";
 
 // ── Subsonic JSON envelope types (minimal) ────────────────────────────────────
 
@@ -65,6 +67,12 @@ interface NavidromeSong {
   musicBrainzId?: string;
   year?: number;
   genre?: string;
+  // #199: Navidrome populates these on OpenSubsonic responses. Lossy formats
+  // (MP3/AAC) report bitDepth as 0; lossless reports 16 or 24. Missing on
+  // peer-federated tracks until federation v7 carries them.
+  samplingRate?: number;
+  bitDepth?: number;
+  channelCount?: number;
 }
 
 // ── Simple semaphore ──────────────────────────────────────────────────────────
@@ -177,7 +185,12 @@ export async function readNavidromeViaProxy(
   db: Database.Database,
   instanceId: string,
   proxyFetch: ProxyFetch,
-  config: { concurrency?: number; log?: SyncLogger; lastFmClient?: LastFmClient | null } = {},
+  config: {
+    concurrency?: number;
+    log?: SyncLogger;
+    lastFmClient?: LastFmClient | null;
+    fanartTvClient?: FanartTvClientType | null;
+  } = {},
 ): Promise<SyncResult> {
   const concurrency = config.concurrency ?? 3;
   const log = config.log ?? noopLogger;
@@ -245,8 +258,8 @@ export async function readNavidromeViaProxy(
   `);
 
   const upsertTrack = db.prepare(`
-    INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, bitrate, format, size, musicbrainz_id, year, genre)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, bitrate, format, size, musicbrainz_id, year, genre, sampling_rate, bit_depth, channel_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(instance_id, remote_id) DO UPDATE SET
       album_id = excluded.album_id,
       title = excluded.title,
@@ -259,7 +272,10 @@ export async function readNavidromeViaProxy(
       size = excluded.size,
       musicbrainz_id = excluded.musicbrainz_id,
       year = excluded.year,
-      genre = excluded.genre
+      genre = excluded.genre,
+      sampling_rate = excluded.sampling_rate,
+      bit_depth = excluded.bit_depth,
+      channel_count = excluded.channel_count
   `);
 
   // Track seen IDs for stale-data cleanup
@@ -308,21 +324,40 @@ export async function readNavidromeViaProxy(
           const detail = data.artist as NavidromeArtistDetail;
           const artistCompositeId = `${instanceId}:${artist.id}`;
 
-          // Get image from Navidrome first
-          let artistImageUrl: string | null = detail.coverArt ?? artist.coverArt ?? null;
+          const artistMbid =
+            detail.musicBrainzId ?? artist.musicBrainzId ?? null;
+          let artistImageUrl: string | null = null;
 
-          // If no image and Last.fm is enabled, try to fetch from Last.fm
-          if (!artistImageUrl && config.lastFmClient?.isEnabled()) {
+          // Primary: fanart.tv when an MBID is available.
+          if (artistMbid && config.fanartTvClient?.isEnabled()) {
+            try {
+              const resp = await config.fanartTvClient.getArtist(artistMbid);
+              artistImageUrl = FanartTvClient.bestArtistImage(resp);
+            } catch {
+              // fanart.tv lookup failed — fall through to other sources.
+            }
+          }
+
+          // Otherwise use whatever Navidrome provided.
+          if (!artistImageUrl) {
+            artistImageUrl = detail.coverArt ?? artist.coverArt ?? null;
+          }
+
+          // Last.fm fallback only when there is no MBID (per #131 spec) and a
+          // Last.fm API key is configured. Artists with an MBID rely on
+          // fanart.tv plus the Navidrome-provided image.
+          if (
+            !artistImageUrl &&
+            !artistMbid &&
+            config.lastFmClient?.isEnabled()
+          ) {
             try {
               const lastFmInfo = await config.lastFmClient.getArtistInfo(
                 detail.name ?? artist.name,
-                detail.musicBrainzId ?? artist.musicBrainzId ?? undefined
               );
               if (lastFmInfo) {
                 const bestImage = config.lastFmClient.getBestImage(lastFmInfo);
-                if (bestImage) {
-                  artistImageUrl = bestImage;
-                }
+                if (bestImage) artistImageUrl = bestImage;
               }
             } catch {
               // Last.fm fetch failed, keep existing image URL (or null)
@@ -334,7 +369,7 @@ export async function readNavidromeViaProxy(
             instanceId,
             artist.id,
             detail.name ?? artist.name,
-            detail.musicBrainzId ?? artist.musicBrainzId ?? null,
+            artistMbid,
             detail.albumCount ?? artist.albumCount ?? 0,
             artistImageUrl,
           );
@@ -364,6 +399,30 @@ export async function readNavidromeViaProxy(
           const albumCompositeId = `${instanceId}:${album.id}`;
           const durationMs = detail.duration ? detail.duration * 1000 : null;
 
+          const releaseGroupMbid =
+            ((detail as unknown as Record<string, unknown>).releaseGroupMbid as
+              | string
+              | undefined) ?? null;
+          const albumMbid = detail.musicBrainzId ?? album.musicBrainzId ?? null;
+          let coverArtId: string | null =
+            detail.coverArt ?? album.coverArt ?? null;
+
+          // Album cover fallback: if Navidrome has no cover but the album has
+          // a release-group MBID, try fanart.tv. Expected to be rare.
+          if (
+            !coverArtId &&
+            releaseGroupMbid &&
+            config.fanartTvClient?.isEnabled()
+          ) {
+            try {
+              const resp = await config.fanartTvClient.getAlbum(releaseGroupMbid);
+              const url = FanartTvClient.bestAlbumCover(resp, releaseGroupMbid);
+              if (url) coverArtId = url;
+            } catch {
+              // fanart.tv lookup failed — leave coverArtId null.
+            }
+          }
+
           upsertAlbum.run(
             albumCompositeId,
             instanceId,
@@ -373,11 +432,11 @@ export async function readNavidromeViaProxy(
             detail.artist ?? album.artist ?? "",
             detail.year ?? album.year ?? null,
             detail.genre ?? album.genre ?? null,
-            detail.musicBrainzId ?? album.musicBrainzId ?? null,
-            (detail as unknown as Record<string, unknown>).releaseGroupMbid as string ?? null,
+            albumMbid,
+            releaseGroupMbid,
             detail.songCount ?? album.songCount ?? 0,
             durationMs,
-            detail.coverArt ?? album.coverArt ?? null,
+            coverArtId,
             detail.created ?? album.created ?? null,
           );
           seenAlbumRemoteIds.add(album.id);
@@ -403,6 +462,9 @@ export async function readNavidromeViaProxy(
               song.musicBrainzId ?? null,
               song.year ?? null,
               song.genre ?? null,
+              song.samplingRate ?? null,
+              song.bitDepth ?? null,
+              song.channelCount ?? null,
             );
             seenTrackRemoteIds.add(song.id);
             result.trackCount++;
@@ -418,6 +480,12 @@ export async function readNavidromeViaProxy(
 
   if (result.errors.length === 0) {
     _deleteStale(db, instanceId, seenTrackRemoteIds, seenAlbumRemoteIds, seenArtistRemoteIds);
+
+    // #157: result.trackCount was incremented once per upsertTrack() call,
+    // which overshoots when the same song is revisited across overlapping
+    // album listings (multi-disc, compilations). seenTrackRemoteIds is the
+    // de-duplicated count and matches instance_tracks after _deleteStale.
+    result.trackCount = seenTrackRemoteIds.size;
 
     const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(1);
     const syncMessage = `Synced ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks in ${elapsedSec} seconds`;

@@ -24,6 +24,7 @@ import {
   signRequest,
 } from "../src/federation/signing.js";
 import { FEDERATION_API_VERSION } from "../src/version.js";
+import { seedPeer } from "./helpers/seed-peer.js";
 import type { KeyObject } from "node:crypto";
 import type { Config } from "../src/config.js";
 
@@ -34,10 +35,6 @@ function tmpPath(suffix = "") {
     os.tmpdir(),
     `poutine-proxy-${Date.now()}-${Math.random().toString(36).slice(2)}-${suffix}`,
   );
-}
-
-function writeYaml(filePath: string, content: string) {
-  fs.writeFileSync(filePath, content, "utf8");
 }
 
 /** Minimal MP3 header bytes */
@@ -116,7 +113,6 @@ interface TestSetup {
   navidromeRequests: string[];
   keyPathA: string;   // peer A (the caller)
   keyPathApp: string; // the hub under test
-  peersYaml: string;
   privKeyA: KeyObject;
   pubKeyBase64A: string;
 }
@@ -124,20 +120,9 @@ interface TestSetup {
 async function buildTestSetup(): Promise<TestSetup> {
   const keyPathA = tmpPath("key-a.pem");
   const keyPathApp = tmpPath("key-app.pem");
-  const peersYaml = tmpPath("peers.yaml");
 
   const { privateKey: privKeyA, publicKeyBase64: pubKeyBase64A } =
     loadOrCreatePrivateKey(keyPathA);
-
-  writeYaml(
-    peersYaml,
-    [
-      `peers:`,
-      `  - id: "peer-a"`,
-      `    url: "http://localhost"`,
-      `    public_key: "ed25519:${pubKeyBase64A}"`,
-    ].join("\n"),
-  );
 
   const { server: navidrome, port: navidromePort, requests: navidromeRequests } =
     await startFakeNavidrome();
@@ -146,7 +131,6 @@ async function buildTestSetup(): Promise<TestSetup> {
     databasePath: ":memory:",
     jwtSecret: "proxy-test-secret",
     poutinePrivateKeyPath: keyPathApp,
-    poutinePeersConfig: peersYaml,
     poutineInstanceId: "hub-under-test",
     navidromeUrl: `http://127.0.0.1:${navidromePort}`,
     navidromeUsername: "nav-admin",
@@ -156,6 +140,13 @@ async function buildTestSetup(): Promise<TestSetup> {
   const app = await buildApp(config);
   await app.ready();
 
+  // Hub under test trusts caller "peer-a" (DB-backed registry, federation v5).
+  seedPeer(app, {
+    id: "peer-a",
+    url: "http://localhost",
+    publicKeySpec: `ed25519:${pubKeyBase64A}`,
+  });
+
   return {
     app,
     navidrome,
@@ -163,7 +154,6 @@ async function buildTestSetup(): Promise<TestSetup> {
     navidromeRequests,
     keyPathA,
     keyPathApp,
-    peersYaml,
     privKeyA,
     pubKeyBase64A,
   };
@@ -172,7 +162,7 @@ async function buildTestSetup(): Promise<TestSetup> {
 async function teardown(setup: TestSetup) {
   await setup.app.close();
   await new Promise<void>((resolve) => setup.navidrome.close(() => resolve()));
-  for (const f of [setup.keyPathA, setup.keyPathApp, setup.peersYaml]) {
+  for (const f of [setup.keyPathA, setup.keyPathApp]) {
     if (fs.existsSync(f)) fs.unlinkSync(f);
   }
 }
@@ -208,6 +198,73 @@ describe("proxy — auth accept: Ed25519 peer signature", () => {
 
     // Navidrome stub returns 200 regardless — we just care auth passed (not 401)
     expect(res.statusCode).toBe(200);
+  });
+
+  it("accepts a peer at the version floor, not just the current version (v5 vs v7)", async () => {
+    // Regression for the #244 bump: the check must compare against
+    // MIN_FEDERATION_API_VERSION (5), or every protocol bump cuts
+    // older-but-supported peers off from /proxy/*.
+    const url = "/proxy/rest/ping?f=json";
+    const headers = {
+      ...makePeerHeaders({ privateKey: setup.privKeyA, instanceId: "peer-a", url }),
+      "poutine-api-version": "5",
+    };
+    const res = await setup.app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("rejects a peer below the version floor", async () => {
+    const url = "/proxy/rest/ping?f=json";
+    const headers = {
+      ...makePeerHeaders({ privateKey: setup.privKeyA, instanceId: "peer-a", url }),
+      "poutine-api-version": "4",
+    };
+    const res = await setup.app.inject({ method: "GET", url, headers });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("proxy — lifecycle gate on peer auth (#244)", () => {
+  let setup: TestSetup;
+
+  beforeEach(async () => {
+    setup = await buildTestSetup();
+  });
+
+  afterEach(async () => {
+    await teardown(setup);
+  });
+
+  function signedPing() {
+    const url = "/proxy/rest/ping?f=json";
+    const headers = makePeerHeaders({
+      privateKey: setup.privKeyA,
+      instanceId: "peer-a",
+      url,
+    });
+    return setup.app.inject({ method: "GET", url, headers });
+  }
+
+  it("refuses a disabled peer's validly signed request with a uniform 403", async () => {
+    setup.app.db
+      .prepare("UPDATE instances SET lifecycle = 'disabled' WHERE id = 'peer-a'")
+      .run();
+    setup.app.peerRegistry.reload();
+
+    const res = await signedPing();
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "forbidden" });
+  });
+
+  it("refuses a tombstoned peer with the identical 403 body as disabled", async () => {
+    setup.app.db
+      .prepare("UPDATE instances SET lifecycle = 'tombstoned' WHERE id = 'peer-a'")
+      .run();
+    setup.app.peerRegistry.reload();
+
+    const res = await signedPing();
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "forbidden" });
   });
 });
 
@@ -487,15 +544,12 @@ describe("proxy — streaming passthrough", () => {
     );
 
     const keyPathLocal = tmpPath("key-enc.pem");
-    const peersLocal = tmpPath("peers-enc.yaml");
-    writeYaml(peersLocal, "peers: []");
 
     const { buildApp: buildAppLocal } = await import("../src/server.js");
     const appLocal = await buildAppLocal({
       databasePath: ":memory:",
       jwtSecret: "enc-test",
       poutinePrivateKeyPath: keyPathLocal,
-      poutinePeersConfig: peersLocal,
       poutineInstanceId: "enc-test",
       navidromeUrl: `http://127.0.0.1:${headerCapture.port}`,
       navidromeUsername: "admin",
@@ -519,7 +573,7 @@ describe("proxy — streaming passthrough", () => {
     } finally {
       await appLocal.close();
       await new Promise<void>((r) => headerCapture.server.close(() => r()));
-      for (const f of [keyPathLocal, peersLocal]) if (fs.existsSync(f)) fs.unlinkSync(f);
+      if (fs.existsSync(keyPathLocal)) fs.unlinkSync(keyPathLocal);
     }
   });
 });
@@ -554,14 +608,11 @@ describe("proxy — concurrency smoke test", () => {
     );
 
     const keyPathApp = tmpPath("key-app-conc.pem");
-    const peersYaml = tmpPath("peers-conc.yaml");
-    writeYaml(peersYaml, "peers: []");
 
     const config: Partial<Config> = {
       databasePath: ":memory:",
       jwtSecret: "concurrency-test-secret",
       poutinePrivateKeyPath: keyPathApp,
-      poutinePeersConfig: peersYaml,
       poutineInstanceId: "hub-concurrency-test",
       navidromeUrl: `http://127.0.0.1:${navidrome.port}`,
       navidromeUsername: "admin",
@@ -579,7 +630,6 @@ describe("proxy — concurrency smoke test", () => {
       navidromeRequests: navidrome.requests,
       keyPathA: "",
       keyPathApp,
-      peersYaml,
       privKeyA: {} as KeyObject,
       pubKeyBase64A: "",
     };
@@ -590,9 +640,7 @@ describe("proxy — concurrency smoke test", () => {
   afterEach(async () => {
     await setup.app.close();
     await new Promise<void>((resolve) => setup.navidrome.close(() => resolve()));
-    for (const f of [setup.keyPathApp, setup.peersYaml]) {
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
+    if (fs.existsSync(setup.keyPathApp)) fs.unlinkSync(setup.keyPathApp);
   });
 
   it("handles 12 concurrent in-flight streams without blocking", async () => {

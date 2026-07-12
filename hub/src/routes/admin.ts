@@ -4,9 +4,21 @@ import { createAccessToken, createRefreshToken, verifyRefreshToken, verifyToken 
 import { syncAll } from "../library/sync.js";
 import { SyncOperationService } from "../services/sync-operations.js";
 import { StreamTrackingService } from "../services/stream-tracking.js";
-import { mergeLibraries } from "../library/merge.js";
+import { runMergePipelineAsync } from "../library/merge-pipeline.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { APP_VERSION, FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
+import {
+  createInvitation,
+  encodeInvitation,
+  decodeInvitation,
+  verifyInvitationSignature,
+  signInviteeProof,
+} from "../federation/invitations.js";
+import { randomUUID } from "node:crypto";
+import { normalizeLanUrl } from "../services/sonos-settings.js";
+import { requireAuth } from "../auth/middleware.js";
+import { createTombstone } from "../federation/tombstones.js";
+import type { PeerLifecycle } from "../federation/peers.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -51,7 +63,11 @@ async function requireOwner(
   }
 }
 
-export const adminRoutes: FastifyPluginAsync = async (app) => {
+// Auth endpoints. Mounted at all three admin prefixes so /login, /refresh,
+// /logout, and /me are reachable from any namespace. The refresh-token cookie
+// is hard-bound to path `/admin/refresh` for backward compatibility with
+// browser sessions that pre-date the namespace split (#226).
+export const authRoutes: FastifyPluginAsync = async (app) => {
   // POST /admin/login
   app.post<{ Body: { username?: string; password?: string } }>(
     "/login",
@@ -78,9 +94,10 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(401).send({ error: "Invalid credentials" });
       }
 
-      if (user.is_admin !== 1) {
-        return reply.code(403).send({ error: "Admin access required" });
-      }
+      // #232: non-admins can now log in to the SPA — they get a regular
+      // session and the same Subsonic creds. Admin-only routes still 403
+      // them via `requireOwner` on every other endpoint.
+      const isAdmin = user.is_admin === 1;
 
       const accessToken = await createAccessToken(user.id, app.config);
       const refreshToken = await createRefreshToken(user.id, app.config);
@@ -103,7 +120,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       // (same threat surface as the JWT). See docs/authentication.md.
       const plaintext = getStoredPassword(user.password_enc, app.passwordKey);
       return {
-        user: { id: user.id, username: user.username, isAdmin: true },
+        user: { id: user.id, username: user.username, isAdmin },
         accessToken,
         subsonicCredentials: plaintext
           ? { username: user.username, password: plaintext }
@@ -121,9 +138,9 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     try {
       const { userId } = await verifyRefreshToken(refreshToken, app.config);
       const user = app.db
-        .prepare("SELECT id, is_admin FROM users WHERE id = ?")
-        .get(userId) as { id: string; is_admin: number } | undefined;
-      if (!user || user.is_admin !== 1) {
+        .prepare("SELECT id FROM users WHERE id = ?")
+        .get(userId) as { id: string } | undefined;
+      if (!user) {
         return reply.code(401).send({ error: "User not found" });
       }
       const accessToken = await createAccessToken(userId, app.config);
@@ -154,8 +171,9 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(204).send();
   });
 
-  // GET /admin/me
-  app.get("/me", { preHandler: requireOwner }, async (request) => {
+  // GET /admin/me — readable by any logged-in user (#232). The response
+  // includes `isAdmin` so the SPA can hide admin-only nav.
+  app.get("/me", { preHandler: requireAuth }, async (request) => {
     const user = app.db
       .prepare(
         "SELECT id, username, is_admin, created_at FROM users WHERE id = ?",
@@ -173,7 +191,11 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       createdAt: user.created_at,
     };
   });
+};
 
+// Hub-owned admin endpoints: users, peers, sync, instance, cache, activity,
+// activity-retention settings. Mounted only at /api/admin/hub/* (#226).
+export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
   // GET /admin/users
   app.get("/users", { preHandler: requireOwner }, async () => {
     const users = app.db
@@ -428,6 +450,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         id: peer.id,
         url: peer.url,
         publicKey: peer.publicKeySpec,
+        lifecycle: peer.lifecycle,
         status: alive ? "online" : "offline",
         lastSeen: row?.last_seen ?? null,
         lastSyncOk: row?.last_sync_ok != null ? row.last_sync_ok === 1 : null,
@@ -441,6 +464,326 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
+  // Shared lookup + guard for the three lifecycle-mutating routes below.
+  // Returns the current lifecycle row, or replies and returns null if the
+  // request should be rejected.
+  function loadPeerForLifecycleChange(
+    peerId: string,
+    reply: FastifyReply,
+  ): { lifecycle: PeerLifecycle } | null {
+    if (peerId === "local") {
+      reply.code(400).send({ error: "Cannot change lifecycle of the local instance" });
+      return null;
+    }
+    const row = app.db
+      .prepare("SELECT lifecycle FROM instances WHERE id = ?")
+      .get(peerId) as { lifecycle: PeerLifecycle } | undefined;
+    if (!row) {
+      reply.code(404).send({ error: "Peer not found" });
+      return null;
+    }
+    return row;
+  }
+
+  // POST /admin/peers/:peerId/disable — reversible local-only admission
+  // policy (#244 Phase 2). Stops sync/proxy/inbound for the peer immediately
+  // (enforcement is Phase 1); content disappears from the merged catalog on
+  // the next merge, which we run inline so the effect is immediate.
+  app.post<{ Params: { peerId: string } }>(
+    "/peers/:peerId/disable",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { peerId } = request.params;
+      const peer = loadPeerForLifecycleChange(peerId, reply);
+      if (!peer) return;
+      if (peer.lifecycle === "tombstoned") {
+        return reply.code(409).send({ error: "Peer is tombstoned; disable/enable no longer applies" });
+      }
+      app.db
+        .prepare(
+          "UPDATE instances SET lifecycle = 'disabled', lifecycle_changed_at = datetime('now') WHERE id = ?",
+        )
+        .run(peerId);
+      app.peerRegistry.reload();
+      await runMergePipelineAsync(app.db, {
+        logger: { warn: (msg) => app.log.warn(msg), info: (msg) => app.log.info(msg) },
+      });
+      return { id: peerId, lifecycle: "disabled" };
+    },
+  );
+
+  // POST /admin/peers/:peerId/enable — reverse of disable. Triggers the
+  // merge pipeline so the peer's tracks reappear without waiting for the
+  // next scheduled sync.
+  app.post<{ Params: { peerId: string } }>(
+    "/peers/:peerId/enable",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { peerId } = request.params;
+      const peer = loadPeerForLifecycleChange(peerId, reply);
+      if (!peer) return;
+      if (peer.lifecycle === "tombstoned") {
+        return reply.code(409).send({ error: "Peer is tombstoned; it cannot be re-enabled" });
+      }
+      app.db
+        .prepare(
+          "UPDATE instances SET lifecycle = 'active', lifecycle_changed_at = datetime('now') WHERE id = ?",
+        )
+        .run(peerId);
+      app.peerRegistry.reload();
+      await runMergePipelineAsync(app.db, {
+        logger: { warn: (msg) => app.log.warn(msg), info: (msg) => app.log.info(msg) },
+      });
+      return { id: peerId, lifecycle: "active" };
+    },
+  );
+
+  // DELETE /admin/peers/:peerId — evict the peer (tombstone). Not
+  // reversible via enable. Writes a signed peer_tombstones row (Phase 3
+  // gossips this) and runs the merge pipeline so the peer's content
+  // disappears from the merged catalog immediately. Idempotent: deleting an
+  // already-tombstoned peer returns the existing tombstone rather than
+  // erroring (the INSERT is a no-op on PK conflict).
+  app.delete<{ Params: { peerId: string }; Body: { reason?: string } }>(
+    "/peers/:peerId",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { peerId } = request.params;
+      const peer = loadPeerForLifecycleChange(peerId, reply);
+      if (!peer) return;
+
+      const alreadyTombstoned = peer.lifecycle === "tombstoned";
+      if (!alreadyTombstoned) {
+        app.db
+          .prepare(
+            "UPDATE instances SET lifecycle = 'tombstoned', lifecycle_changed_at = datetime('now') WHERE id = ?",
+          )
+          .run(peerId);
+      }
+      const tombstone = createTombstone(app.db, app.privateKey, {
+        instanceId: peerId,
+        removedBy: app.peerRegistry.instanceId,
+        reason: request.body?.reason ?? null,
+      });
+      app.peerRegistry.reload();
+      if (!alreadyTombstoned) {
+        await runMergePipelineAsync(app.db, {
+          logger: { warn: (msg) => app.log.warn(msg), info: (msg) => app.log.info(msg) },
+        });
+      }
+      return {
+        id: peerId,
+        lifecycle: "tombstoned",
+        tombstone: {
+          removedBy: tombstone.removedBy,
+          reason: tombstone.reason,
+          createdAt: tombstone.createdAt,
+        },
+      };
+    },
+  );
+
+  // POST /admin/peers/invite — issue a signed invitation (federation v5, #147).
+  // Body: { ourUrl: string, inviteeUrl?: string, expiresInSec?: number }
+  // Returns: { invitation: <base64-encoded signed payload> }
+  // Persists the nonce in the `invitations` table; consumed via /federation/handshake.
+  app.post<{ Body: { ourUrl?: string; inviteeUrl?: string; expiresInSec?: number } }>(
+    "/peers/invite",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { ourUrl, inviteeUrl, expiresInSec } = request.body ?? {};
+      if (!ourUrl || typeof ourUrl !== "string") {
+        return reply.code(400).send({
+          error: "ourUrl is required (the public base URL of this hub)",
+        });
+      }
+
+      const signed = createInvitation({
+        privateKey: app.privateKey,
+        inviterId: app.peerRegistry.instanceId,
+        inviterUrl: ourUrl,
+        inviterPublicKey: app.publicKeySpec,
+        inviteeUrl: inviteeUrl ?? null,
+        expiresInSec,
+      });
+
+      app.db
+        .prepare(
+          `INSERT INTO invitations (id, payload, signature, invitee_url, nonce, issued_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          randomUUID(),
+          JSON.stringify(signed.payload),
+          signed.signature,
+          signed.payload.invitee_url,
+          signed.payload.nonce,
+          signed.payload.issued_at,
+          signed.payload.expires_at,
+        );
+
+      return { invitation: encodeInvitation(signed) };
+    },
+  );
+
+  // POST /admin/peers/accept — admin pastes an invitation received out-of-band;
+  // we contact the inviter's /federation/handshake to complete admission.
+  // Body: { invitation: string, ourUrl: string }
+  app.post<{ Body: { invitation?: string; ourUrl?: string } }>(
+    "/peers/accept",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { invitation, ourUrl } = request.body ?? {};
+      if (!invitation || typeof invitation !== "string") {
+        return reply.code(400).send({ error: "invitation is required" });
+      }
+      if (!ourUrl || typeof ourUrl !== "string") {
+        return reply.code(400).send({ error: "ourUrl is required" });
+      }
+
+      let signed;
+      try {
+        signed = decodeInvitation(invitation);
+      } catch (err) {
+        return reply.code(400).send({ error: `Invalid invitation: ${String(err)}` });
+      }
+
+      const verified = verifyInvitationSignature(signed);
+      if (!verified.ok) {
+        return reply.code(400).send({ error: verified.error });
+      }
+
+      // Defend against the inviter's id colliding with ours.
+      if (signed.payload.inviter_id === app.peerRegistry.instanceId) {
+        return reply
+          .code(400)
+          .send({ error: "Invitation issuer is this hub" });
+      }
+
+      // #244 re-admission, invitee side: if WE have tombstoned the inviter,
+      // accepting its invitation is only allowed when the invitation
+      // postdates our tombstone — the same rule the inviter-side handshake
+      // applies (see routes/federation.ts). Checked before the network call
+      // so a refused accept never contacts the evicted hub.
+      const existingInviter = app.db
+        .prepare("SELECT lifecycle FROM instances WHERE id = ?")
+        .get(signed.payload.inviter_id) as { lifecycle: PeerLifecycle } | undefined;
+      if (existingInviter?.lifecycle === "tombstoned") {
+        const tombstoneRow = app.db
+          .prepare("SELECT created_at FROM peer_tombstones WHERE instance_id = ?")
+          .get(signed.payload.inviter_id) as { created_at: string } | undefined;
+        const clears =
+          tombstoneRow !== undefined &&
+          new Date(signed.payload.issued_at).getTime() >
+            new Date(tombstoneRow.created_at).getTime();
+        if (!clears) {
+          return reply.code(403).send({ error: "Inviter is tombstoned by this hub" });
+        }
+        app.db
+          .prepare("DELETE FROM peer_tombstones WHERE instance_id = ?")
+          .run(signed.payload.inviter_id);
+      }
+
+      const proof = signInviteeProof(app.privateKey, signed.payload.nonce);
+      const handshakeUrl = `${signed.payload.inviter_url}/federation/handshake`;
+      const ourBaseUrl = ourUrl.replace(/\/+$/, "");
+      const requestBody = {
+        invitation,
+        invitee: {
+          id: app.peerRegistry.instanceId,
+          url: ourBaseUrl,
+          public_key: app.publicKeySpec,
+          proof_signature: proof,
+        },
+      };
+
+      let res: Response;
+      try {
+        res = await fetch(handshakeUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "user-agent": USER_AGENT,
+            "poutine-api-version": String(FEDERATION_API_VERSION),
+          },
+          body: JSON.stringify(requestBody),
+        });
+      } catch (err) {
+        return reply.code(502).send({ error: `Inviter unreachable: ${String(err)}` });
+      }
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        return reply.code(res.status).send({
+          error: `Handshake rejected by inviter: ${text || res.statusText}`,
+        });
+      }
+
+      // On success, mirror the inviter's row locally: store the inviter as a
+      // peer, with the same invitation payload as our own provenance for that
+      // peer (so it can be re-gossiped to others).
+      const owner = app.db.prepare("SELECT id FROM users LIMIT 1").get() as
+        | { id: string }
+        | undefined;
+      if (!owner) {
+        return reply.code(500).send({ error: "No user row available for instance ownership" });
+      }
+      const next = (
+        app.db
+          .prepare("SELECT COALESCE(MAX(musicfolder_id), 0) + 1 AS next FROM instances")
+          .get() as { next: number }
+      ).next;
+      const url = signed.payload.inviter_url.replace(/\/+$/, "");
+      try {
+        // Idempotent: re-accepting from an already-known inviter refreshes
+        // our stored provenance to the fresh invitation instead of erroring
+        // on the PK. This matters for #244 re-admission — a re-invited hub
+        // still has the inviter's row from before its eviction, and the
+        // fresh payload is what our own gossip re-emits so OTHER hubs'
+        // postdating checks can clear their tombstones too. lifecycle flips
+        // to 'active' only from 'tombstoned' (cleared above); a locally
+        // disabled inviter stays disabled — accept doesn't override that
+        // local policy.
+        app.db
+          .prepare(
+            `INSERT INTO instances
+               (id, name, url, adapter_type, encrypted_credentials, owner_id, status, musicfolder_id,
+                public_key, invitation_payload, invitation_signature, inviter_id, inviter_url, inviter_public_key)
+             VALUES (?, ?, ?, 'subsonic', '', ?, 'online', ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               url = excluded.url,
+               status = 'online',
+               public_key = excluded.public_key,
+               invitation_payload = excluded.invitation_payload,
+               invitation_signature = excluded.invitation_signature,
+               inviter_id = excluded.inviter_id,
+               inviter_url = excluded.inviter_url,
+               inviter_public_key = excluded.inviter_public_key,
+               lifecycle = CASE WHEN instances.lifecycle = 'tombstoned' THEN 'active' ELSE instances.lifecycle END,
+               lifecycle_changed_at = CASE WHEN instances.lifecycle = 'tombstoned' THEN datetime('now') ELSE instances.lifecycle_changed_at END,
+               updated_at = datetime('now')`,
+          )
+          .run(
+            signed.payload.inviter_id,
+            signed.payload.inviter_id,
+            url,
+            owner.id,
+            next,
+            signed.payload.inviter_public_key,
+            JSON.stringify(signed.payload),
+            signed.signature,
+            signed.payload.inviter_id,
+            url,
+            signed.payload.inviter_public_key,
+          );
+      } catch (err) {
+        return reply.code(409).send({ error: `Could not insert peer: ${String(err)}` });
+      }
+      app.peerRegistry.reload();
+      return { ok: true, peerId: signed.payload.inviter_id, peerUrl: url };
+    },
+  );
+
   // POST /admin/sync — trigger a full sync (local + peers)
   app.post("/sync", { preHandler: requireOwner }, async (request) => {
    return syncAll(
@@ -452,6 +795,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       app.syncOpService,
       "manual",
       app.lastFmClient,
+      app.fanartTvClient,
     );
   });
 
@@ -503,7 +847,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         )
         .run();
     })();
-    mergeLibraries(app.db);
+    await runMergePipelineAsync(app.db, { logger: { warn: (msg) => app.log.warn(msg), info: (msg) => app.log.info(msg) } });
     return { deleted: true };
   });
 
@@ -621,6 +965,114 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
           .run(String(n));
       }
       return { maxEvents: app.streamTracking.getMaxRows() };
+    },
+  );
+};
+
+// Player-owned admin endpoints: Sonos settings (incl. shared `lanUrl`).
+// Mounted only at /api/admin/player/* (#226). Future DLNA toggles land here.
+export const playerAdminRoutes: FastifyPluginAsync = async (app) => {
+  // GET /admin/settings/sonos — runtime Sonos config (#184). `lanUrl` (#209)
+  // is shared with DLNA but lives under this section for UI simplicity.
+  app.get("/settings/sonos", { preHandler: requireOwner }, async () => {
+    return {
+      enabled: app.sonosSettings.getEnabled(),
+      volumeCap: app.sonosSettings.getVolumeCap(),
+      lanUrl: app.sonosSettings.getLanUrl(),
+      allowNonAdmin: app.sonosSettings.getAllowNonAdmin(),
+    };
+  });
+
+  // PUT /admin/settings/sonos
+  //
+  // Validate the full payload before applying any setter so a 400 on one
+  // field can't partially mutate state. Order of application: lanUrl
+  // first (so the enabled-requires-lanUrl invariant can read the new value),
+  // then volumeCap, then enabled.
+  //
+  // Invariant: Sonos cannot be enabled with an empty lan_url (#209). The
+  // request can flip enable + lanUrl in one PUT — the post-payload lanUrl
+  // is what matters.
+  app.put<{
+    Body: { enabled?: boolean; volumeCap?: number; lanUrl?: string; allowNonAdmin?: boolean };
+  }>(
+    "/settings/sonos",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { enabled, volumeCap, lanUrl, allowNonAdmin } = request.body ?? {};
+
+      if (enabled !== undefined && typeof enabled !== "boolean") {
+        return reply.code(400).send({ error: "enabled must be a boolean" });
+      }
+      if (allowNonAdmin !== undefined && typeof allowNonAdmin !== "boolean") {
+        return reply
+          .code(400)
+          .send({ error: "allowNonAdmin must be a boolean" });
+      }
+      if (
+        volumeCap !== undefined &&
+        (typeof volumeCap !== "number" ||
+          !Number.isFinite(volumeCap) ||
+          volumeCap < 0 ||
+          volumeCap > 100)
+      ) {
+        return reply
+          .code(400)
+          .send({ error: "volumeCap must be a number between 0 and 100" });
+      }
+      if (lanUrl !== undefined && typeof lanUrl !== "string") {
+        return reply.code(400).send({ error: "lanUrl must be a string" });
+      }
+
+      // Compute the post-write enabled + lanUrl so we can enforce the
+      // invariant before mutating anything.
+      const nextEnabled =
+        enabled !== undefined ? enabled : app.sonosSettings.getEnabled();
+      let normalizedLanUrl: string | undefined;
+      if (lanUrl !== undefined) {
+        try {
+          normalizedLanUrl = normalizeLanUrl(lanUrl);
+        } catch (err) {
+          return reply
+            .code(400)
+            .send({ error: err instanceof Error ? err.message : "invalid lanUrl" });
+        }
+      }
+      const nextLanUrl =
+        normalizedLanUrl !== undefined
+          ? normalizedLanUrl
+          : app.sonosSettings.getLanUrl();
+      if (nextEnabled && !nextLanUrl) {
+        return reply.code(400).send({
+          error:
+            "Sonos cannot be enabled while the LAN URL is empty — set a valid http(s) URL first",
+        });
+      }
+
+      // Wrap the three setters in a SQLite transaction so a partial write
+      // can't survive an exception mid-batch. Each setter still fires its
+      // onChange listener inside the transaction — listeners run synchronously
+      // and don't issue SQL, so this is safe (SSDP rebuild reads its inputs
+      // from the same connection and sees the queued writes).
+      app.db.transaction(() => {
+        // Reuse the value we already normalized for the invariant check —
+        // setLanUrl re-normalizes internally but feeding it the canonical
+        // form skips the redundant URL parse.
+        if (normalizedLanUrl !== undefined) {
+          app.sonosSettings.setLanUrl(normalizedLanUrl);
+        }
+        if (volumeCap !== undefined) app.sonosSettings.setVolumeCap(volumeCap);
+        if (enabled !== undefined) app.sonosSettings.setEnabled(enabled);
+        if (allowNonAdmin !== undefined)
+          app.sonosSettings.setAllowNonAdmin(allowNonAdmin);
+      })();
+
+      return {
+        enabled: app.sonosSettings.getEnabled(),
+        volumeCap: app.sonosSettings.getVolumeCap(),
+        lanUrl: app.sonosSettings.getLanUrl(),
+        allowNonAdmin: app.sonosSettings.getAllowNonAdmin(),
+      };
     },
   );
 };

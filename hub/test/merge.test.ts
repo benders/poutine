@@ -51,15 +51,16 @@ describe("mergeLibraries", () => {
     remoteId: string,
     name: string,
     artistId: string,
-    opts: { mbid?: string; rgMbid?: string; trackCount?: number; year?: number } = {},
+    opts: { mbid?: string; rgMbid?: string; trackCount?: number; year?: number; createdAt?: string } = {},
   ) {
     const id = `${instanceId}:${remoteId}`;
     db.prepare(
-      `INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name, year, musicbrainz_id, release_group_mbid, track_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO instance_albums (id, instance_id, remote_id, name, artist_id, artist_name, year, musicbrainz_id, release_group_mbid, track_count, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id, instanceId, remoteId, name, artistId, "Artist",
       opts.year ?? 2000, opts.mbid ?? null, opts.rgMbid ?? null, opts.trackCount ?? 10,
+      opts.createdAt ?? null,
     );
     return id;
   }
@@ -69,14 +70,25 @@ describe("mergeLibraries", () => {
     remoteId: string,
     albumId: string,
     title: string,
-    opts: { mbid?: string; trackNumber?: number; durationMs?: number; format?: string; bitrate?: number } = {},
+    opts: { mbid?: string; trackNumber?: number; durationMs?: number; format?: string; bitrate?: number; artistName?: string } = {},
   ) {
     const id = `${instanceId}:${remoteId}`;
+    // Default track artist_name to the album's instance_artist name so tests
+    // that don't care about per-track artist still produce one unified artist.
+    let artistName = opts.artistName;
+    if (artistName === undefined) {
+      const row = db.prepare(`
+        SELECT ia.name FROM instance_albums ial
+        JOIN instance_artists ia ON ia.id = ial.artist_id
+        WHERE ial.id = ?
+      `).get(albumId) as { name: string } | undefined;
+      artistName = row?.name ?? "Artist";
+    }
     db.prepare(
       `INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, format, bitrate, musicbrainz_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
-      id, instanceId, remoteId, albumId, title, "Artist",
+      id, instanceId, remoteId, albumId, title, artistName,
       opts.trackNumber ?? 1, 1, opts.durationMs ?? 240000,
       opts.format ?? "flac", opts.bitrate ?? null, opts.mbid ?? null,
     );
@@ -256,6 +268,38 @@ describe("mergeLibraries", () => {
 
     const artists = db.prepare("SELECT * FROM unified_artists").all();
     expect(artists).toHaveLength(2);
+  });
+
+  it("propagates instance_albums.created_at (latest across sources) to unified_release_groups", () => {
+    const artistMbid = "artist-mbid-1";
+    insertArtist(inst1, "a1", "Radiohead", artistMbid);
+    insertArtist(inst2, "a1", "Radiohead", artistMbid);
+
+    const earlier = "2026-01-01T00:00:00.000Z";
+    const later   = "2026-05-01T12:34:56.789Z";
+    const rgMbid = "rg-mbid-1";
+
+    const album1 = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { rgMbid, trackCount: 1, createdAt: earlier });
+    const album2 = insertAlbum(inst2, "al1", "OK Computer", `${inst2}:a1`, { rgMbid, trackCount: 1, createdAt: later });
+    insertTrack(inst1, "t1", album1, "Paranoid Android", { trackNumber: 1 });
+    insertTrack(inst2, "t1", album2, "Paranoid Android", { trackNumber: 1 });
+
+    mergeLibraries(db);
+
+    const rgs = db.prepare("SELECT created_at FROM unified_release_groups").all() as Array<{ created_at: string }>;
+    expect(rgs).toHaveLength(1);
+    expect(rgs[0].created_at).toBe(later);
+  });
+
+  it("falls back to current time when no instance_albums.created_at is set", () => {
+    insertArtist(inst1, "a1", "Radiohead", "artist-mbid-1");
+    const album = insertAlbum(inst1, "al1", "OK Computer", `${inst1}:a1`, { trackCount: 1 });
+    insertTrack(inst1, "t1", album, "Paranoid Android", { trackNumber: 1 });
+
+    mergeLibraries(db);
+
+    const rg = db.prepare("SELECT created_at FROM unified_release_groups").get() as { created_at: string };
+    expect(rg.created_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 
   it("should handle empty database without errors", () => {
@@ -599,5 +643,98 @@ describe("mergeLibraries", () => {
     // IDs should be identical across merges
     expect(firstArtists[0].id).toBe(secondArtists[0].id);
     expect(firstTracks[0].id).toBe(secondTracks[0].id);
+  });
+
+  describe("per-track artist resolution (#142)", () => {
+    function insertTrackWithArtist(
+      instanceId: string,
+      remoteId: string,
+      albumId: string,
+      title: string,
+      artistName: string,
+      opts: { trackNumber?: number; durationMs?: number } = {},
+    ) {
+      const id = `${instanceId}:${remoteId}`;
+      db.prepare(
+        `INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, format)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id, instanceId, remoteId, albumId, title, artistName,
+        opts.trackNumber ?? 1, 1, opts.durationMs ?? 240000, "flac",
+      );
+      return id;
+    }
+
+    it("resolves track artist from instance_tracks.artist_name, not the album artist", () => {
+      // Album artist: "The Chemical Brothers". Track 3's artist is a
+      // collaboration string that should produce a distinct unified artist.
+      insertArtist(inst1, "a1", "The Chemical Brothers");
+      const album = insertAlbum(inst1, "al1", "Get A Mix", `${inst1}:a1`, { trackCount: 2 });
+      insertTrackWithArtist(inst1, "t1", album, "Block Rockin' Beats", "The Chemical Brothers", { trackNumber: 1 });
+      insertTrackWithArtist(inst1, "t2", album, "Life Is Daft Punk", "The Chemical Brothers & Daft Punk", { trackNumber: 2 });
+
+      mergeLibraries(db);
+
+      const albumRgArtist = db.prepare(`
+        SELECT ua.name FROM unified_release_groups urg
+        JOIN unified_artists ua ON ua.id = urg.artist_id
+      `).get() as { name: string };
+      expect(albumRgArtist.name).toBe("The Chemical Brothers");
+
+      const tracks = db.prepare(`
+        SELECT ut.title, ua.name AS artist_name FROM unified_tracks ut
+        JOIN unified_artists ua ON ua.id = ut.artist_id
+        ORDER BY ut.track_number
+      `).all() as Array<{ title: string; artist_name: string }>;
+
+      expect(tracks).toHaveLength(2);
+      expect(tracks[0].artist_name).toBe("The Chemical Brothers");
+      expect(tracks[1].artist_name).toBe("The Chemical Brothers & Daft Punk");
+    });
+
+    it("creates new unified_artists for compilation tracks whose artist isn't in instance_artists", () => {
+      // "Various Artists" album with per-track artists that have no
+      // corresponding instance_artists row (Navidrome doesn't surface them).
+      insertArtist(inst1, "va", "Various Artists");
+      const album = insertAlbum(inst1, "al1", "Wipeout XL", `${inst1}:va`, { trackCount: 3 });
+      insertTrackWithArtist(inst1, "t1", album, "We Have Explosive", "The Future Sound of London", { trackNumber: 1 });
+      insertTrackWithArtist(inst1, "t2", album, "Atom Bomb", "Fluke", { trackNumber: 2 });
+      insertTrackWithArtist(inst1, "t3", album, "Tin There", "Underworld", { trackNumber: 3 });
+
+      mergeLibraries(db);
+
+      const names = db.prepare(`
+        SELECT ua.name FROM unified_tracks ut
+        JOIN unified_artists ua ON ua.id = ut.artist_id
+        ORDER BY ut.track_number
+      `).all() as Array<{ name: string }>;
+
+      expect(names.map((n) => n.name)).toEqual([
+        "The Future Sound of London",
+        "Fluke",
+        "Underworld",
+      ]);
+
+      // None of the per-track artists should equal the album artist.
+      const albumArtist = db.prepare(`
+        SELECT ua.name FROM unified_release_groups urg
+        JOIN unified_artists ua ON ua.id = urg.artist_id
+      `).get() as { name: string };
+      for (const n of names) expect(n.name).not.toBe(albumArtist.name);
+    });
+
+    it("falls back to album artist when track has no artist_name", () => {
+      insertArtist(inst1, "a1", "Lone Artist");
+      const album = insertAlbum(inst1, "al1", "Solo", `${inst1}:a1`, { trackCount: 1 });
+      insertTrackWithArtist(inst1, "t1", album, "Untitled", "", { trackNumber: 1 });
+
+      mergeLibraries(db);
+
+      const row = db.prepare(`
+        SELECT ua.name FROM unified_tracks ut
+        JOIN unified_artists ua ON ua.id = ut.artist_id
+      `).get() as { name: string };
+      expect(row.name).toBe("Lone Artist");
+    });
   });
 });

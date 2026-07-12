@@ -27,6 +27,10 @@ Wrap in a fresh `QueryClient` (`retry: false`) and `MemoryRouter`. Mock the Subs
 
 Reject the mocked API with a `SubsonicError(message, code)` and assert on `getByRole("alert")` plus the rendered code/message. The shared `<ErrorMessage>` component is the single renderer for query errors.
 
+### Testing bounded directories (`features/`)
+
+Primary enforcement is ESLint `no-restricted-imports` in `frontend/eslint.config.js` (#221), and the negative tests in `features/boundary-lint.test.ts` prove the rule fires on stub violators. The tactical runtime walker in `features/feature-boundaries.test.ts` is kept as a belt-and-braces guard. When you add a new feature dir, extend both: the eslint config glob and the walker's allowlist.
+
 ### Testing stores
 
 Zustand stores expose `setState` / `getState` directly — reset in `beforeEach` (`useToasts.setState({ toasts: [] })`). Use `vi.useFakeTimers()` for time-based behavior like toast auto-dismiss.

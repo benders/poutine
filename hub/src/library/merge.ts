@@ -26,8 +26,14 @@ export function mergeLibraries(db: Database.Database): void {
 
     // ── Step 1: Merge Artists ──────────────────────────────────────────────
 
+    // #244: rows from disabled/tombstoned instances are excluded from merge
+    // (they stay in instance_* — re-enable is instant, no re-sync needed).
+    // The 'local' row has no explicit lifecycle filter concern: it defaults
+    // to 'active' and is never itself disabled/tombstoned.
     const instanceArtists = db
-      .prepare("SELECT * FROM instance_artists")
+      .prepare(
+        "SELECT ia.* FROM instance_artists ia WHERE ia.instance_id IN (SELECT id FROM instances WHERE lifecycle = 'active')",
+      )
       .all() as Array<Record<string, unknown>>;
 
     // Group by MBID first, then by normalized name
@@ -167,14 +173,31 @@ export function mergeLibraries(db: Database.Database): void {
 
     // ── Step 2: Merge Release Groups ────────────────────────────────────────
 
+    // #244: same active-instance filter as instanceArtists above.
     const instanceAlbums = db
-      .prepare("SELECT * FROM instance_albums")
+      .prepare(
+        "SELECT ia.* FROM instance_albums ia WHERE ia.instance_id IN (SELECT id FROM instances WHERE lifecycle = 'active')",
+      )
       .all() as Array<Record<string, unknown>>;
 
     const insertReleaseGroup = db.prepare(`
-      INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, musicbrainz_id, year, genre, image_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, musicbrainz_id, year, genre, image_url, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
     `);
+
+    // Source created_at from the instance albums: use the latest add time
+    // across all sources contributing to the release group. This is the
+    // Navidrome (or peer) "added" timestamp, with sub-second precision —
+    // unlike `datetime('now')` at merge time, which collapses bulk imports
+    // to a single second and breaks "Recently Added" sort.
+    const groupCreatedAt = (group: Array<Record<string, unknown>>): string | null => {
+      let best: string | null = null;
+      for (const ia of group) {
+        const c = (ia.created_at as string | null) ?? null;
+        if (c && (!best || c > best)) best = c;
+      }
+      return best;
+    };
 
     // Group by release_group_mbid, else by (unified_artist_id + normalized album name)
     const rgByMbid = new Map<string, Array<Record<string, unknown>>>();
@@ -214,6 +237,13 @@ export function mergeLibraries(db: Database.Database): void {
         ? `${representative.instance_id as string}:${coverArtId}`
         : null;
 
+      // Combine the MBID group with any non-MBID albums sharing the same
+      // artist+name key, so created_at reflects every contributing source.
+      const normName = normalizeName(name);
+      const keyToCheck = `${unifiedArtistId}::${normName}`;
+      const absorbed = rgByKey.get(keyToCheck) ?? [];
+      const combined = absorbed.length ? [...group, ...absorbed] : group;
+
       try {
         insertReleaseGroup.run(
           id,
@@ -224,6 +254,7 @@ export function mergeLibraries(db: Database.Database): void {
           representative.year as number | null,
           representative.genre as string | null,
           encodedArt,
+          groupCreatedAt(combined),
         );
       } catch (err) {
         const existing = db
@@ -246,11 +277,8 @@ export function mergeLibraries(db: Database.Database): void {
       }
 
       // Also absorb non-MBID albums with same artist+name key
-      const normName = normalizeName(name);
-      const keyToCheck = `${unifiedArtistId}::${normName}`;
-      const normGroup = rgByKey.get(keyToCheck);
-      if (normGroup) {
-        for (const ia of normGroup) {
+      if (absorbed.length) {
+        for (const ia of absorbed) {
           instanceAlbumToReleaseGroup.set(ia.id as string, id);
           instanceAlbumToArtist.set(ia.id as string, instanceArtistToUnified.get(ia.artist_id as string) ?? unifiedArtistId);
         }
@@ -280,6 +308,7 @@ export function mergeLibraries(db: Database.Database): void {
           representative.year as number | null,
           representative.genre as string | null,
           encodedArt2,
+          groupCreatedAt(group),
         );
       } catch (err) {
         const existing = db
@@ -429,17 +458,59 @@ export function mergeLibraries(db: Database.Database): void {
 
     // ── Step 4: Merge Tracks ────────────────────────────────────────────────
 
+    // #244: same active-instance filter as instanceArtists above.
     const instanceTracks = db
-      .prepare("SELECT * FROM instance_tracks")
+      .prepare(
+        "SELECT it.* FROM instance_tracks it WHERE it.instance_id IN (SELECT id FROM instances WHERE lifecycle = 'active')",
+      )
       .all() as Array<Record<string, unknown>>;
+
+    // Build a normalized-name → unified_artist_id map from artists created in
+    // Step 1. Used to resolve each track's own `artist_name` (which is not in
+    // instance_artists for compilation guests, "feat." collaborators, etc.).
+    // (#142)
+    const unifiedArtistByNorm = new Map<string, string>();
+    {
+      const rows = db
+        .prepare("SELECT id, name_normalized FROM unified_artists")
+        .all() as Array<{ id: string; name_normalized: string }>;
+      for (const r of rows) unifiedArtistByNorm.set(r.name_normalized, r.id);
+    }
+
+    /**
+     * Resolve a track's artist string to a unified_artist id. Looks up by
+     * normalized name; creates a new unified_artists row (no MBID, no
+     * instance source) if unseen. Empty / whitespace-only strings return
+     * null so the caller can fall back to the album artist.
+     */
+    const resolveTrackArtistId = (rawName: string | null | undefined): string | null => {
+      const name = (rawName ?? "").trim();
+      if (!name) return null;
+      const norm = normalizeName(name);
+      if (!norm) return null;
+      const existing = unifiedArtistByNorm.get(norm);
+      if (existing) return existing;
+      const id = generateArtistId(norm, null);
+      try {
+        insertUnifiedArtist.run(id, name, norm, null, null);
+      } catch {
+        // Race / id collision — refetch row and use it.
+        const row = db
+          .prepare("SELECT id FROM unified_artists WHERE id = ?")
+          .get(id) as { id: string } | undefined;
+        if (!row) throw new Error(`failed to create unified artist for ${name}`);
+      }
+      unifiedArtistByNorm.set(norm, id);
+      return id;
+    };
 
     const insertTrack = db.prepare(`
       INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, musicbrainz_id, track_number, disc_number, duration_ms, genre)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertTrackSource = db.prepare(`
-      INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, bitrate, size)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO track_sources (id, unified_track_id, instance_id, instance_track_id, format, bitrate, size, sampling_rate, bit_depth, channel_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     // Group tracks by release
@@ -478,7 +549,12 @@ export function mergeLibraries(db: Database.Database): void {
 
       for (const [mbid, group] of byMbid) {
         const rep = group[0];
-        const artistId = instanceAlbumToArtist.get(rep.album_id as string) ?? "unknown";
+        // Track artist comes from the track's own artist_name first, falling
+        // back to the album's unified artist only when the tag is empty.
+        // (#142)
+        const albumArtistId = instanceAlbumToArtist.get(rep.album_id as string) ?? "unknown";
+        const artistId =
+          resolveTrackArtistId(rep.artist_name as string | null) ?? albumArtistId;
         const titleNorm = normalizeName(rep.title as string);
         const durationMs = rep.duration_ms as number | null;
         const id = generateTrackId(
@@ -535,6 +611,9 @@ export function mergeLibraries(db: Database.Database): void {
               track.format as string | null,
               track.bitrate as number | null,
               track.size as number | null,
+              track.sampling_rate as number | null,
+              track.bit_depth as number | null,
+              track.channel_count as number | null,
             );
           } catch (err) {
             const existing = db
@@ -589,6 +668,9 @@ export function mergeLibraries(db: Database.Database): void {
                 track.format as string | null,
                 track.bitrate as number | null,
                 track.size as number | null,
+                track.sampling_rate as number | null,
+                track.bit_depth as number | null,
+                track.channel_count as number | null,
               );
             } catch (err) {
               const prior = db
@@ -612,8 +694,11 @@ export function mergeLibraries(db: Database.Database): void {
         }
 
         if (!matched) {
-          // Create a new unified track
-          const artistId = instanceAlbumToArtist.get(track.album_id as string) ?? "unknown";
+          // Create a new unified track. Track artist comes from the track's
+          // own artist_name; album artist is the fallback only. (#142)
+          const albumArtistId = instanceAlbumToArtist.get(track.album_id as string) ?? "unknown";
+          const artistId =
+            resolveTrackArtistId(track.artist_name as string | null) ?? albumArtistId;
           const durationMs = track.duration_ms as number | null;
           const id = generateTrackId(
             titleNorm,
@@ -668,6 +753,9 @@ export function mergeLibraries(db: Database.Database): void {
               track.format as string | null,
               track.bitrate as number | null,
               track.size as number | null,
+              track.sampling_rate as number | null,
+              track.bit_depth as number | null,
+              track.channel_count as number | null,
             );
           } catch (err) {
             const prior = db

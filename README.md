@@ -15,8 +15,8 @@ Serves on `http://localhost:3000` (or `POUTINE_HOST_PORT`). SQLite and cover-art
 
 3. `docker compose up`. (Use `docker compose up --build` to build from source.) Navidrome scans on startup; the hub's `AutoSyncService` picks up the scan and populates the unified library.
 4. Log in to `http://localhost:3000/` with the Poutine Owner credentials that you set.
-5. To federate with peers, edit `config/peers.yaml` on both sides — each peer entry needs `id`, `url`, and `public_key` — then reload (`docker compose kill -s HUP hub`). It is recommended that every peer in a cluster uses a copy of the same file.
-6. Your own public key can be found on hub startup logs (`"publicKey":"ed25519:fooBARbaz==","msg":"Poutine instance public key — share with peers"`) or on the Settings page of the running app
+5. To federate with a peer, use the **invite** flow from the admin UI (`/admin` → Peers → "Generate invite"). Send the resulting blob to the other operator out-of-band; they paste it on their hub's "Accept invite" form. Once admitted, every other peer in the cluster discovers the new member automatically on the next sync round (gossip). No file edits, no SIGHUP required.
+6. Your own public key can be found in hub startup logs (`"publicKey":"ed25519:fooBARbaz==","msg":"Poutine instance public key — share with peers"`) or on the Settings page of the running app.
 
 Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-internals.md#environment-variables).
 
@@ -38,14 +38,20 @@ Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static file
 | `pnpm build`                | Build hub + frontend                            |
 | `pnpm test`                 | Run hub unit tests (vitest)                     |
 | `pnpm test:federation`      | Three-hub federation integration test           |
-| `pnpm lint`                 | Lint both packages                              |
+| `pnpm lint`                 | Lint both packages (must report zero output)    |
+| `pnpm lint:boundary`        | Boundary-only lint subset (used by CI / verify) |
 | `pnpm typecheck`            | Typecheck both packages                         |
+| `pnpm verify`               | Typecheck + lint:boundary + unit test (pre-commit gate) |
+| `pnpm verify:full`          | `verify` + `test:federation` (for Subsonic/federation changes) |
+| `pnpm hub:up`               | `docker compose up -d --build`                  |
+| `pnpm hub:up:fresh`         | Same, with `--force-recreate`                   |
+| `pnpm hub:logs`             | Follow hub container logs                       |
 | `docker compose up --build` | Full stack via Docker                           |
 
 ## Testing
 
-- `pnpm test` — fast unit tests (vitest). CI runs this.
-- `pnpm test:federation` — three-hub federation integration test. Boots three Compose projects, verifies cross-instance dedup and federated streaming. Not run in CI.
+- `pnpm test` — fast unit tests (vitest). CI runs this (the `unit` job).
+- `pnpm test:federation` — three-hub federation integration test, incl. the Python `subsonic-compat` suite. Boots three Compose projects, verifies cross-instance dedup, federated streaming, and Subsonic-client compatibility. **CI runs this on every PR** (the `federation` job), and `pnpm verify` does NOT cover it — run it locally (or `pnpm verify:full`) when changing the Subsonic API or federation surface.
 - `*.integration.test.ts` — excluded from CI; hit real external servers. Run manually.
 
 See [docs/hub-internals.md#testing-notes](docs/hub-internals.md#testing-notes) for test patterns and gotchas.
@@ -94,6 +100,42 @@ git push --follow-tags
 ```
 
 The `.github/workflows/release.yml` workflow verifies the tag matches `package.json`, builds `linux/amd64` + `linux/arm64`, and tags the image `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` (non-prerelease only). Pre-release tags (e.g. `v0.3.1-rc.0`) publish without `:latest` and are marked pre-release on GitHub.
+
+### Casting to Sonos (optional, issue #108)
+
+Lets the bottom-of-screen player stream to Sonos devices on the LAN. Requires host networking for SSDP multicast.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.sonos.yml up -d
+```
+
+Then open the Admin page → Sonos and:
+
+1. Set the **LAN URL** to `http://<your-lan-ip>:3000` (#209) — devices on the LAN fetch streams from this URL. Shared with DLNA.
+2. Toggle **Sonos** on (#184). Sonos is off by default and toggleable at runtime — no env var, no restart.
+
+Pick a device from the cast icon next to the volume slider. Selection resets to local browser on each session. Full details in [docs/sonos.md](docs/sonos.md#runtime-toggle-184).
+
+#### macOS hosts: run the hub natively
+
+Docker Desktop on macOS does not forward UDP multicast into containers, so Sonos discovery silently finds zero devices when the hub runs in Docker — even with the experimental host-networking toggle enabled. On Mac, run the hub directly on the Mac while keeping Navidrome in Docker (host network, bound to loopback):
+
+```bash
+# First-time only: seed data-native/ from your existing hub container
+mkdir -p data-native
+docker cp poutine-hub-1:/app/data/poutine.db data-native/
+docker cp poutine-hub-1:/app/data/poutine_ed25519.pem data-native/
+docker cp poutine-hub-1:/app/data/poutine_password_key data-native/
+
+# Then:
+pnpm hub:start         # start Navidrome container + hub native process
+pnpm hub:status        # PID, /api/health, Navidrome reachability
+pnpm hub:restart       # rebuild hub+frontend and bounce
+pnpm hub:logs          # last 200 lines of the hub log
+pnpm hub:stop          # stop hub (Navidrome stays up)
+```
+
+State lives in `data-native/`; logs at `.hub-native.log`; PID at `.hub-native.pid` (all gitignored). This script is a stopgap — proper macOS packaging with launchd is tracked in #183. Linux hosts should keep using the Docker compose override.
 
 ### Wiping the Navidrome volume
 

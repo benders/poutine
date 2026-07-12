@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { search3 } from "@/lib/subsonic";
+import { search3, artUrl } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
-import { Search, Play, Disc, User, Music } from "lucide-react";
+import { Search, Play, Pause, Disc, User, Music } from "lucide-react";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
 
 function hashColor(name: string): string {
@@ -27,7 +27,8 @@ function initials(name: string): string {
 
 export function SearchPage() {
   const navigate = useNavigate();
-  const { playTrack } = usePlayer();
+  const { playTrack, queue, currentIndex, isPlaying } = usePlayer();
+  const currentTrackId = currentIndex >= 0 ? queue[currentIndex]?.id : undefined;
   const [input, setInput] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
 
@@ -104,12 +105,21 @@ export function SearchPage() {
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-hover transition-colors text-left cursor-pointer"
                   >
                     <div
-                      className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
+                      className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 overflow-hidden"
                       style={{ backgroundColor: hashColor(artist.name) }}
                     >
-                      <span className="text-xs font-semibold text-white/70">
-                        {initials(artist.name)}
-                      </span>
+                      {artist.coverArt ? (
+                        <img
+                          src={artUrl(artist.coverArt, 80) ?? undefined}
+                          alt={artist.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <span className="text-xs font-semibold text-white/70">
+                          {initials(artist.name)}
+                        </span>
+                      )}
                     </div>
                     <div className="min-w-0">
                       <p className="text-sm text-text-primary truncate">{artist.name}</p>
@@ -138,10 +148,19 @@ export function SearchPage() {
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-hover transition-colors text-left cursor-pointer"
                   >
                     <div
-                      className="w-10 h-10 rounded-md flex items-center justify-center shrink-0"
+                      className="w-10 h-10 rounded-md flex items-center justify-center shrink-0 overflow-hidden"
                       style={{ backgroundColor: hashColor(album.name) }}
                     >
-                      <Disc className="w-5 h-5 text-white/30" />
+                      {album.coverArt ? (
+                        <img
+                          src={artUrl(album.coverArt, 80) ?? undefined}
+                          alt={album.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <Disc className="w-5 h-5 text-white/30" />
+                      )}
                     </div>
                     <div className="min-w-0">
                       <p className="text-sm text-text-primary truncate">{album.name}</p>
@@ -165,7 +184,13 @@ export function SearchPage() {
               </h2>
               <div className="space-y-1">
                 {results.songs.slice(0, 10).map((song) => (
-                  <SongResult key={song.id} song={song} onPlay={() => playTrack(song)} />
+                  <SongResult
+                    key={song.id}
+                    song={song}
+                    onPlay={() => playTrack(song)}
+                    isCurrent={currentTrackId === song.id}
+                    isPlaying={isPlaying}
+                  />
                 ))}
               </div>
             </section>
@@ -176,14 +201,33 @@ export function SearchPage() {
   );
 }
 
-function SongResult({ song, onPlay }: { song: SubsonicSong; onPlay: () => void }) {
+function SongResult({
+  song,
+  onPlay,
+  isCurrent,
+  isPlaying,
+}: {
+  song: SubsonicSong;
+  onPlay: () => void;
+  isCurrent: boolean;
+  isPlaying: boolean;
+}) {
+  const showPauseHover = isCurrent && isPlaying;
   return (
     <div className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-hover transition-colors">
       <button
         onClick={onPlay}
-        className="w-10 h-10 rounded-md bg-surface flex items-center justify-center shrink-0 text-text-muted hover:text-accent transition-colors cursor-pointer"
+        className={`group/play w-10 h-10 rounded-md bg-surface flex items-center justify-center shrink-0 transition-colors cursor-pointer ${isCurrent ? "text-accent" : "text-text-muted hover:text-accent"}`}
+        title={showPauseHover ? "Pause" : "Play"}
       >
-        <Play className="w-4 h-4 fill-current" />
+        {showPauseHover ? (
+          <>
+            <Play className="w-4 h-4 fill-current group-hover/play:hidden" />
+            <Pause className="w-4 h-4 fill-current hidden group-hover/play:block" />
+          </>
+        ) : (
+          <Play className="w-4 h-4 fill-current" />
+        )}
       </button>
       <div className="min-w-0 flex-1">
         <p className="text-sm text-text-primary truncate">{song.title}</p>

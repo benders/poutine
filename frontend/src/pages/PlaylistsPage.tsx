@@ -1,6 +1,6 @@
 import { Navigate, useParams, Link } from "react-router-dom";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Play, Plus, Star, ChevronRight } from "lucide-react";
+import { Play, Pause, Plus, Star, ChevronRight } from "lucide-react";
 import { getAlbum, getStarred2 } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
@@ -25,7 +25,8 @@ export function PlaylistsPage() {
 }
 
 function FavoritesView() {
-  const { playTracks, addToQueue } = usePlayer();
+  const { playTracks, addToQueue, queue, currentIndex, isPlaying } = usePlayer();
+  const currentTrackId = currentIndex >= 0 ? queue[currentIndex]?.id : undefined;
   const { data, isLoading, error } = useQuery({
     queryKey: ["starred2"],
     queryFn: getStarred2,
@@ -133,6 +134,8 @@ function FavoritesView() {
                   }
                   onPlay={() => playTracks(songs, index)}
                   onAddToQueue={() => addToQueue(song)}
+                  isCurrent={currentTrackId === song.id}
+                  isPlaying={isPlaying}
                 />
               ))}
             </tbody>
@@ -149,24 +152,47 @@ function FavoriteRow({
   viaAlbumStar,
   onPlay,
   onAddToQueue,
+  isCurrent,
+  isPlaying,
 }: {
   song: SubsonicSong;
   index: number;
   viaAlbumStar: boolean;
   onPlay: () => void;
   onAddToQueue: () => void;
+  isCurrent: boolean;
+  isPlaying: boolean;
 }) {
   return (
     <tr className="group border-b border-border/50 last:border-0 hover:bg-surface-hover transition-colors">
       <td className="py-2.5 px-4 text-sm text-text-muted">
-        <span className="group-hover:hidden">{index + 1}</span>
-        <button
-          onClick={onPlay}
-          className="hidden group-hover:block text-text-primary hover:text-accent cursor-pointer"
-          title="Play"
-        >
-          <Play className="w-3.5 h-3.5 fill-current" />
-        </button>
+        {isCurrent ? (
+          <button
+            onClick={onPlay}
+            className="group/play block text-accent hover:text-accent cursor-pointer"
+            title={isPlaying ? "Pause" : "Play"}
+          >
+            {isPlaying ? (
+              <>
+                <Play className="w-3.5 h-3.5 fill-current group-hover/play:hidden" />
+                <Pause className="w-3.5 h-3.5 fill-current hidden group-hover/play:block" />
+              </>
+            ) : (
+              <Play className="w-3.5 h-3.5 fill-current" />
+            )}
+          </button>
+        ) : (
+          <>
+            <span className="group-hover:hidden">{index + 1}</span>
+            <button
+              onClick={onPlay}
+              className="hidden group-hover:block text-text-primary hover:text-accent cursor-pointer"
+              title="Play"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+            </button>
+          </>
+        )}
       </td>
       <td className="py-2.5 px-4">
         <p className="text-sm text-text-primary">{song.title}</p>

@@ -1,6 +1,6 @@
 # Hub internals
 
-Engineering reference for working on the hub (`hub/`) and frontend (`frontend/`). Audience: coding agents and senior engineers. For the federation protocol contract, see [federation-api.md](federation-api.md). For the high-level architecture, see [02-system-architecture.md](02-system-architecture.md).
+Engineering reference for working on the hub (`hub/`) and frontend (`frontend/`). Audience: coding agents and senior engineers. For the federation protocol contract, see [federation-api.md](federation-api.md). For the high-level architecture, see [system-architecture.md](system-architecture.md). For recurring failure modes, see [pitfalls.md](pitfalls.md).
 
 ## Repo structure
 
@@ -15,13 +15,14 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 
 - **Hub uses ESM** (`"type": "module"`). Local imports must use `.js` extensions in source (e.g. `./config.js`).
 - **Frontend has `erasableSyntaxOnly` enabled.** No parameter properties in constructors, no enums, no other non-erasable TS syntax in `frontend/`. Hub has no such restriction.
-- **Runtime settings go in the `settings` SQLite table,** not env vars, when admins should be able to change them without a restart. See `hub/src/services/art-cache.ts` for the read-with-fallback pattern.
+- **Runtime settings go in SQLite, not env vars**, when admins should be able to change them without a restart. Hub-owned settings live in `hub.db.settings`; Player-owned settings (Sonos/DLNA toggles, `lan_url`, cast key, DLNA UDN) live in `player.db.player_settings` — see the dual-DB rules in [system-architecture.md](system-architecture.md#data-model). Read-with-fallback pattern: `hub/src/services/art-cache.ts`.
 
 ## Environment variables
 
 | Variable                     | Required | Default                      | Description                                                     |
 |------------------------------|----------|------------------------------|-----------------------------------------------------------------|
-| `DATABASE_PATH`              | no       | `./data/poutine.db`          | SQLite file path                                                |
+| `DATABASE_PATH`              | no       | `./data/poutine.db`          | Hub SQLite file (`hub.db`) path                                 |
+| `PLAYER_DATABASE_PATH`       | no       | sibling of `DATABASE_PATH`   | Player SQLite file (`player.db`) path — see #215, #212          |
 | `PORT` / `HOST`              | no       | `3000` / `0.0.0.0`           | Hub bind                                                        |
 | `NAVIDROME_URL`              | no       | `http://navidrome:4533`      | Internal Navidrome URL                                          |
 | `NAVIDROME_USERNAME`         | prod     | —                            | Navidrome admin user                                            |
@@ -29,12 +30,17 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `POUTINE_INSTANCE_ID`        | prod     | —                            | Unique instance ID (e.g. `poutine-alice`)                       |
 | `POUTINE_OWNER_USERNAME`     | no       | —                            | Seeds owner on first boot; also used to recover post-#106 migration |
 | `POUTINE_OWNER_PASSWORD`     | no       | —                            | Seeds owner on first boot; also used to recover post-#106 migration |
-| `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Ed25519 federation key. Auto-generated if absent                |
+| `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Ed25519 federation key. Auto-generated if absent. **Never commit this file — it contains the private key for federation signing.** |
 | `POUTINE_PASSWORD_KEY_PATH`  | no       | `./data/poutine_password_key`| AES-256 password encryption key (32 bytes, base64, mode 0600). Auto-generated if absent. **Back this up — losing it makes every stored password unrecoverable.** |
-| `POUTINE_PEERS_CONFIG`       | no       | `./config/peers.yaml`        | Peer registry file                                              |
 | `PUBLIC_DIR`                 | no       | —                            | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
+| `LASTFM_API_KEY`             | no       | —                            | Last.fm API key. Fallback artist-image source for artists **without** an MBID. See [lastfm-integration.md](lastfm-integration.md) |
+| `FANARTTV_API_KEY`           | no       | bundled Poutine project key  | fanart.tv project API key. Primary source for MBID-keyed artist images and an album-cover fallback. Set to `""` to disable. See [fanarttv-integration.md](fanarttv-integration.md) |
+| `FANARTTV_CLIENT_KEY`        | no       | —                            | Optional fanart.tv personal `client_key` — drops the new-image delay from 7 days to 2 |
+| `FANARTTV_API_URL`           | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors)                  |
+| `ART_CACHE_MAX_BYTES`        | no       | `100 MB` (104857600)         | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
+| `SONOS_DISCOVERY_INTERVAL_MS`| no       | `30000`                      | How often to re-issue SSDP M-SEARCH                              |
 
-`hub/src/config.ts` is the authoritative list.
+Sonos and DLNA are not env-gated — toggles, volume cap, `lan_url`, friendly name all live in `player.db.player_settings` and are runtime-mutable from the Admin page. Details: [sonos.md#runtime-toggle-184](sonos.md#runtime-toggle-184). `hub/src/config.ts` is the authoritative env-var list.
 
 ## API surface
 
@@ -43,8 +49,10 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | Subsonic          | `/rest/*`       | Subsonic `u+p` or `u+t+s` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art — see [opensubsonic.md](opensubsonic.md) for compatibility |
 | Proxy             | `/proxy/*`      | Ed25519, JWT, or Subsonic `u+p`/`u+t+s` (unified — see below)    | Authenticated transparent proxy to Navidrome |
 | Federation        | `/federation/*` | Ed25519-signed (see [federation-api.md](federation-api.md))      | Peer-to-peer only                         |
-| Admin             | `/admin/*`      | JWT (see [authentication.md](authentication.md))                 | Users CRUD, peers, sync, cache, instance  |
-| Health            | `/api/health`   | None                                                             | `{ status, appVersion, apiVersion }`      |
+| Admin             | `/admin/*`, `/api/admin/hub/*`, `/api/admin/player/*` | JWT (see [authentication.md](authentication.md))   | Three partitioned mounts (#226). `/admin/*` is auth-only (refresh cookie path). Hub/Player admin handlers live only at their matching namespace — cross-namespace requests 404. See [system-architecture.md](system-architecture.md#admin-namespaces). |
+| Health            | `/api/health`   | None                                                             | `{ status, appVersion, apiVersion, navidrome }` — see note below             |
+
+`/api/health` probes the local Navidrome via Subsonic `/rest/ping` (~1 s budget, `AbortSignal.timeout`) and reports `navidrome: "ok" | "unreachable"` plus a rolled-up `status: "ok" | "degraded"`. Always returns HTTP 200 so the federation handshake (which only reads `apiVersion` / `appVersion` from a peer's `/api/health`) keeps working when a peer's Navidrome is briefly down. Operators and LB / k8s probes must key on `body.status`, not the HTTP status (issue #178).
 
 ## Auth
 
@@ -58,7 +66,7 @@ Transparent authenticated proxy to the local Navidrome. Introduced in Phase 1 (i
 
 **Auth** — unified preHandler in `hub/src/proxy/auth.ts`, tried in order:
 
-1. **Ed25519** — all four `x-poutine-*` headers present → validated against `peers.yaml` registry (same logic as federation). `request.proxyAuth.kind = "peer"`.
+1. **Ed25519** — all four `x-poutine-*` headers present → validated against the in-memory peer registry (DB-backed, sourced from `instances`). `request.proxyAuth.kind = "peer"`.
 2. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param → verified with `verifyToken`. `request.proxyAuth.kind = "jwt"`.
 3. **Subsonic u+p / u+t+s** — `u` + `p` (plaintext or `enc:<hex>`) **or** `u` + `t` + `s` (MD5 token+salt). Verified by AES-decrypting `users.password_enc` and either constant-time comparing the plaintext or recomputing `md5(plaintext + salt)`. `request.proxyAuth.kind = "subsonic"`.
 
@@ -79,7 +87,7 @@ Returns `401` if all three methods fail.
 
 - Served via `GET /rest/getCoverArt?id={encodedId}`. Disk cache with LRU eviction.
 - Cache metadata: `art_cache` table. Files: `{dataDir}/cache/art/`.
-- Max size configurable via `GET/PUT /admin/cache`; clear via `DELETE /admin/cache`. Stored in `settings` table, default 10 MB.
+- Max size configurable via `GET/PUT /api/admin/hub/cache`; clear via `DELETE /api/admin/hub/cache`. Stored in `settings` table, default 100 MB. `ART_CACHE_MAX_BYTES` env var, when set, overrides the stored value on every boot.
 - **Encoded IDs:** `{instanceId}:{coverArtId}`. Subsonic art IDs are instance-local, so the hub must know which upstream to query. Helpers in `hub/src/library/cover-art.ts`.
 - The Subsonic `coverArt` field IS the encoded ID — `buildAlbum`/`buildSong` set it to `row.image_url`, which already stores the encoded form. Pass directly to `artUrl()` on the frontend; no further encoding.
 
@@ -87,24 +95,29 @@ Returns `401` if all three methods fail.
 
 Contract: [federation-api.md](federation-api.md). Read before modifying `/federation/*`. Increment `FEDERATION_API_VERSION` in `hub/src/version.ts` on any breaking change and update the doc.
 
-- **Peers:** `peers.yaml`, loaded at boot, reloaded on SIGHUP via `hub/src/federation/peers.ts`. Entries whose `id` matches `POUTINE_INSTANCE_ID` are skipped, so all cluster nodes can share one file (used by both the federation test and the local cluster).
-- **`peers.yaml` schema**: each peer entry has `id`, `url` (hub base URL), `public_key`, and optional `proxy_url` (defaults to `url`). `proxy_url` is the base used to reach the peer's `/proxy/*` endpoint (for catalog sync and streaming).
+- **Peers:** DB-backed since v0.5.0 / federation API v5 (issue #147). The `instances` table is authoritative; `loadPeerRegistry(db, instanceId)` (`hub/src/federation/peers.ts`) builds the in-memory snapshot from rows where `id != 'local'` and `public_key IS NOT NULL`. SIGHUP refreshes the snapshot. Admission is via signed invitations (`POST /api/admin/hub/peers/invite` → `POST /federation/handshake` → `POST /api/admin/hub/peers/accept`); discovery is via gossip on sync (`GET /federation/peers`) plus an immediate `POST /federation/peers/announce` fan-out from the inviter right after handshake (v6, issue #163) so the rest of the cluster doesn't wait one sync interval. See [federation-api.md](federation-api.md) for the contract. **`config/peers.yaml` is no longer read** — legacy peer rows without invitation provenance are pruned by the v5 upgrade migration.
+- **Provenance columns on `instances`:** `public_key`, `invitation_payload`, `invitation_signature`, `inviter_id`, `inviter_url`, `inviter_public_key`. Set when admitting via handshake or gossip; required for a peer to be re-gossiped to others. The synthetic `'local'` row has them NULL.
+- **`invitations` table** (issuer-local, never gossiped): persists each issued nonce so handshakes can enforce single-use. Columns: `id`, `payload` (JSON), `signature`, `invitee_url`, `nonce` UNIQUE, `issued_at`, `expires_at`, `consumed_at`, `consumed_by_id`.
 - **`federatedFetch(peer, path, opts)`:** `path` must include the appropriate prefix (`/federation` or `/proxy`) — the fetcher concatenates `peer.url + path`. For proxy calls, use a synthetic peer with `url = peer.proxyUrl`.
 - **`track_sources`** keys each source by `instance_id` (matches `instances.id` — `'local'` for the bundled Navidrome, peer id for federated peers). Streaming routes branch on whether `instance_id === 'local'`; peer routes use `instance_id` to look up the peer in the registry. `remote_id` is fetched from `instance_tracks` via JOIN when needed for streaming.
-- **`selectBestSource()`** (`hub/src/library/source-selection.ts`) scores sources by format quality → bitrate → local tie-break. Single decision point for stream routing.
+- **Source selection runs at merge time, not stream time.** `mergeLibraries()` (`hub/src/library/merge.ts`, Step 5) marks exactly one `track_sources` row per unified track `preferred = 1`, ranking format quality → bitrate → local tie-break → lowest id. Stream routes select `WHERE preferred = 1` (`routes/subsonic/stream.ts`); there is no runtime source-selection function.
 - **Catalog sync flow (Phase 2+):**
   - `syncLocal` (`sync-local.ts`) reads the local Navidrome by hitting its Subsonic API directly with t+s creds (via `createLocalProxyFetch` pointed at `config.navidromeUrl` — bypasses `/proxy/*` to avoid an internal password-decrypt round-trip).
   - `syncPeer` (`sync-peer.ts`) reads a peer's Navidrome via the peer's `/proxy/rest/*` using Ed25519-signed requests (`createFederationFetcher`). The signing path includes `/proxy` prefix as seen by the peer's Fastify router.
   - Both funnel through `readNavidromeViaProxy` (`sync-instance.ts`) which calls `getArtists` → `getArtist` (per-artist) → `getAlbum` (per-album), upserts into `instance_*` tables, and prunes stale rows on success (tracks/albums/artists no longer returned get deleted from `instance_*`).
 - **Track dedup across hubs** requires: (1) matching normalized title + `track_number` + duration (±3 s); AND (2) falling under the same `unified_release`, which requires their parent albums share normalized artist name, normalized album name, AND `track_count`. Mismatched `track_count` creates a separate release even within the same release group.
-- **`seedSyntheticInstances()`** is idempotent — called at startup and before every `syncAll()` to ensure instance rows exist for local Navidrome and each peer.
-- **`syncAll()`** (`sync.ts`) is the main entry: local Navidrome + all peers → merge. Returns `{ local: SyncResult, peers: SyncResult[] }` where `SyncResult.trackCount` (not `tracks`). The admin `POST /admin/sync` response shape matches.
+- **`seedSyntheticInstances()`** is idempotent — called at startup; only seeds the synthetic `'local'` row. Peer rows are inserted by the handshake/gossip paths (federation v5).
+- **`syncAll()`** (`sync.ts`) is the main entry: local Navidrome + all peers → merge. Returns `{ local: SyncResult, peers: SyncResult[] }` where `SyncResult.trackCount` (not `tracks`). The admin `POST /api/admin/hub/sync` response shape matches.
+- **`unified_release_groups.created_at`** is sourced from `MAX(instance_albums.created_at)` across the contributing sources (Navidrome's "added" time, sub-second ISO 8601), with `COALESCE(?, datetime('now'))` as a fallback when no source has it. Do **not** let it default to `datetime('now')` at merge time — bulk imports collapse to a single second and break the SPA's "Recently Added" sort (issue #186).
 - **`syncPeer`** on success sets `status = 'online'` + `last_seen` + `last_synced_at` + `track_count`. On error: `status = 'offline'` only — never update `last_seen` (false "just now" in UI). On success, also prunes stale `instance_*` rows for the peer (tracks/albums/artists no longer returned by the peer's Navidrome) using temp-table NOT IN deletes — prevents stale accumulation across syncs.
-- **Orphan peer prune (startup):** after `seedSyntheticInstances`, `server.ts` calls `pruneOrphanInstances` (`hub/src/library/prune-instances.ts`). Any `instances` row whose id is not `local` and not present in `peers.yaml` is deleted; FK `ON DELETE CASCADE` wipes its `instance_*` rows and all `unified_*_sources` / `track_sources` join rows. If anything was pruned, `mergeLibraries()` runs to rebuild `unified_*` so orphaned unified rows are dropped. Re-adding a peer to `peers.yaml` re-seeds the instance on next boot and the next sync re-populates.
+- **Legacy peer prune (v5 upgrade migration, one-shot):** the v0.5.0 boot migration in `hub/src/db/client.ts::ensureColumns` deletes `instances` rows where `id != 'local'` AND `public_key IS NULL`. These are pre-v5 peer rows seeded from `peers.yaml`; they cannot be authenticated under v5 and must be re-admitted via the invitation flow. CASCADE clears `instance_*` and join-table rows.
 - **Unreachable peer wipe:** if `getArtists` fails at sync start (peer offline / network error), `readNavidromeViaProxy` deletes every `instance_*` row for that instance and zeroes `track_count`. Rationale: empty library beats stale library — next successful sync re-populates. `syncAll` always calls `mergeLibraries()` after the peer loop so `unified_*` reflects the wipe.
 - **Catalogs may diverge between hubs** — each hub builds its own catalog by reading Navidrome instances directly. No fan-out re-export risk.
-- **`GET /admin/peers`** does live health checks: parallel `fetch` to each peer's `/api/health` with a 5 s `AbortController` timeout. `status` from live reachability; `lastSeen` from DB.
-- **`AutoSyncService`** (`hub/src/services/auto-sync.ts`) polls Navidrome every 30 s. When Navidrome's `lastScan` > `instances.last_synced_at` for `'local'`, runs `syncLocal` + `mergeLibraries`. Skips when already running (boolean lock) or when Navidrome is scanning. Wired via `onReady`/`onClose` in `server.ts`.
+- **`GET /api/admin/hub/peers`** does live health checks: parallel `fetch` to each peer's `/api/health` with a 5 s `AbortController` timeout. `status` from live reachability; `lastSeen` from DB.
+- **`AutoSyncService`** (`hub/src/services/auto-sync.ts`) runs two independent timers:
+  - **Local poll (30 s):** when Navidrome's `lastScan` > `instances.last_synced_at` for `'local'`, runs `syncLocal` + `mergeLibraries`. Skips when already running (boolean lock) or when Navidrome is scanning.
+  - **Peer poll (~5 min ± 60 s splay, issue #14):** for each peer, GET `/api/health` (updates `last_seen` on success, `status='offline'` on failure), then GET `/proxy/rest/getScanStatus` (federation-signed) and skip the sync if the peer's `lastScan` is no newer than our `last_synced_at` for that peer. Otherwise runs `syncPeer` + `gossipFromPeer`; merges once at the end if anything changed. Per-peer errors are isolated.
+  - Wired via `onReady`/`onClose` in `server.ts`. `pollPeers()` is exposed publicly so tests can drive one round without timer plumbing.
 - **`instances.musicfolder_id`** (issue #123) is a stable monotonically-assigned int that surfaces each instance as a Subsonic MusicFolder. Subsonic clients require integer folder ids but `instances.id` is a UUID (or `'local'`); this column is the int↔UUID bridge. Assigned in `seedSyntheticInstances` via `MAX(musicfolder_id)+1`; backfilled on upgrade in `db/client.ts` ordered by `created_at`. Resolve via `SELECT id FROM instances WHERE musicfolder_id = ?` — never reuse a value, never recompute on the fly.
 - **`user_stars`** (issue #104) holds per-user starred tracks/albums/artists. Single table keyed on `(user_id, kind, target_id)` where `kind ∈ {'track','album','artist'}` and `target_id` is the unified `*.id` UUID. Intentionally not FK-bound to the unified library: target rows can be transiently absent during sync, so orphans are filtered by JOIN at read time rather than blocking the star. `ON DELETE CASCADE` on the user. Stars are local to the hub the user logs into — federation does not carry per-user state.
 
@@ -126,16 +139,34 @@ Both defined in `hub/src/version.ts`. Protocol version also appears in `/library
 Streams and syncs are recorded in `stream_operations` and `sync_operations`. Surfaced under `/admin/activity/*` and rendered by the SPA's top-level Activity page (issue #121).
 
 - **`StreamTrackingService`** (`hub/src/services/stream-tracking.ts`) records every Subsonic stream from `/rest/stream` and every peer-served stream from `/federation/stream/:id`. Subsonic-originated rows are `kind='subsonic'`; peer-served rows are `kind='proxy'` with `peer_id` + `username` set from the signed-request `x-poutine-user` header. Both capture `format`, `bitrate`, `transcoded`, `max_bitrate`, `source_kind` (`local` | `peer`), and `bytes_transferred`. The federation route honours the caller's `format` / `maxBitRate` query params so the source hub's row reflects the transcoded output, not the original file.
-- **`SyncOperationService`** (`hub/src/services/sync-operations.ts`) records every local + peer sync. `AutoSyncService` only inserts a row when there is actual work to do (Navidrome `lastScan > last_synced_at`); no-op poll ticks no longer create rows. `failStaleRunning(600)` runs at boot to mark any orphaned `running` rows as failed.
+- **`SyncOperationService`** (`hub/src/services/sync-operations.ts`) records every local + peer sync. `AutoSyncService` only inserts a row when there is actual work to do (Navidrome `lastScan > last_synced_at`); no-op poll ticks no longer create rows. `failStaleRunning(600)` runs at boot to mark any orphaned `running` rows as failed. `setDetails(id, details)` persists arbitrary JSON onto a row (currently the orphan-audit report below).
+- **Merge hardening (#242).** `executeMergePipeline(db)` (`hub/src/library/merge-pipeline.ts`) is the only call site that should ever run `mergeLibraries()` — every sync path (`sync.ts`, `auto-sync.ts`, `routes/admin.ts` peer-data reset) goes through it, via `runMergePipelineAsync`. It runs, in one `run.immediate()` transaction (write lock acquired up front, not deferred): `snapshotIdentity(db)` (pre-merge), `mergeLibraries(db)` (rebuilds `unified_*`), `applyRemap(db, snapshot)`, `auditOrphans(db)`. Unified ids are deterministic metadata hashes (`id-generator.ts`), so a metadata edit or a dedup-key change can produce a different id for the same logical entity on the next merge; `id-remap.ts` diffs the identity snapshot across stable per-instance keys (`track_sources.instance_track_id`, `unified_release_sources.instance_album_id` → release group, `unified_artist_sources.instance_artist_id`) and set-based `UPDATE`s `user_stars` / `playlist_tracks` / `play_events` from old id to new id. Splits (one old id → multiple new ids) keep the majority-instance-row winner and log the rest (`splitsLogged`); collisions (two old ids → one new id) keep one `user_stars` row per user and drop the loser (`collisionsDropped`) rather than error on the `(user_id, kind, target_id)` PK. `auditOrphans(db)` (`hub/src/library/orphan-audit.ts`) then scans the same three tables for anything still left dangling — counts + up-to-10 sample ids per category, logged as a warning when non-zero. The pipeline returns `{ orphans, remap }`; both are persisted via `SyncOperationService.setDetails`. `playlist_tracks.unified_track_id` has no FK (migrated off one in `db/client.ts`'s `migratePlaylistTracks` — it used to CASCADE-DELETE every row on a merge), matching the `user_stars`/`play_events` no-FK convention.
+- **Merge pipeline runs off-thread (#242 Phase 3).** better-sqlite3 is synchronous, so `executeMergePipeline` running on the main connection would stall the whole event loop for the entire merge at 200k–600k track scale. `runMergePipelineAsync(db, { logger, inProcess? })` is the production entry: for a file-backed DB it spawns a `node:worker_threads` `Worker` (`hub/src/library/merge-worker.ts`) that opens its OWN connection to the same file (`new Database(dbPath)` + WAL + foreign_keys — no schema/migration re-run, the main process already did that) and runs `executeMergePipeline` there; the main thread keeps serving requests since WAL readers are never blocked by another connection's write transaction. Logging (`logPipelineReport`) happens back on the main thread after the worker's result message arrives — the worker itself never logs. For an in-memory DB (`db.name === ":memory:"` or `""`), or when the caller passes `{ inProcess: true }` (the unit-test path), the pipeline runs synchronously in-process instead — there's no second connection to hand a worker. A module-level promise-chain mutex serializes merges process-wide: concurrent callers queue rather than run interleaved, though each queued caller still gets its own independent merge run. `shutdownMergeWorker()` is wired into `server.ts`'s `onClose` — it `terminate()`s any in-flight worker (safe: the merge transaction just rolls back) before the main connection closes. The worker entry resolves dual `.ts`/`.js` paths (`import.meta.url.endsWith(".ts")`) so it loads under tsx in dev/test and as plain compiled JS in prod — see `docs/pitfalls.md`.
 - **Retention** is count-based via `settings.activity_history_max_events` (default 10000), exposed as `GET/PUT /admin/settings/activity`. `pruneToCount()` runs after every `finish()`. Stream pruning excludes rows with `finished_at IS NULL` so an in-flight stream's row is never deleted out from under its eventual `finish()` UPDATE.
 - **API**: `GET /admin/activity/active` (active streams + running syncs), `GET /admin/activity/history?kinds=stream,sync&limit=N` (combined timeline), `DELETE /admin/activity` (clear both), `GET /admin/activity/summary` (dashboard counters).
+
+## Play counts (#197)
+
+Canonical, federation-wide play history. **Distinct from activity tracking:**
+`stream_operations` is an ephemeral operational feed (pruned to a cap, clearable
+from the Activity page); `play_events` is durable and never pruned, and is the
+source of truth for Subsonic `playCount` / `played`.
+
+- **Table `play_events`** (`hub/src/db/schema.sql`): `user_id` (FK → users), `unified_track_id`, `source_instance_id` (`local` | peer id | NULL), `played_at` (millisecond precision via `strftime('%f')` so `type=recent` ordering is stable within a second), `duration_played_ms`, `client_name`. **No FK on `unified_track_id`** — the `unified_*` tables are rebuilt on every merge, so a row can outlive its track; orphans are dropped at read time via JOIN, exactly as `user_stars` does. Counts are **per-user** (Subsonic spec).
+- **`PlayEventService`** (`hub/src/services/play-events.ts`): `record()` (unconditional — the threshold decision lives in the client), and `getTrackStats()` / `getAlbumStats()` (per-user aggregates; album = sum of its tracks' plays, last-played = max). Projected into Subsonic responses by the `annotatePlays` helper in `routes/subsonic/builders.ts` (mirrors `annotateStarred`). `getAlbumList2` `type=frequent`/`recent` skip `annotatePlays` and reuse the per-album aggregate already computed by their ranking `playJoin`, so the play history is scanned once per request, not twice.
+- **One recording path: `POST /rest/scrobble?submission=true`.** Every playback surface reports its own play, so the server just persists what it's told and never infers plays from stream lifetimes. The SPA's `PlayerBar` fires the scrobble once per play when playback crosses the Last.fm-style threshold (≥ half the track, capped at 4 min):
+  - *Local `<audio>`* → off the element's `timeupdate` position.
+  - *Sonos cast* → off the device's reported transport position from the `getSonosState` poll (`s.position + base`). Real playback position, not a server-side estimate. A single `scrobbledRef` guard covers both so each play counts once.
+  - `submission=false` is a now-playing notification and is ignored. `subsonic` / `proxy` stream kinds are never auto-recorded — those clients stream *and* scrobble.
+- **DLNA:** not wired for play-counts yet (no SPA controller polling the renderer). When DLNA is put back into use it gets its own position-reporting path; it must not resurrect a server-side wall-clock estimate.
+- **Out of scope for v1 (tracked separately):** Navidrome play-history backfill, and federating aggregate counts between peers.
 
 ## Share IDs
 
 Users copy a "Share ID" for an album or artist from its detail page and paste it into Search on any peer hub that also syncs the same underlying library.
 
 - **Token**: bare `instance_*.remote_id` — the Navidrome hash (≈32 hex chars). No prefix, no encoding. Collision across unrelated Navidromes is negligible.
-- **Sender** (`pickAlbumShareId` / `pickArtistShareId` in `hub/src/routes/subsonic.ts`): picks one source row per entity; prefers `instance_id = 'local'`, else deterministic by instance id. Returned as `shareId` on `getAlbum` / `getArtist` responses.
+- **Sender** (`pickAlbumShareId` / `pickArtistShareId` in `hub/src/routes/subsonic/builders.ts`): picks one source row per entity; prefers `instance_id = 'local'`, else deterministic by instance id. Returned as `shareId` on `getAlbum` / `getArtist` responses.
 - **Receiver**: `/rest/search3` WHERE-clause joins through `unified_*_sources → instance_*` and matches `remote_id` alongside the existing name/UUID/MBID cases. If no hub the receiver syncs has the album, the search is empty (scenario D).
 - **No federation RPC involved.** Resolution is a local DB lookup against data the receiver already synced via `/proxy/*`.
 
@@ -149,7 +180,7 @@ Users copy a "Share ID" for an album or artist from its detail page and paste it
 - Subsonic IDs are prefixed: songs `t<uuid>`, albums `al<uuid>`, artists `ar<uuid>`. These appear in URL routes (e.g. `/albums/al<uuid>`) and pass straight to `getAlbum(id)` / `getArtist(id)`.
 - `SubsonicSong.durationMs` = Subsonic `duration` × 1000. Rest of the frontend uses ms.
 - **`getAlbumList2` replaces the old release-group list.** Subsonic has no "release group" concept; albums are flat. The Library page fetches 500 albums and sorts/filters client-side.
-- **After `POST /admin/sync` succeeds, invalidate** `["albumList2"]`, `["artists"]`, `["admin-instance"]`, `["admin-peers"]`. Without this, the library page shows stale data until React Query's 60 s `staleTime` expires.
+- **After `POST /api/admin/hub/sync` succeeds, invalidate** `["albumList2"]`, `["artists"]`, `["admin-instance"]`, `["admin-peers"]`. Without this, the library page shows stale data until React Query's 60 s `staleTime` expires.
 
 ## SPA serving
 
@@ -163,19 +194,21 @@ Users copy a "Share ID" for an album or artist from its detail page and paste it
 `getCoverArt`, `stream`, `download` return raw bytes. `sendSubsonicError` returns HTTP 200 with a JSON envelope (correct for JSON routes), but clients of a binary endpoint interpret any 200 as image/audio, silently corrupting the result. Two rules:
 
 1. Use `sendBinaryError(reply, httpStatus, message)` (`subsonic-response.ts`) for all error paths in the handler.
-2. Register via `binaryRoute()` in `subsonic.ts` (uses `requireSubsonicAuthBinary`) so auth failures also return real HTTP codes.
+2. Register via `binaryRoute()` in `routes/subsonic/index.ts` (uses `requireSubsonicAuthBinary`) so auth failures also return real HTTP codes.
 
 Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 ## Navidrome integration
 
 - **Standard Subsonic API** (`/rest/*`): `getArtists`, `getAlbum`, `stream`, `getCoverArt`, `getScanStatus`, `startScan`. Navidrome adds `lastScan` and `folderCount` to `scanStatus`; `startScan` accepts `fullScan=true` (Navidrome extension). Poutine uses only the Subsonic API — Navidrome's native `/api/*` REST API is not used.
-- **Navidrome scans on startup** regardless of `ND_SCANSCHEDULE` (schedule controls repeats only). Federation test driver polls `POST /admin/sync` until `local.trackCount > 0` instead of sleeping.
+- **Navidrome scans on startup** regardless of `ND_SCANSCHEDULE` (schedule controls repeats only). Federation test driver polls `POST /api/admin/hub/sync` until `local.trackCount > 0` instead of sleeping.
 - **Admin bootstrap env var:** use `ND_DEVAUTOCREATEADMINPASSWORD` (NOT `ND_INITIALADMINPASSWORD`, which is a silent no-op in 0.52+). Required on a fresh volume; if `navidrome-data` already has an `InitialSetup` property row, auto-create won't re-run — wipe the volume (`clean-wipe.sh`) and restart.
+- **`ND_SCANNER_PURGEMISSING=always` (set in `docker-compose.yml`).** Navidrome sets `folder.missing=1` on any folder unreachable mid-scan and never re-walks it, even on `fullScan=true`. Transient FS unavailability (SMB/NFS/sshfs/Tailscale shares, sleeping USB volumes, external edits racing with a scan — see #158, #159) silently shrinks the library. `purgeMissing=always` deletes `missing=1` rows at the end of each scan; the next pass re-discovers the files as new entries. **Trade-off:** Navidrome-side annotations (play counts, favourites, ratings, last-played) on a row that briefly disappears are lost rather than reattached. Poutine tracks plays via its own activity service, so this is acceptable. Existing instances with accumulated `missing=1` rows will see them flushed on the first scan after upgrade.
 - **No credentials in the DB.** Navidrome creds live in env vars only. Navidrome runs on an internal Docker network; only the hub can reach it.
 
 ## SQLite notes
 
+- **Two SQLite files.** Dual-DB layout, opener locations, ownership rules and migration boundary are documented in [system-architecture.md#data-model](system-architecture.md#data-model). Boundary enforcement: [system-architecture.md#hub-player-boundary-enforcement-221](system-architecture.md#hub-player-boundary-enforcement-221). Schemas: `hub/src/db/schema.sql` and `hub/src/db/player-schema.sql` (both picked up by the Dockerfile `hub/src/db/*.sql` copy rule).
 - **`datetime('now')` has no timezone marker.** Output: `"2026-04-10 03:54:22"` (space separator, no `Z`). JavaScript `new Date()` parses this as local time, so users west of UTC see timestamps in the future — `formatTimeAgo` returns `"just now"` forever. **Always use `strftime('%Y-%m-%dT%H:%M:%SZ', col)`** in SELECTs that return timestamps to the frontend.
 - **`.sql` files are not copied by `tsc`.** The hub Dockerfile explicitly copies `hub/src/db/*.sql` → `hub/dist/db/` after `tsc`. Update the Dockerfile if new non-TS assets are added under `hub/src/`.
 - **Schema or merge-logic change → resync required.** Changes to unified-table storage only take effect after `syncAll()` + merge runs.
@@ -183,7 +216,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 ## Docker
 
 - **`hub/Dockerfile`** — multi-stage: `deps` (all deps) → `prod-deps` (prod-only deps, compiles native addons) → `build` (`tsc` + `vite build` + copy sql) → `runtime` (`node:22-slim`, no build tools — copies pre-built node_modules from `prod-deps`). Frontend `dist/` copied into `hub/public/`. `PUBLIC_DIR=/app/hub/public` baked in. `deps` and `prod-deps` run independently and can be parallelized by BuildKit.
-- **`docker-compose.yml`** — hub (port `${POUTINE_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports). Single service for both API and SPA. `PEERS_CONFIG_HOST_PATH` overrides the peers.yaml bind-mount source (default `./peers.yaml`).
+- **`docker-compose.yml`** — hub (port `${POUTINE_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports). Single service for both API and SPA. (`PEERS_CONFIG_HOST_PATH` is no longer read since v0.5.0.)
 - **Native deps:** `better-sqlite3` needs `python3 make g++`. Root `package.json` has `pnpm.onlyBuiltDependencies` to allow its postinstall scripts. pnpm v10+ ignores build scripts by default — any new native dep must be added there.
 - **Rebuild after source changes.** Running containers use the compiled image, not live source. `docker compose build <service> && docker compose up -d <service>` or stale routes/assets will be served.
 
@@ -197,7 +230,7 @@ Tag-triggered. `.github/workflows/release.yml` fires on `v*.*.*` pushes, verifie
 - Shared external Docker network `poutine-federation-test`; containers connected with DNS aliases `hub-a`/`hub-b`/`hub-c` matching peer URLs in `test/federation/peers-{a,b,c}.yaml`.
 - Committed test keypairs (`test/federation/keys/`) are seeded into each project's `hub-data` volume via a throwaway `alpine` container before `up`. Each hub boots with a known identity.
 - All three instances are fully-connected peers. Test verifies hub-a sees albums from all three and can stream tracks federated from both b and c. Ports 3011–3013 avoid conflicting with live instances on 3001–3003.
-- **Ed25519 keys:** PKCS8 PEM for private. `peers.yaml` spec is `ed25519:<base64>` where base64 encodes the raw 32-byte key (last 32 bytes of SPKI DER). Canonical encoding: `hub/src/federation/signing.ts::loadOrCreatePrivateKey`.
+- **Ed25519 keys:** PKCS8 PEM for private. Public-key spec is `ed25519:<base64>` where base64 encodes the raw 32-byte key (last 32 bytes of SPKI DER). Canonical encoding: `hub/src/federation/signing.ts::loadOrCreatePrivateKey`.
 
 ## Local cluster setup
 
@@ -210,6 +243,13 @@ docker network create poutine-local-cluster
 docker network connect --alias hub-a poutine-local-cluster cd-rips-hub-1
 # ...etc
 ```
+
+## Sonos and DLNA
+
+Both are optional Player sinks living under the Hub/Player boundary documented in [system-architecture.md](system-architecture.md). Implementation, protocol, runtime toggles and testing references are in their own docs — do not duplicate here.
+
+- **Sonos casting** (#108) — [sonos.md](sonos.md).
+- **DLNA MediaServer** (#175) — [dlna.md](dlna.md).
 
 ## Testing notes
 

@@ -20,7 +20,16 @@ vi.mock("@/lib/subsonic", async () => {
   };
 });
 
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return {
+    ...actual,
+    getPlayerHealth: vi.fn().mockResolvedValue({ status: "ok", appVersion: "test" }),
+  };
+});
+
 import { getMusicFolders } from "@/lib/subsonic";
+import { getPlayerHealth } from "@/lib/api";
 
 function renderSidebar() {
   const qc = new QueryClient({
@@ -38,6 +47,8 @@ function renderSidebar() {
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(getMusicFolders).mockReset();
+  vi.mocked(getPlayerHealth).mockReset();
+  vi.mocked(getPlayerHealth).mockResolvedValue({ status: "ok", appVersion: "test" });
 });
 
 describe("Sidebar Albums group", () => {
@@ -52,6 +63,10 @@ describe("Sidebar Albums group", () => {
     expect(screen.getByText("Albums")).toBeInTheDocument();
     expect(screen.getByText("All")).toBeInTheDocument();
     expect(screen.getByText("Random")).toBeInTheDocument();
+    expect(screen.getByText("Most Played").closest("a")).toHaveAttribute(
+      "href",
+      "/library/most-played",
+    );
 
     await waitFor(() => {
       expect(screen.getByText("Alice's Hub")).toBeInTheDocument();
@@ -61,6 +76,57 @@ describe("Sidebar Albums group", () => {
 
     const aliceLink = screen.getByText("Alice's Hub").closest("a");
     expect(aliceLink).toHaveAttribute("href", "/library/folder-2");
+  });
+
+  it("surfaces Hub and Player as distinct admin destinations under Settings when player-health is present", async () => {
+    vi.mocked(getMusicFolders).mockResolvedValue([]);
+    renderSidebar();
+
+    // Settings group defaults closed — expand it.
+    const toggle = await screen.findByRole("button", { name: /Expand Settings/i });
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(screen.getByText("Player")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Hub").closest("a")).toHaveAttribute("href", "/admin/hub");
+    expect(screen.getByText("Player").closest("a")).toHaveAttribute("href", "/admin/player");
+  });
+
+  it("hides the Player admin destination when /player/health is absent", async () => {
+    vi.mocked(getMusicFolders).mockResolvedValue([]);
+    vi.mocked(getPlayerHealth).mockResolvedValue(null);
+    renderSidebar();
+
+    const toggle = await screen.findByRole("button", { name: /Expand Settings/i });
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(screen.getByText("Hub")).toBeInTheDocument();
+    });
+    // Brief settle: the player-health query is async; ensure Player is
+    // never rendered after the gate query resolves.
+    await waitFor(() => {
+      expect(screen.queryByText("Player")).toBeNull();
+    });
+  });
+
+  it("Settings group is collapsed by default and persists open/closed state", async () => {
+    vi.mocked(getMusicFolders).mockResolvedValue([]);
+    renderSidebar();
+
+    // Settings heading is visible; children are not.
+    expect(await screen.findByText("Settings")).toBeInTheDocument();
+    expect(screen.queryByText("Hub")).toBeNull();
+
+    const expand = screen.getByRole("button", { name: /Expand Settings/i });
+    fireEvent.click(expand);
+    expect(await screen.findByText("Hub")).toBeVisible();
+    expect(localStorage.getItem("sidebar:settings:open")).toBe("1");
+
+    fireEvent.click(screen.getByRole("button", { name: /Collapse Settings/i }));
+    expect(screen.queryByText("Hub")).toBeNull();
+    expect(localStorage.getItem("sidebar:settings:open")).toBe("0");
   });
 
   it("collapse/expand persists in localStorage", async () => {

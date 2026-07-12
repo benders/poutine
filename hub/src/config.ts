@@ -2,6 +2,13 @@ export interface Config {
   port: number;
   host: string;
   databasePath: string;
+  /**
+   * Player database path (`player.db`). Optional override; defaults to a
+   * sibling of `databasePath` (see `db/player-db.ts#defaultPlayerDbPath`).
+   * Introduced in #215 (Phase 1 of #212) — Player BE owns this file
+   * exclusively.
+   */
+  playerDatabasePath: string | undefined;
   jwtSecret: string;
   jwtAccessExpiresIn: string;
   jwtRefreshExpiresIn: string;
@@ -15,7 +22,6 @@ export interface Config {
   poutineInstanceId: string;
   poutinePrivateKeyPath: string;
   poutinePasswordKeyPath: string;
-  poutinePeersConfig: string;
   poutineOwnerUsername: string;
   poutineOwnerPassword: string;
   // Optional: path to a directory of static frontend files to serve.
@@ -24,6 +30,48 @@ export interface Config {
   staticDir: string | undefined;
   // Optional: Last.fm API key for artist images and metadata
   lastFmApiKey: string | undefined;
+  // fanart.tv: project API key (defaults to bundled Poutine key) + optional
+  // personal client_key for faster image updates. Base URL is overridable for
+  // tests.
+  fanartTvProjectKey: string;
+  fanartTvPersonalKey: string | undefined;
+  fanartTvBaseUrl: string;
+  // Optional: overrides the persisted art_cache_max_bytes setting on every
+  // boot. Useful for test clusters where you want a tiny cap regardless of
+  // what's stored in the DB.
+  artCacheMaxBytes: number | undefined;
+  // Sonos casting (issue #108). Requires network_mode: host so SSDP
+  // multicast works. The LAN-reachable base URL Sonos + DLNA devices use
+  // to fetch streams now lives in the `settings` table under `lan_url`
+  // (issue #209) — admin-toggleable, no restart needed. See
+  // services/sonos-settings.ts.
+  //
+  // The enabled flag and volume cap are runtime-configurable from the admin
+  // UI and persisted in the `settings` table (issue #184). `sonosEnabled`
+  // here is the *first-boot seed* used when no setting row exists yet —
+  // useful for tests and programmatic boot. Env (`SONOS_ENABLED`) is
+  // intentionally not read.
+  sonosEnabled: boolean;
+  /** First-boot seed for the `lan_url` setting. Tests use this; production
+   *  boots leave it empty and operators set the URL from the admin UI. */
+  initialLanUrl: string | undefined;
+  sonosDiscoveryIntervalMs: number;
+  // DLNA MediaServer (issue #175). Off by default. Shares the runtime
+  // `lan_url` setting (#209) with Sonos casting and requires the same host
+  // networking override. Stream endpoint is open on the LAN — gate by
+  // network reachability, not by user identity (DLNA has no notion of one).
+  dlnaEnabled: boolean;
+  dlnaFriendlyName: string;
+  /** Username streams get attributed to. Defaults to the owner. */
+  dlnaPseudoUser: string | undefined;
+  /**
+   * Test-only escape hatch: when true, never bind the DLNA SSDP advertiser
+   * to UDP 1900, even if `lan_url` is set. Lets the dlna-http integration
+   * test exercise `/dlna/control/content-directory` (which needs a non-empty
+   * `lan_url` to emit `res@uri`) without fighting `dlna-ssdp.integration.test.ts`
+   * for the multicast socket.
+   */
+  dlnaSkipSsdp?: boolean;
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -38,6 +86,7 @@ export function loadConfig(): Config {
     port: parseInt(process.env.PORT || "3000", 10),
     host: process.env.HOST || "0.0.0.0",
     databasePath: process.env.DATABASE_PATH || "./data/poutine.db",
+    playerDatabasePath: process.env.PLAYER_DATABASE_PATH || undefined,
     jwtSecret: "",
     jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
     jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d",
@@ -70,8 +119,6 @@ export function loadConfig(): Config {
       process.env.POUTINE_PRIVATE_KEY_PATH || "./data/poutine_ed25519.pem",
     poutinePasswordKeyPath:
       process.env.POUTINE_PASSWORD_KEY_PATH || "./data/poutine_password_key",
-    poutinePeersConfig:
-      process.env.POUTINE_PEERS_CONFIG || "./config/peers.yaml",
     poutineOwnerUsername: requireInProd(
       "POUTINE_OWNER_USERNAME",
       process.env.POUTINE_OWNER_USERNAME
@@ -82,5 +129,24 @@ export function loadConfig(): Config {
     ),
     staticDir: process.env.PUBLIC_DIR || undefined,
     lastFmApiKey: process.env.LASTFM_API_KEY || undefined,
+    fanartTvProjectKey:
+      process.env.FANARTTV_API_KEY || "dd4c8d4d423b6bae65169cd5a6339d3f",
+    fanartTvPersonalKey: process.env.FANARTTV_CLIENT_KEY || undefined,
+    fanartTvBaseUrl:
+      process.env.FANARTTV_API_URL || "https://webservice.fanart.tv/v3.2",
+    artCacheMaxBytes: process.env.ART_CACHE_MAX_BYTES
+      ? parseInt(process.env.ART_CACHE_MAX_BYTES, 10)
+      : undefined,
+    // First-boot seed only — runtime state lives in the `settings` table.
+    // See SonosSettings in services/sonos-settings.ts.
+    sonosEnabled: false,
+    initialLanUrl: undefined,
+    sonosDiscoveryIntervalMs: parseInt(
+      process.env.SONOS_DISCOVERY_INTERVAL_MS || "30000",
+      10,
+    ),
+    dlnaEnabled: process.env.DLNA_ENABLED === "true",
+    dlnaFriendlyName: process.env.DLNA_FRIENDLY_NAME || "Poutine",
+    dlnaPseudoUser: process.env.DLNA_PSEUDO_USER || undefined,
   };
 }

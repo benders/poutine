@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PlaylistsPage } from "./PlaylistsPage";
+import { usePlayer } from "@/stores/player";
 
 vi.mock("@/lib/subsonic", async () => {
   const actual =
@@ -34,6 +35,7 @@ function renderAt(path: string) {
 beforeEach(() => {
   vi.mocked(getStarred2).mockReset();
   vi.mocked(getAlbum).mockReset();
+  usePlayer.setState({ queue: [], currentIndex: -1, isPlaying: false, currentTime: 0 });
 });
 
 describe("PlaylistsPage Favorites view (#104)", () => {
@@ -64,6 +66,36 @@ describe("PlaylistsPage Favorites view (#104)", () => {
       expect(screen.getByText("Idioteque")).toBeInTheDocument(),
     );
     expect(screen.getByText("1 track")).toBeInTheDocument();
+  });
+
+  it("shows always-visible play/pause toggle on the currently playing track (#99)", async () => {
+    const song = {
+      id: "ttrk-1",
+      title: "Idioteque",
+      album: "Kid A",
+      albumId: "alrg-1",
+      artist: "Radiohead",
+      artistId: "arar-1",
+      durationMs: 240000,
+      starred: "2026-04-28T00:00:00Z",
+    };
+    vi.mocked(getStarred2).mockResolvedValue({
+      artists: [],
+      albums: [],
+      songs: [song],
+    });
+    usePlayer.setState({ queue: [song], currentIndex: 0, isPlaying: true });
+
+    renderAt("/playlists/favorites");
+
+    await waitFor(() =>
+      expect(screen.getByText("Idioteque")).toBeInTheDocument(),
+    );
+    const btn = screen.getByTitle("Pause");
+    // Track number "1" must NOT render for the currently-playing row.
+    expect(btn.closest("td")?.textContent).toBe("");
+    // Both play and pause SVGs are present (CSS swaps on hover).
+    expect(btn.querySelectorAll("svg")).toHaveLength(2);
   });
 
   it("shows empty-state copy when no songs are starred", async () => {

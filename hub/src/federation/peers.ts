@@ -1,124 +1,102 @@
-import { readFileSync, existsSync } from "node:fs";
-import { parse as yamlParse } from "yaml";
-import { parsePeerPublicKey } from "./signing.js";
+// Federation peer registry — DB-backed since v0.5.0 / federation API v5.
+//
+// Peers used to come from `config/peers.yaml`; that file is no longer read.
+// Peers are admitted via signed invitations (POST /admin/peers/invite +
+// POST /federation/handshake) and discovered via gossip on sync. The
+// `instances` table is authoritative; this registry is a typed snapshot of
+// rows where `id != 'local'` and `public_key IS NOT NULL`.
+
+import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
+import { parsePeerPublicKey } from "./signing.js";
+
+// Peer admission state (issue #244) — orthogonal to the DB `status` column
+// (online/offline/degraded), which tracks liveness. `lifecycle` tracks
+// whether we still admit this peer at all: active (normal), disabled
+// (local-only policy, reversible), tombstoned (evicted).
+export type PeerLifecycle = "active" | "disabled" | "tombstoned";
 
 export interface Peer {
   id: string;
-  url: string;      // hub base URL, no trailing slash
-  proxyUrl: string; // base URL for /proxy/* calls (defaults to url)
+  url: string;       // hub base URL, no trailing slash
+  proxyUrl: string;  // base URL for /proxy/* calls; equals url since v5
   publicKey: KeyObject;
-  publicKeySpec: string; // original "ed25519:..." string for logging
+  publicKeySpec: string; // original "ed25519:<base64>" string for logging
+  lifecycle: PeerLifecycle;
 }
 
 export interface PeerRegistry {
   instanceId: string;
+  publicKeySpec: string; // this hub's own "ed25519:<base64>" — for trust pinning
   peers: Map<string, Peer>;
   reload(): void;
 }
 
-interface PeersYaml {
-  peers?: Array<{
-    id?: string;
-    url?: string;
-    proxy_url?: string; // optional; defaults to url
-    public_key?: string;
-  }>;
+interface InstanceRow {
+  id: string;
+  url: string;
+  public_key: string;
+  lifecycle: PeerLifecycle;
 }
 
-function parseYamlFile(
-  configPath: string,
+// Snapshot includes non-active peers on purpose — gossip provenance pinning
+// (gossip.ts) needs a disabled/tombstoned inviter's pubkey to still be
+// resolvable. Consumers that must not act on non-active peers (sync, inbound
+// auth, proxy) gate explicitly on `peer.lifecycle` (#244).
+function buildSnapshot(
+  db: Database.Database,
   instanceId: string,
-  warnFn: (msg: string) => void,
-): { instanceId: string; peers: Map<string, Peer> } {
-  if (!existsSync(configPath)) {
-    warnFn(`Peers config not found at ${configPath} — running without federation peers`);
-    return { instanceId, peers: new Map() };
-  }
-
-  let raw: PeersYaml;
-  try {
-    const text = readFileSync(configPath, "utf8");
-    raw = yamlParse(text) as PeersYaml;
-  } catch (err) {
-    warnFn(`Failed to parse peers config at ${configPath}: ${String(err)}`);
-    return { instanceId, peers: new Map() };
-  }
-
-  if (!raw || typeof raw !== "object") {
-    warnFn(`Peers config at ${configPath} is not a valid YAML object`);
-    return { instanceId, peers: new Map() };
-  }
-
+  warn: (msg: string) => void,
+): Map<string, Peer> {
   const peers = new Map<string, Peer>();
+  const rows = db
+    .prepare(
+      "SELECT id, url, public_key, lifecycle FROM instances WHERE id != 'local' AND public_key IS NOT NULL",
+    )
+    .all() as InstanceRow[];
 
-  if (Array.isArray(raw.peers)) {
-    for (const entry of raw.peers) {
-      if (!entry || typeof entry.id !== "string" || !entry.id.trim()) {
-        warnFn(`Skipping peer entry with missing id: ${JSON.stringify(entry)}`);
-        continue;
-      }
-      const peerId = entry.id.trim();
-      if (peerId === instanceId) {
-        // Same file can be shared across all nodes — skip our own entry
-        continue;
-      }
-      if (typeof entry.url !== "string" || !entry.url.trim()) {
-        warnFn(`Skipping peer "${peerId}": missing url`);
-        continue;
-      }
-      if (typeof entry.public_key !== "string") {
-        warnFn(`Skipping peer "${peerId}": missing public_key`);
-        continue;
-      }
-
-      let publicKey: KeyObject;
-      try {
-        publicKey = parsePeerPublicKey(entry.public_key);
-      } catch (err) {
-        warnFn(`Skipping peer "${peerId}": invalid public_key — ${String(err)}`);
-        continue;
-      }
-
-      const hubUrl = entry.url.trim().replace(/\/+$/, "");
-      const proxyUrl = (typeof entry.proxy_url === "string" && entry.proxy_url.trim())
-        ? entry.proxy_url.trim().replace(/\/+$/, "")
-        : hubUrl;
-
-      peers.set(peerId, {
-        id: peerId,
-        url: hubUrl,
-        proxyUrl,
-        publicKey,
-        publicKeySpec: entry.public_key,
-      });
+  for (const row of rows) {
+    if (row.id === instanceId) continue; // never proxy to self
+    let publicKey: KeyObject;
+    try {
+      publicKey = parsePeerPublicKey(row.public_key);
+    } catch (err) {
+      warn(`Skipping peer "${row.id}": invalid public_key — ${String(err)}`);
+      continue;
     }
+    const url = row.url.replace(/\/+$/, "");
+    peers.set(row.id, {
+      id: row.id,
+      url,
+      proxyUrl: url,
+      publicKey,
+      publicKeySpec: row.public_key,
+      lifecycle: row.lifecycle,
+    });
   }
-
-  return { instanceId, peers };
+  return peers;
 }
 
 export function loadPeerRegistry(
-  configPath: string,
-  fallbackInstanceId: string,
+  db: Database.Database,
+  instanceId: string,
+  publicKeySpec: string,
 ): PeerRegistry {
-  // Use a console.warn-based logger initially; callers may swap it for a real
-  // logger after construction. The Fastify app registers SIGHUP to call reload().
   const warn = (msg: string) => console.warn(`[peers] ${msg}`);
+  let snapshot = buildSnapshot(db, instanceId, warn);
 
-  let state = parseYamlFile(configPath, fallbackInstanceId, warn);
-
-  const registry: PeerRegistry = {
+  return {
     get instanceId() {
-      return state.instanceId;
+      return instanceId;
+    },
+    get publicKeySpec() {
+      return publicKeySpec;
     },
     get peers() {
-      return state.peers;
+      return snapshot;
     },
     reload() {
-      state = parseYamlFile(configPath, fallbackInstanceId, warn);
+      snapshot = buildSnapshot(db, instanceId, warn);
     },
   };
-
-  return registry;
 }

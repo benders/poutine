@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export type StreamKind = "subsonic" | "proxy";
+export type StreamKind = "subsonic" | "proxy" | "cast" | "dlna";
 export type SourceKind = "local" | "peer";
 
 export interface StreamStartOptions {

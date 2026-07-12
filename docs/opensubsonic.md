@@ -2,6 +2,8 @@
 
 Poutine implements the [OpenSubsonic API](https://opensubsonic.netlify.app/) — a superset of the Subsonic REST API — at `/rest/*`. Third-party Subsonic/OpenSubsonic clients (DSub, Symfonium, etc.) connect here.
 
+For a forward-looking inventory of OpenSubsonic optional extensions worth adopting (Hub→Player boundary, DLNA, Sonos), see [opensubsonic-extensions-survey.md](opensubsonic-extensions-survey.md) (issue #214).
+
 ## Version claims
 
 | Field           | Value     | Source                                       |
@@ -9,11 +11,11 @@ Poutine implements the [OpenSubsonic API](https://opensubsonic.netlify.app/) —
 | `version`       | `1.16.1`  | `hub/src/routes/subsonic-response.ts`        |
 | `openSubsonic`  | `true`    | Present in every response envelope           |
 | `type`          | `poutine` | Server type field (OpenSubsonic extension)   |
-| `serverVersion` | `0.2.0`   | Tracks `APP_VERSION` in `hub/src/version.ts` |
+| `serverVersion` | `APP_VERSION` | From `hub/src/version.ts` (e.g. `0.5.3`)  |
 
 ## Response formats
 
-Both JSON (`f=json`, default) and XML (`f=xml`) supported. Default is JSON.
+Both JSON (`f=json`) and XML (`f=xml`) supported. Default is XML when `f=` is omitted, per Subsonic spec — clients like Amperfy and Feishin probe without `f=` and fail to parse a JSON envelope (surfaces as an auth error).
 
 ## Auth
 
@@ -46,7 +48,7 @@ See [authentication.md](authentication.md) for the full auth reference.
 
 ## Endpoint compatibility
 
-All endpoints support both GET and POST, with and without the `.view` suffix (e.g. `/rest/ping` and `/rest/ping.view` are equivalent). Implementation lives in `hub/src/routes/subsonic.ts`.
+All endpoints support both GET and POST, with and without the `.view` suffix (e.g. `/rest/ping` and `/rest/ping.view` are equivalent). Implementation lives in `hub/src/routes/subsonic/` (endpoint-family modules; plugin entry `index.ts`).
 
 ### System
 
@@ -54,17 +56,17 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 |-----------------------------|-----------------|------------------------------|
 | `ping`                      | Implemented     |                              |
 | `getLicense`                | Implemented     | Always returns `valid: true` |
-| `getOpenSubsonicExtensions` | NOT IMPLEMENTED |                              |
+| `getOpenSubsonicExtensions` | Implemented     | **Unauthenticated** (spec: callable before login for capability negotiation). Returns the static `OPENSUBSONIC_EXTENSIONS` list in `subsonic-response.ts`. Currently advertises only `transcodeOffset` (v1) — `timeOffset` on transcoded streams (#109). `formPost` is intentionally NOT advertised: POST is accepted but no `x-www-form-urlencoded` body parser is registered, so params are read from the query string only. (#236) |
 
 ### Browsing
 
 | Endpoint            | Status          | Notes                                                              |
 |---------------------|-----------------|--------------------------------------------------------------------|
 | `getMusicFolders`   | Implemented     | One folder per known instance (local + active peers); `id` is the stable `instances.musicfolder_id` (issue #123) |
-| `getIndexes`        | Implemented     | Returns artist index from unified library; ignores `musicFolderId` |
+| `getIndexes`        | Implemented     | Artist index from unified library; ignores `musicFolderId`. Excludes track-only-credit artists (no release group of their own) so the list matches the artist detail view |
 | `getMusicDirectory` | NOT IMPLEMENTED |                                                                    |
 | `getGenres`         | Implemented     | Aggregated from `unified_release_groups` + `unified_tracks`        |
-| `getArtists`        | Implemented     | Alphabetical index from unified library; ignores `musicFolderId`   |
+| `getArtists`        | Implemented     | Alphabetical index from unified library; ignores `musicFolderId`. Excludes track-only-credit artists (no release group of their own) — same filter as `getIndexes` |
 | `getArtist`         | Implemented     | Returns artist + album list                                        |
 | `getAlbum`          | Implemented     | Returns album + track list; album ID prefix `al<uuid>`             |
 | `getSong`           | Implemented     | Track ID prefix `t<uuid>`                                          |
@@ -83,7 +85,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | Endpoint          | Status          | Notes                                                                                          |
 |-------------------|-----------------|------------------------------------------------------------------------------------------------|
 | `getAlbumList`    | NOT IMPLEMENTED |                                                                                                |
-| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`, `starred` (per-user, issue #104). Honors standard `musicFolderId` (resolved via `instances.musicfolder_id`). **EOL alias:** `instanceId=<local\|peerId>` filters by raw instance UUID — kept for in-tree callers mid-migration; do not adopt in new code, scheduled for removal. Unknown `musicFolderId` returns an empty list. |
+| `getAlbumList2`   | Implemented     | Supports `newest`, `alphabeticalByName`, `alphabeticalByArtist`, `byYear`, `byGenre`, `random`, `starred` (per-user, issue #104), and `frequent`/`recent` (per-user play history, issue #197 — both exclude never-played albums). `highest` falls back to `newest` (no ratings). Honors standard `musicFolderId` (resolved via `instances.musicfolder_id`). **EOL alias:** `instanceId=<local\|peerId>` filters by raw instance UUID — kept for in-tree callers mid-migration; do not adopt in new code, scheduled for removal. Unknown `musicFolderId` returns an empty list. |
 | `getRandomSongs`  | NOT IMPLEMENTED |                                                                                                |
 | `getSongsByGenre` | NOT IMPLEMENTED |                                                                                                |
 | `getNowPlaying`   | Stub            | Always returns an empty list                                                                   |
@@ -128,12 +130,47 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | `star`      | Implemented     | Per-user; accepts `id`, `albumId`, `artistId` (each may repeat). Kind classified by id prefix. (#104)  |
 | `unstar`    | Implemented     | Mirror of `star`. Idempotent — unstarring a non-starred entity is a no-op. (#104)                      |
 | `setRating` | NOT IMPLEMENTED |                                                                                                        |
-| `scrobble`  | Stub            | No-op; always returns success                                                                          |
+| `scrobble`  | Implemented     | Records a per-user play in `play_events` (#197). `submission=true` (default) counts; `submission=false` is a now-playing notification and is ignored. Accepts one or many `id`; unknown/malformed ids are skipped so a batch still records the rest. Honors optional `time` (epoch ms) to backfill a play's timestamp; absent, stamps now. This is the *only* play-recording path: the SPA scrobbles for both local and Sonos-cast playback off the actual playback position. |
 
 Album / artist / song objects returned by `getAlbum`, `getArtist`,
 `getAlbumList2`, `getSong`, and `search3` carry an ISO 8601 `starred`
 field when the requesting user has starred that target. Stars are local
 to the hub the user logs into and are not federated.
+
+### Album `created` (#148)
+
+Album objects returned by `getAlbum`, `getAlbumList2`, `getArtist`, and
+`search3` carry an ISO 8601 `created` field — the `unified_release_groups.created_at`
+timestamp of when the album first appeared on this hub (via Navidrome
+sync or federation). `getAlbumList2?type=newest` orders by this value
+DESC; the SPA "Recently Added" sort uses it client-side as well.
+
+### Play counts: `playCount` / `played` (#197)
+
+Song and album objects returned by `getSong`, `getAlbum`, `getAlbumList2`,
+`getArtist`, `search3`, and the starred endpoints carry a per-user
+`playCount` (integer) and `played` (ISO 8601 last-play timestamp) when the
+requesting user has played that target. Both fields are **omitted** when the
+count is zero (mirroring how `starred` is omitted when absent). Album
+`playCount` is the sum of plays across the album's tracks; `played` is the
+album's most-recent track play.
+
+Counts are **per-user** (Subsonic spec), durable, and span the merged catalog
+(local + peer media) — they are sourced from `play_events`, not from the
+backing Navidrome's own counts. Plays are recorded by exactly one path — the
+client scrobbles when playback crosses the threshold (the SPA does this for
+both local and Sonos-cast playback). See
+[hub-internals.md](hub-internals.md#play-counts-197) for details.
+
+### Song `albumArtist` / `albumArtistId` (#138)
+
+Every Song emitted by `getAlbum`, `getSong`, `search3`, and the starred
+endpoints carries both `artist`/`artistId` (track-level artist) and
+`albumArtist`/`albumArtistId` (release-group artist). On compilations
+and "feat." tracks these differ; on single-artist albums they match.
+SuperSonic, Symfonium, DSub, and play:Sub use `albumArtist` to decide
+whether to render the per-track artist line — emitting it lets those
+clients behave correctly without per-client workarounds.
 
 ### Sharing
 
@@ -182,7 +219,7 @@ to the hub the user logs into and are not federated.
 
 | Endpoint         | Status          | Notes |
 |------------------|-----------------|-------|
-| `getUser`        | NOT IMPLEMENTED |       |
+| `getUser`        | IMPLEMENTED     | Returns auth'd user's roles (admin from `users.is_admin`); non-admin requesting another username → error 50. Required by Feishin login. |
 | `getUsers`       | NOT IMPLEMENTED |       |
 | `createUser`     | NOT IMPLEMENTED |       |
 | `updateUser`     | NOT IMPLEMENTED |       |

@@ -41,8 +41,67 @@ CREATE TABLE IF NOT EXISTS instances (
   -- Uniqueness enforced via partial index below to match the on-upgrade
   -- migration shape (SQLite forbids ADD COLUMN ... UNIQUE).
   musicfolder_id INTEGER,
+  -- Federation peer fields (issue #147, federation API v5).
+  -- public_key is the peer's Ed25519 federation key in "ed25519:<base64>" form;
+  -- NULL on the synthetic 'local' row. invitation_* columns carry the signed
+  -- invitation payload that admitted the peer to the cluster — gossiped
+  -- alongside the peer entry so receivers can verify provenance.
+  public_key TEXT,
+  invitation_payload TEXT,
+  invitation_signature TEXT,
+  inviter_id TEXT,
+  inviter_url TEXT,
+  inviter_public_key TEXT,
+  -- Peer lifecycle (issue #244): admission state, orthogonal to the liveness
+  -- `status` column above. active = normal member; disabled = local-only
+  -- policy that stops sync/proxy/inbound for this peer (reversible, rows
+  -- kept, instant re-enable); tombstoned = peer evicted (Phase 3 gossips
+  -- this; here it only blocks local re-introduction). Never conflate with
+  -- `status`, which liveness/health-checks churn constantly.
+  lifecycle TEXT NOT NULL DEFAULT 'active', -- active | disabled | tombstoned
+  lifecycle_changed_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- Federation: Invitations (issuer-local)
+-- ============================================================
+-- Issued via POST /admin/peers/invite, consumed via POST /federation/handshake.
+-- Single-use: consumed_at is set when an invitee completes the handshake.
+-- Never gossiped — invitations stay local to the issuer; the *signed payload*
+-- travels with the accepted peer record (instances.invitation_payload) instead.
+
+CREATE TABLE IF NOT EXISTS invitations (
+  id TEXT PRIMARY KEY,                -- UUID
+  payload TEXT NOT NULL,              -- canonical JSON of the signed payload
+  signature TEXT NOT NULL,            -- base64 Ed25519 signature
+  invitee_url TEXT,                   -- nullable = open invite
+  nonce TEXT NOT NULL UNIQUE,
+  issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  consumed_by_id TEXT                 -- invitee instance id (set on acceptance)
+);
+
+CREATE INDEX IF NOT EXISTS idx_invitations_nonce ON invitations(nonce);
+
+-- ============================================================
+-- Federation: Peer Tombstones (issue #244)
+-- ============================================================
+-- Local record of peers this hub has evicted (lifecycle='tombstoned').
+-- Phase 3 gossips these so eviction propagates cluster-wide; this phase only
+-- stores them and uses presence here (or a matching instances.lifecycle row)
+-- to refuse re-introduction of the same instance id via gossip/announce.
+-- signature is removed_by's Ed25519 signature over the canonical tombstone
+-- payload — format defined in Phase 3.
+
+CREATE TABLE IF NOT EXISTS peer_tombstones (
+  instance_id TEXT PRIMARY KEY,
+  removed_by TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  signature TEXT NOT NULL
 );
 
 -- ============================================================
@@ -94,6 +153,9 @@ CREATE TABLE IF NOT EXISTS instance_tracks (
   musicbrainz_id TEXT,                -- Recording MBID
   year INTEGER,
   genre TEXT,
+  sampling_rate INTEGER,              -- Hz (44100, 48000, 96000, …) — #199 Sonos hi-res gate
+  bit_depth INTEGER,                  -- bits per sample (16, 24); lossy reports 0
+  channel_count INTEGER,              -- 1 (mono), 2 (stereo), 6 (5.1), …
   UNIQUE(instance_id, remote_id)
 );
 
@@ -183,6 +245,9 @@ CREATE TABLE IF NOT EXISTS track_sources (
   format TEXT,
   bitrate INTEGER,
   size INTEGER,
+  sampling_rate INTEGER,              -- Hz — #199 Sonos hi-res gate; copied from instance_tracks during merge
+  bit_depth INTEGER,                  -- bits per sample; copied from instance_tracks during merge
+  channel_count INTEGER,              -- copied from instance_tracks during merge
   preferred INTEGER NOT NULL DEFAULT 0,
   UNIQUE(unified_track_id, instance_track_id)
 );
@@ -215,7 +280,9 @@ CREATE TABLE IF NOT EXISTS playlists (
 CREATE TABLE IF NOT EXISTS playlist_tracks (
   playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
   position INTEGER NOT NULL,
-  unified_track_id TEXT NOT NULL REFERENCES unified_tracks(id) ON DELETE CASCADE,
+  -- no FK — rebuilt unified tables; orphans dropped at read, remapped by
+  -- id-remap (#242). Used to CASCADE-DELETE on every merge before #242.
+  unified_track_id TEXT NOT NULL,
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (playlist_id, position)
 );
@@ -267,7 +334,8 @@ CREATE TABLE IF NOT EXISTS sync_operations (
   artist_count INTEGER DEFAULT 0,
   album_count INTEGER DEFAULT 0,
   track_count INTEGER DEFAULT 0,
-  errors TEXT                       -- JSON array of error strings
+  errors TEXT,                      -- JSON array of error strings
+  details TEXT                      -- JSON: orphan audit counts (#242)
 );
 
 -- ============================================================
@@ -296,3 +364,26 @@ CREATE TABLE IF NOT EXISTS stream_operations (
   bytes_transferred INTEGER,        -- bytes streamed
   error TEXT
 );
+
+-- ============================================================
+-- Play History (#197): canonical, federation-wide play counts
+-- ============================================================
+-- Durable per-user play log across the merged catalog (local + peer media).
+-- Distinct from stream_operations (ephemeral activity feed, pruned to a cap):
+-- play_events is the source of truth for Subsonic playCount/played and is not
+-- pruned. No FK on unified_track_id — the unified_* tables are rebuilt on every
+-- merge, so a row may outlive its track; orphans are dropped at read time via
+-- JOIN, exactly as user_stars does. Counts are per-user (Subsonic spec).
+CREATE TABLE IF NOT EXISTS play_events (
+  id TEXT PRIMARY KEY,                -- UUID
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  unified_track_id TEXT NOT NULL,     -- unified_tracks.id (no FK; orphans dropped at read)
+  source_instance_id TEXT,            -- 'local' or peer instance id; NULL if unknown
+  played_at TEXT NOT NULL DEFAULT (datetime('now')),
+  duration_played_ms INTEGER,         -- best-effort played duration (scrobble threshold / debug)
+  client_name TEXT                    -- Subsonic c= param, or 'sonos' / 'dlna' for server-driven plays
+);
+
+CREATE INDEX IF NOT EXISTS idx_play_events_user_track ON play_events(user_id, unified_track_id);
+CREATE INDEX IF NOT EXISTS idx_play_events_track ON play_events(unified_track_id);
+CREATE INDEX IF NOT EXISTS idx_play_events_user_played ON play_events(user_id, played_at);

@@ -210,9 +210,13 @@ export class SubsonicClient {
   private async request(
     path: string,
     extraParams?: Record<string, string>,
+    options?: { signal?: AbortSignal },
   ): Promise<Record<string, unknown>> {
     const url = this.buildUrl(path, extraParams);
-    const response = await fetch(url, { headers: FETCH_HEADERS });
+    const response = await fetch(url, {
+      headers: FETCH_HEADERS,
+      signal: options?.signal,
+    });
 
     if (!response.ok) {
       throw new Error(
@@ -262,8 +266,8 @@ export class SubsonicClient {
 
   // ── API methods ─────────────────────────────────────────────────────────
 
-  async ping(): Promise<SubsonicPingResponse> {
-    const data = await this.request("/rest/ping");
+  async ping(options?: { signal?: AbortSignal }): Promise<SubsonicPingResponse> {
+    const data = await this.request("/rest/ping", undefined, options);
     return {
       status: data.status as string,
       version: data.version as string,
@@ -301,6 +305,11 @@ export class SubsonicClient {
   async getAlbum(id: string): Promise<SubsonicAlbum> {
     const data = await this.request("/rest/getAlbum", { id });
     return data.album as SubsonicAlbum;
+  }
+
+  async getSong(id: string): Promise<SubsonicSong> {
+    const data = await this.request("/rest/getSong", { id });
+    return data.song as SubsonicSong;
   }
 
   async search3(

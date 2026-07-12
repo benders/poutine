@@ -1,6 +1,6 @@
 {
   "name": "@poutine/hub",
-  "version": "0.4.5",
+  "version": "0.5.4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "lint": "eslint src/",
+    "lint:boundary": "eslint --config eslint.boundary.config.js src/",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -18,7 +19,9 @@
     "@fastify/cors": "^11.0.0",
     "@fastify/static": "^9.1.0",
     "better-sqlite3": "^11.9.1",
-    "fastify": "^5.3.3",
+    "fast-uri": "^3.1.2",
+    "fast-xml-parser": "^5.8.0",
+    "fastify": "^5.8.5",
     "jose": "^6.0.11",
     "pino": "^9.6.0",
     "undici": "^7.5.0",
@@ -29,6 +32,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.13.0",
     "eslint": "^9.21.0",
+    "node-upnp": "^1.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.30.0",

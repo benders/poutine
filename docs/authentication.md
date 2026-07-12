@@ -8,7 +8,7 @@ Poutine has three authentication mechanisms, each scoped to a different API surf
 |-------------------|-----------------|---------------------------------------------------------------------------------------|
 | Admin             | `/admin/*`      | JWT (cookie + `Authorization: Bearer` header)                                         |
 | Subsonic (JSON)   | `/rest/*`       | Subsonic `u+p` (plaintext / `enc:<hex>`) **or** `u+t+s` (MD5 token+salt)              |
-| Subsonic (binary) | `/rest/stream`, `/rest/getCoverArt` | Same as Subsonic JSON, but errors use HTTP status codes, not Subsonic envelopes |
+| Subsonic (binary) | `/rest/stream`, `/rest/getCoverArt` | Same as Subsonic JSON, but errors use HTTP status codes, not Subsonic envelopes. `/rest/stream(.view)` also accepts a `castToken=` query param (#218) as an alternate auth for non-Subsonic clients (Sonos devices, DLNA renderers) — see "Cast tokens" below |
 | Proxy             | `/proxy/*`      | Unified: Ed25519 (peers) → JWT (SPA) → Subsonic `u+p` / `u+t+s`, tried in order     |
 | Federation        | `/federation/*` | Ed25519-signed HTTP (see [federation-api.md](federation-api.md))                      |
 | Health            | `/api/health`   | None                                                                                  |
@@ -48,6 +48,8 @@ Lifetimes configurable via `JWT_ACCESS_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` en
 2. Creates access + refresh JWTs, sets both httpOnly cookies.
 3. Returns `{ user, accessToken, subsonicCredentials: { username, password } | null }`.
 
+Both admin and non-admin users can log in (#232). The returned `user.isAdmin` lets the SPA hide admin-only nav; admin-only routes (`requireOwner` preHandler) still 403 non-admin sessions. `GET /admin/me` and `POST /admin/refresh` accept any logged-in user.
+
 The body's `accessToken` goes into `localStorage` for `Authorization` header use on `/admin/*`. The body's `subsonicCredentials` are stashed in `localStorage` as `subsonicUser` / `subsonicPass` and used to compute Subsonic `u+t+s` per request — the SPA never sends a JWT to `/rest/*`.
 
 ### Token refresh
@@ -60,7 +62,7 @@ The body's `accessToken` goes into `localStorage` for `Authorization` header use
 
 ### Password update
 
-`PUT /admin/users/:id/password` (admin-only) with `{ password }`. Re-encrypts via `setPassword` and updates `users.password_enc`. Returns 204. Validates `password.length >= 8`. An admin can target their own id; when they do, the `subsonicCredentials` cached in `localStorage` are now stale — the admin must log out and back in to refresh them. JWTs remain valid until expiry (no forced revocation).
+`PUT /api/admin/hub/users/:id/password` (admin-only) with `{ password }`. Re-encrypts via `setPassword` and updates `users.password_enc`. Returns 204. Validates `password.length >= 8`. An admin can target their own id; when they do, the `subsonicCredentials` cached in `localStorage` are now stale — the admin must log out and back in to refresh them. JWTs remain valid until expiry (no forced revocation).
 
 ## Subsonic auth flow
 
@@ -76,7 +78,33 @@ Either form authenticates a user identically. Unknown user and bad credentials b
 - **`requireSubsonicAuth`** — returns errors as Subsonic XML/JSON envelopes with HTTP 200 (Subsonic protocol convention).
 - **`requireSubsonicAuthBinary`** — returns errors as real HTTP status codes (401). Used by `stream` and `getCoverArt` where a 200 body would be interpreted as corrupt audio/image data.
 
-Routes register via `binaryRoute()` in `subsonic.ts` to get the binary variant.
+Routes register via `binaryRoute()` in `routes/subsonic/index.ts` to get the binary variant.
+
+## Trusted in-process auth (`x-poutine-internal`)
+
+In-process Subsonic auth path used by `HubSubsonicCaller` (`hub/src/services/hub-subsonic-caller.ts`) when invoked with `{ asUser: <username> }`. Introduced #224 to remove Sonos cast's dependency on the `POUTINE_OWNER_*` credentials.
+
+**Headers (both required, both checked):**
+
+| Header                | Value                                          |
+|-----------------------|------------------------------------------------|
+| `x-poutine-internal`  | `app.internalAuthSecret` — per-boot 32-byte random, base64url-encoded |
+| `x-poutine-as-user`   | Hub username to authenticate as                |
+
+**Middleware behavior** (both `requireSubsonicAuth` and `requireSubsonicAuthBinary`):
+
+1. If neither header is present, fall through to standard `u+p` / `u+t+s` auth.
+2. If exactly one header is present, return Subsonic error 40 / HTTP 401. (No silent acceptance of half-complete trusted requests.)
+3. If both are present, `crypto.timingSafeEqual` the secret against `app.internalAuthSecret`. Mismatch → error 40 / 401.
+4. Look up the user by username. Missing → error 40 / 401. Password is not consulted.
+
+**Producer contract:**
+
+- The secret is in-process only — it must never appear in logs, in `app.config`, in env, on the wire to an external client, or in a JWT/cookie. `HubSubsonicCaller` is the only legitimate producer; new internal callers must go through it.
+- Routes calling `HubSubsonicCaller.call(endpoint, params, { asUser })` are responsible for verifying the user identity up front (e.g. Sonos routes run under `requireAuth` and pass `req.username`).
+- Paths without a user context (DLNA browse — LAN-gated, unauthenticated) omit `asUser` and fall through to the owner `u+p` path.
+
+**Why a separate secret (not `castSecret`):** cast tokens are presented by untrusted LAN clients; the internal secret is presented only by code inside the hub process. Conflating the two would let a leaked cast-token-signing key escalate into impersonation of any user. They have different blast radii — keep them separate.
 
 ## Frontend token management
 
@@ -101,11 +129,24 @@ Setting a different `POUTINE_OWNER_PASSWORD` in env never overwrites a non-empty
 
 `/proxy/*` is a transparent authenticated proxy to the local Navidrome. Three auth modes tried in order by `hub/src/proxy/auth.ts`:
 
-1. **Ed25519** — all four `x-poutine-*` headers present → validated against `peers.yaml` registry. `request.proxyAuth.kind = "peer"`. Used by peer hubs during catalog sync and streaming.
+1. **Ed25519** — all four `x-poutine-*` headers present → validated against the in-memory peer registry (DB-backed, sourced from the `instances` table since federation v5; see [federation-api.md](federation-api.md)). `request.proxyAuth.kind = "peer"`. Used by peer hubs during catalog sync and streaming.
 2. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param → verified with `verifyToken`. `request.proxyAuth.kind = "jwt"`. Used internally for any admin-tree proxy calls.
 3. **Subsonic `u+p` or `u+t+s`** — same logic as `/rest/*`. `request.proxyAuth.kind = "subsonic"`.
 
 Returns `401` if all three fail. The forwarded request always uses fresh Navidrome `u+t+s` credentials — the incoming auth is consumed at the proxy tier and never forwarded.
+
+## Cast tokens (`/rest/stream.view?castToken=…`)
+
+Short-lived HMAC tokens for non-Subsonic clients that can't compute `u+t+s` — Sonos devices on the LAN, DLNA renderers. Introduced #108 (`/cast/stream/:trackId`), promoted #218 to a first-class auth mode on the Subsonic stream endpoint itself; the old relay routes (`/cast/stream`, `/dlna/stream`) are deleted.
+
+- **Secret:** HMAC-SHA-256 key persisted in `player.db.player_settings.cast_signing_key`; first boot under #215 derives from the Ed25519 private key to preserve continuity. Decorated on the Fastify app as `app.castSecret`.
+- **Format:** `<base64url(hmac)>.<exp>.<base64url(username)>`. Signed message is `trackId|exp|username`. Default TTL 1 h.
+- **Binding:** token is valid only for the *exact* trackId it was issued against. The Subsonic stream handler decodes the `id` query param (strip `t` prefix), then `verifyCastToken` compares.
+- **Endpoint scope:** the verifier in `requireSubsonicAuthBinary` accepts `castToken=` ONLY on URLs ending in `/stream` or `/stream.view`. `/rest/getCoverArt` and every Subsonic JSON route still require `u+p` or `u+t+s` — no auth surface widening from #218.
+- **Attribution:** the carried username travels into `request.subsonicUser` after a `users` table lookup. Stream-tracking activity is tagged `kind="cast"` (Sonos) or `kind="dlna"` (DLNA — detected via the `dlna=1` URL flag).
+- **Mint sites:** `routes/sonos.ts` (`/api/sonos/devices/:id/play`, `/next`) and `services/dlna-objects.ts` (DIDL `res@uri` in `Browse` responses). Both go through `buildStreamUrl()` in `services/cast-tokens.ts` — single helper, single token shape.
+
+A cast token compromise is bounded — it grants single-track stream access for at most the TTL window, against the originating user's source-selection (no library traversal, no other Subsonic operations).
 
 ## Federation auth
 

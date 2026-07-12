@@ -157,10 +157,13 @@ export interface User {
   createdAt: string;
 }
 
+export type PeerLifecycle = "active" | "disabled" | "tombstoned";
+
 export interface Peer {
   id: string;
   url: string;
   publicKey: string;
+  lifecycle: PeerLifecycle;
   status: string;
   lastSeen: string | null;
   lastSyncOk: boolean | null;
@@ -208,41 +211,46 @@ export interface SyncResult {
   errors: string[];
 }
 
+// Hub-admin API surface (#220 / #226, Phase 6 of #212): users, peers,
+// sync, cache, instance, activity. Routed at `/api/admin/hub/*`. The
+// `/admin/*` mount only serves auth endpoints (login/refresh/logout/me);
+// Hub admin handlers are no longer reachable there.
+
 export function getInstanceInfo() {
-  return apiFetch<InstanceInfo>("/admin/instance");
+  return apiFetch<InstanceInfo>("/api/admin/hub/instance");
 }
 
 export function triggerNavidromeScan() {
   return apiFetch<{ scanning: boolean; count: number; folderCount: number; lastScan: string | null }>(
-    "/admin/instance/scan",
+    "/api/admin/hub/instance/scan",
     { method: "POST" },
   );
 }
 
 export function getUsers() {
-  return apiFetch<User[]>("/admin/users");
+  return apiFetch<User[]>("/api/admin/hub/users");
 }
 
 export function createUser(username: string, password: string) {
-  return apiFetch<User>("/admin/users", {
+  return apiFetch<User>("/api/admin/hub/users", {
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
 }
 
 export function deleteUser(id: string) {
-  return apiFetch(`/admin/users/${id}`, { method: "DELETE" });
+  return apiFetch(`/api/admin/hub/users/${id}`, { method: "DELETE" });
 }
 
 export function updateUserPassword(id: string, password: string) {
-  return apiFetch(`/admin/users/${id}/password`, {
+  return apiFetch(`/api/admin/hub/users/${id}/password`, {
     method: "PUT",
     body: JSON.stringify({ password }),
   });
 }
 
 export function getPeers() {
-  return apiFetch<Peer[]>("/admin/peers");
+  return apiFetch<Peer[]>("/api/admin/hub/peers");
 }
 
 export interface PeerSummary {
@@ -253,7 +261,7 @@ export interface PeerSummary {
 }
 
 export function getPeersSummary() {
-  return apiFetch<PeerSummary[]>("/admin/peers/summary");
+  return apiFetch<PeerSummary[]>("/api/admin/hub/peers/summary");
 }
 
 /** Display name for a peer: drop anything from the first '.' onward. */
@@ -263,28 +271,77 @@ export function peerDisplayName(name: string): string {
 }
 
 export function triggerSync() {
-  return apiFetch<{ local: SyncResult; peers: SyncResult[] }>("/admin/sync", {
+  return apiFetch<{ local: SyncResult; peers: SyncResult[] }>("/api/admin/hub/sync", {
     method: "POST",
   });
 }
 
 export async function deletePeerData(): Promise<void> {
-  await apiFetch("/admin/peers/data", { method: "DELETE" });
+  await apiFetch("/api/admin/hub/peers/data", { method: "DELETE" });
+}
+
+export function disablePeer(id: string) {
+  return apiFetch<{ id: string; lifecycle: PeerLifecycle }>(
+    `/api/admin/hub/peers/${id}/disable`,
+    { method: "POST" },
+  );
+}
+
+export function enablePeer(id: string) {
+  return apiFetch<{ id: string; lifecycle: PeerLifecycle }>(
+    `/api/admin/hub/peers/${id}/enable`,
+    { method: "POST" },
+  );
+}
+
+export function removePeer(id: string, reason?: string) {
+  return apiFetch<{
+    id: string;
+    lifecycle: PeerLifecycle;
+    tombstone: { removedBy: string; reason: string | null; createdAt: string };
+  }>(`/api/admin/hub/peers/${id}`, {
+    method: "DELETE",
+    body: reason ? JSON.stringify({ reason }) : undefined,
+  });
+}
+
+export function generateInvitation(opts: {
+  ourUrl: string;
+  inviteeUrl?: string;
+  expiresInSec?: number;
+}): Promise<{ invitation: string }> {
+  return apiFetch<{ invitation: string }>("/api/admin/hub/peers/invite", {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+}
+
+export function acceptInvitation(opts: {
+  invitation: string;
+  ourUrl: string;
+}): Promise<{ ok: true; peerId: string; peerUrl: string }> {
+  return apiFetch<{ ok: true; peerId: string; peerUrl: string }>(
+    "/api/admin/hub/peers/accept",
+    {
+      method: "POST",
+      body: JSON.stringify(opts),
+    },
+  );
 }
 
 export function getCacheStats() {
-  return apiFetch<CacheStats>("/admin/cache");
+  return apiFetch<CacheStats>("/api/admin/hub/cache");
 }
 
 export function updateCacheSettings(data: { artCacheMaxBytes?: number }) {
-  return apiFetch<CacheStats>("/admin/cache", {
+  return apiFetch<CacheStats>("/api/admin/hub/cache", {
     method: "PUT",
     body: JSON.stringify(data),
   });
 }
 
 export function clearArtCache() {
-  return apiFetch("/admin/cache", { method: "DELETE" });
+  return apiFetch("/api/admin/hub/cache", { method: "DELETE" });
 }
 // Activity API
 
@@ -352,7 +409,7 @@ export interface ActivityHistory {
 export type ActivityHistoryKind = "stream" | "sync";
 
 export function getActiveActivity() {
-  return apiFetch<ActiveActivity>(`/admin/activity/active`);
+  return apiFetch<ActiveActivity>(`/api/admin/hub/activity/active`);
 }
 
 export function getActivityHistory(kinds: ActivityHistoryKind[] = ["stream", "sync"], limit = 200) {
@@ -360,15 +417,15 @@ export function getActivityHistory(kinds: ActivityHistoryKind[] = ["stream", "sy
     kinds: kinds.join(","),
     limit: String(limit),
   });
-  return apiFetch<ActivityHistory>(`/admin/activity/history?${params.toString()}`);
+  return apiFetch<ActivityHistory>(`/api/admin/hub/activity/history?${params.toString()}`);
 }
 
 export function clearActivityHistory() {
-  return apiFetch<{ cleared: boolean }>(`/admin/activity`, { method: "DELETE" });
+  return apiFetch<{ cleared: boolean }>(`/api/admin/hub/activity`, { method: "DELETE" });
 }
 
 export function getActivitySummary() {
-  return apiFetch<ActivitySummary>(`/admin/activity/summary`);
+  return apiFetch<ActivitySummary>(`/api/admin/hub/activity/summary`);
 }
 
 export interface ActivitySettings {
@@ -376,14 +433,172 @@ export interface ActivitySettings {
 }
 
 export function getActivitySettings() {
-  return apiFetch<ActivitySettings>(`/admin/settings/activity`);
+  return apiFetch<ActivitySettings>(`/api/admin/hub/settings/activity`);
 }
 
 export function updateActivitySettings(settings: { maxEvents: number }) {
-  return apiFetch<ActivitySettings>(`/admin/settings/activity`, {
+  return apiFetch<ActivitySettings>(`/api/admin/hub/settings/activity`, {
     method: "PUT",
     body: JSON.stringify(settings),
   });
+}
+
+export interface SonosSettings {
+  enabled: boolean;
+  volumeCap: number;
+  /** Absolute http(s) base URL devices use to fetch streams. Empty when
+   *  unset (Sonos casting + DLNA won't work until set). Shared with DLNA
+   *  (#209). */
+  lanUrl: string;
+  /** #232: when true, non-admin users can drive `/api/sonos/*` (and see the
+   *  device picker in the SPA). Default false — admin-only. */
+  allowNonAdmin: boolean;
+}
+
+// Player-admin API surface (#220): Sonos / LAN URL settings live under
+// `/api/admin/player/*`. Hub admin code never reads these; the SPA's
+// `features/player-admin/` section is the only consumer.
+
+export function getSonosSettings() {
+  return apiFetch<SonosSettings>(`/api/admin/player/settings/sonos`);
+}
+
+export function updateSonosSettings(settings: Partial<SonosSettings>) {
+  return apiFetch<SonosSettings>(`/api/admin/player/settings/sonos`, {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
+}
+
+// ── Capabilities + Sonos ────────────────────────────────────────────────────
+
+export interface Capabilities {
+  sonos: boolean;
+  /** #232: when false, the SPA hides the Sonos device picker for non-admin
+   *  users. Admins always see it (subject to `sonos`). */
+  sonosAllowNonAdmin: boolean;
+}
+
+export function getCapabilities() {
+  return apiFetch<Capabilities>(`/api/capabilities`);
+}
+
+// ── Player health probe (issue #216) ────────────────────────────────────────
+//
+// Drives the SPA's /admin/player route gate. Today the Player code runs in
+// the same process as the Hub, so this always returns 200. Once Phase 5
+// (#220) lifts Player into its own plugin/deploy, a 404 here means the
+// route renders a "Player not deployed on this host" placeholder instead.
+//
+// Unlike `/api/health` this is a no-auth probe (matches the Hub-side
+// implementation in `hub/src/server.ts`); we wrap it in `fetch` directly
+// to avoid the JWT refresh dance on a route the user may not be logged
+// in to use yet.
+
+export interface PlayerHealth {
+  status: "ok";
+  appVersion: string;
+}
+
+export async function getPlayerHealth(): Promise<PlayerHealth | null> {
+  try {
+    const res = await fetch("/player/health");
+    if (!res.ok) return null;
+    return (await res.json()) as PlayerHealth;
+  } catch {
+    return null;
+  }
+}
+
+export interface SonosDevice {
+  id: string;
+  room: string;
+  model: string;
+}
+
+export interface SonosState {
+  state: string;
+  position: number;
+  duration: number;
+  volume: number;
+  /** Hard ceiling enforced server-side on every SetVolume. */
+  volumeCap: number;
+  /**
+   * Current TrackURI from `GetPositionInfo`. The player uses changes
+   * between non-empty values across polls to detect Sonos auto-advancing
+   * onto a pre-loaded next track (#202).
+   */
+  trackUri: string;
+}
+
+export function getSonosDevices() {
+  return apiFetch<{ devices: SonosDevice[] }>(`/api/sonos/devices`);
+}
+
+export function getSonosState(deviceId: string) {
+  return apiFetch<SonosState>(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/state`,
+  );
+}
+
+export function sonosPlay(
+  deviceId: string,
+  trackId: string,
+  opts: { position?: number; autoplay?: boolean } = {},
+) {
+  return apiFetch<{ ok: true; transcoded: boolean }>(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/play`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        trackId,
+        position: opts.position,
+        autoplay: opts.autoplay ?? true,
+      }),
+    },
+  );
+}
+
+export function sonosCommand(
+  deviceId: string,
+  action: "pause" | "resume" | "stop",
+) {
+  return apiFetch(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/${action}`,
+    { method: "POST" },
+  );
+}
+
+export function sonosSeek(deviceId: string, position: number) {
+  return apiFetch(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/seek`,
+    { method: "POST", body: JSON.stringify({ position }) },
+  );
+}
+
+/**
+ * Pre-load the next track for gapless Sonos auto-advance (#202). Pass
+ * `null` to clear the slot — required on sink switch, stop, or when the
+ * queue is exhausted with repeat off. `ttlSec` should cover the combined
+ * duration of the currently-playing track plus this track plus a buffer,
+ * so a long pause across the boundary doesn't expire the queued stream.
+ */
+export function sonosSetNext(
+  deviceId: string,
+  trackId: string | null,
+  ttlSec?: number,
+) {
+  return apiFetch(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/next`,
+    { method: "POST", body: JSON.stringify({ trackId, ttlSec }) },
+  );
+}
+
+export function sonosSetVolume(deviceId: string, level: number) {
+  return apiFetch(
+    `/api/sonos/devices/${encodeURIComponent(deviceId)}/volume`,
+    { method: "POST", body: JSON.stringify({ level }) },
+  );
 }
 
 

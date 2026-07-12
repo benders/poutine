@@ -131,7 +131,7 @@ login_and_sync() {
   printf "  Waiting for %s local library..." "$label" >&2
   while true; do
     local sync_resp local_count
-    sync_resp=$(curl -sf -X POST "http://localhost:${port}/admin/sync" \
+    sync_resp=$(curl -sf -X POST "http://localhost:${port}/api/admin/hub/sync" \
       -H "Authorization: Bearer $jwt" 2>/dev/null || echo '{"local":{"trackCount":0}}')
     local_count=$(echo "$sync_resp" | python3 -c \
       "import sys,json; d=json.load(sys.stdin); print(d.get('local',{}).get('trackCount',0))" 2>/dev/null || echo "0")
@@ -154,6 +154,40 @@ login_and_sync() {
   done
 }
 
+# ── v5 invitation admission helpers ───────────────────────────────────────────
+
+login_only() {
+  # echoes the admin JWT
+  local port="$1"
+  curl -sf -X POST "http://localhost:${port}/admin/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"owner\",\"password\":\"${SUB_PASS}\"}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['accessToken'])"
+}
+
+# admit <inviter-port> <inviter-url-on-fed-net> <invitee-port> <invitee-url-on-fed-net>
+# Inviter issues a v5 signed invitation; invitee posts it to inviter's
+# /federation/handshake via /admin/peers/accept. Both hubs end up with each
+# other in their `instances` table.
+admit() {
+  local in_port="$1" in_url="$2" out_port="$3" out_url="$4"
+  local in_jwt out_jwt invite invite_resp accept_resp
+  in_jwt=$(login_only "$in_port")
+  out_jwt=$(login_only "$out_port")
+
+  invite_resp=$(curl -sf -X POST "http://localhost:${in_port}/api/admin/hub/peers/invite" \
+    -H "Authorization: Bearer $in_jwt" \
+    -H "Content-Type: application/json" \
+    -d "{\"ourUrl\":\"${in_url}\",\"inviteeUrl\":\"${out_url}\",\"expiresInSec\":600}")
+  invite=$(echo "$invite_resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['invitation'])")
+
+  accept_resp=$(curl -sf -X POST "http://localhost:${out_port}/api/admin/hub/peers/accept" \
+    -H "Authorization: Bearer $out_jwt" \
+    -H "Content-Type: application/json" \
+    -d "{\"invitation\":\"${invite}\",\"ourUrl\":\"${out_url}\"}")
+  echo "  admitted: $(echo "$accept_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('peerId','?'))")"
+}
+
 # ── Test execution ────────────────────────────────────────────────────────────
 
 echo ""
@@ -161,6 +195,12 @@ echo "==> Checking hub health..."
 wait_http "http://localhost:3011/api/health" "hub-a" 120
 wait_http "http://localhost:3012/api/health" "hub-b" 120
 wait_http "http://localhost:3013/api/health" "hub-c" 120
+
+echo ""
+echo "==> Admitting peers via v5 signed invitations..."
+# Direct admission for two pairs; hub-a discovers hub-c via gossip during sync.
+admit 3011 "http://hub-a:3000" 3012 "http://hub-b:3000"   # a ↔ b
+admit 3012 "http://hub-b:3000" 3013 "http://hub-c:3000"   # b ↔ c
 
 echo ""
 echo "==> Syncing hub-c local library (navidrome-c must scan first)..."
@@ -448,6 +488,165 @@ POUTINE_USER="$SUB_USER" \
 POUTINE_PASS="$SUB_PASS" \
 POUTINE_TARGETS="hub-a=http://localhost:3011,hub-b=http://localhost:3012,hub-c=http://localhost:3013" \
   "$HARNESS_DIR/run.sh"
+
+# ── Peer lifecycle: tombstone gossip propagation (issue #244 Phase 3) ───────
+# Deliberately the LAST scenario: it evicts hub-c from the mesh, so anything
+# running after it (e.g. the py-sonic harness driving all three hubs) would
+# see a degraded federation — hub-c's proxy streams to a/b start failing 403.
+# hub-a evicts hub-c via the admin API. After hub-b's next sync (which
+# gossips hub-a's peer list, now including the tombstone), hub-b must:
+#   - locally tombstone hub-c too (gossiped eviction, not just hub-a's own)
+#   - drop hub-c's content from its merged catalog (same sync's merge step)
+#   - start refusing hub-c's own inbound federation requests with 403
+
+echo ""
+echo "==> Testing tombstone gossip propagation (hub-a evicts hub-c)..."
+
+JWT_B=$(login_only 3012)
+JWT_C=$(login_only 3013)
+
+echo "  Tombstoning hub-c from hub-a..."
+TOMBSTONE_RESP=$(curl -sf -X DELETE "http://localhost:3011/api/admin/hub/peers/poutine-c" \
+  -H "Authorization: Bearer $JWT_A" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"federation test eviction"}')
+if ! echo "$TOMBSTONE_RESP" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['lifecycle'] == 'tombstoned', f'expected tombstoned lifecycle, got {d}'
+print(f'  hub-a tombstone response: {d}')
+"; then
+  echo "ERROR: DELETE peer did not report lifecycle=tombstoned" >&2
+  echo "Response: $TOMBSTONE_RESP" >&2
+  exit 1
+fi
+
+echo "  Triggering a hub-b sync so it gossips the tombstone from hub-a..."
+curl -sf -X POST "http://localhost:3012/api/admin/hub/sync" -H "Authorization: Bearer $JWT_B" > /dev/null
+
+echo "  Verifying hub-b locally tombstoned hub-c after gossip..."
+PEERS_B=$(curl -sf "http://localhost:3012/api/admin/hub/peers" -H "Authorization: Bearer $JWT_B")
+if ! echo "$PEERS_B" | python3 -c "
+import sys, json
+peers = json.load(sys.stdin)
+match = [p for p in peers if p['id'] == 'poutine-c']
+assert match, f'poutine-c missing from hub-b peers: {peers}'
+assert match[0]['lifecycle'] == 'tombstoned', f'hub-b did not gossip the tombstone: {match[0]}'
+print(f'  hub-b now sees poutine-c as: {match[0][\"lifecycle\"]}')
+"; then
+  echo "ERROR: hub-b did not pick up hub-a's tombstone of hub-c via gossip" >&2
+  echo "Response: $PEERS_B" >&2
+  exit 1
+fi
+
+echo "  Verifying hub-c's content dropped out of hub-b's merged catalog..."
+ALBUMS_B=$(curl -sf \
+  "http://localhost:3012/rest/getAlbumList2?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&type=alphabeticalByName&size=500")
+if ! echo "$ALBUMS_B" | python3 -c "
+import sys, json
+albums = [a['name'] for a in json.load(sys.stdin)['subsonic-response'].get('albumList2', {}).get('album', [])]
+assert 'Third Album' not in albums, f'hub-c content still present on hub-b after tombstone gossip: {albums}'
+print('  hub-b albums after tombstone: ' + ', '.join(sorted(albums)))
+"; then
+  echo "ERROR: hub-c content did not disappear from hub-b's catalog after tombstone gossip" >&2
+  echo "Response: $ALBUMS_B" >&2
+  exit 1
+fi
+
+echo "  Verifying hub-c's own sync against hub-b now fails (403, refused peer)..."
+SYNC_C=$(curl -s -X POST "http://localhost:3013/api/admin/hub/sync" -H "Authorization: Bearer $JWT_C")
+if ! echo "$SYNC_C" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+peers = d.get('peers', [])
+match = [p for p in peers if p.get('instanceId') == 'poutine-b']
+assert match, f'no peer sync report for poutine-b in hub-c sync response: {d}'
+p = match[0]
+assert p.get('errors'), f'expected hub-c sync against tombstoned hub-b to fail: {p}'
+print(f'  hub-c sync against hub-b failed as expected: {p[\"errors\"]}')
+"; then
+  echo "ERROR: hub-c was not refused by hub-b after the tombstone propagated" >&2
+  echo "Response: $SYNC_C" >&2
+  exit 1
+fi
+
+# ── Peer lifecycle: re-admission (issue #244 Phase 3) ────────────────────────
+# hub-a re-invites hub-c. The fresh invitation postdates the tombstone, so:
+#   - hub-a's handshake clears its own tombstone and re-admits hub-c
+#   - hub-b's next gossip from hub-a sees the postdated invitation, clears
+#     ITS tombstone too (convergence — the stale tombstone must not win),
+#     and hub-c's kept content rows re-enter hub-b's merged catalog
+#   - hub-c's sync against hub-b succeeds again
+
+echo ""
+echo "==> Testing re-admission (hub-a re-invites hub-c)..."
+
+echo "  Re-admitting via a fresh invitation (issued after the tombstone)..."
+sleep 1  # invitation issued_at must strictly postdate the tombstone created_at
+admit 3011 "http://hub-a:3000" 3013 "http://hub-c:3000"
+
+echo "  Verifying hub-a re-admitted hub-c as active..."
+PEERS_A=$(curl -sf "http://localhost:3011/api/admin/hub/peers" -H "Authorization: Bearer $JWT_A")
+if ! echo "$PEERS_A" | python3 -c "
+import sys, json
+peers = json.load(sys.stdin)
+match = [p for p in peers if p['id'] == 'poutine-c']
+assert match, f'poutine-c missing from hub-a peers: {peers}'
+assert match[0]['lifecycle'] == 'active', f'hub-a did not re-admit poutine-c: {match[0]}'
+print('  hub-a sees poutine-c as active again')
+"; then
+  echo "ERROR: hub-a did not re-admit hub-c after the fresh invitation" >&2
+  echo "Response: $PEERS_A" >&2
+  exit 1
+fi
+
+echo "  Triggering a hub-b sync so gossip clears its tombstone via the postdated invitation..."
+curl -sf -X POST "http://localhost:3012/api/admin/hub/sync" -H "Authorization: Bearer $JWT_B" > /dev/null
+
+echo "  Verifying hub-b re-admitted hub-c and restored its content..."
+PEERS_B=$(curl -sf "http://localhost:3012/api/admin/hub/peers" -H "Authorization: Bearer $JWT_B")
+if ! echo "$PEERS_B" | python3 -c "
+import sys, json
+peers = json.load(sys.stdin)
+match = [p for p in peers if p['id'] == 'poutine-c']
+assert match, f'poutine-c missing from hub-b peers: {peers}'
+assert match[0]['lifecycle'] == 'active', f'hub-b did not clear its tombstone via gossip: {match[0]}'
+print('  hub-b sees poutine-c as active again')
+"; then
+  echo "ERROR: hub-b did not re-admit hub-c via gossip after the re-invitation" >&2
+  echo "Response: $PEERS_B" >&2
+  exit 1
+fi
+
+ALBUMS_B=$(curl -sf \
+  "http://localhost:3012/rest/getAlbumList2?u=${SUB_USER}&p=${SUB_PASS}&c=fed-test&v=1.14.0&f=json&type=alphabeticalByName&size=500")
+if ! echo "$ALBUMS_B" | python3 -c "
+import sys, json
+albums = [a['name'] for a in json.load(sys.stdin)['subsonic-response'].get('albumList2', {}).get('album', [])]
+assert 'Third Album' in albums, f'hub-c content did not return to hub-b after re-admission: {albums}'
+print('  hub-b albums after re-admission: ' + ', '.join(sorted(albums)))
+"; then
+  echo "ERROR: hub-c content did not return to hub-b's catalog after re-admission" >&2
+  echo "Response: $ALBUMS_B" >&2
+  exit 1
+fi
+
+echo "  Verifying hub-c's sync against hub-b succeeds again..."
+SYNC_C=$(curl -s -X POST "http://localhost:3013/api/admin/hub/sync" -H "Authorization: Bearer $JWT_C")
+if ! echo "$SYNC_C" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+peers = d.get('peers', [])
+match = [p for p in peers if p.get('instanceId') == 'poutine-b']
+assert match, f'no peer sync report for poutine-b in hub-c sync response: {d}'
+p = match[0]
+assert not p.get('errors'), f'hub-c sync against hub-b still failing after re-admission: {p}'
+print('  hub-c sync against hub-b succeeds again')
+"; then
+  echo "ERROR: hub-c still refused by hub-b after re-admission" >&2
+  echo "Response: $SYNC_C" >&2
+  exit 1
+fi
 
 echo ""
 echo "==> All assertions passed!"

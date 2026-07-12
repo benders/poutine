@@ -78,6 +78,17 @@ describe("Subsonic routes — auth", () => {
     expect(body["subsonic-response"].status).toBe("ok");
   });
 
+  it("ping with no f= param → defaults to XML (Subsonic spec)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/ping?u=tester&p=secret",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/application\/xml/);
+    expect(res.body).toMatch(/^<\?xml/);
+    expect(res.body).toContain('status="ok"');
+  });
+
   it("ping with f=xml → XML content-type and correct envelope", async () => {
     const res = await app.inject({
       method: "GET",
@@ -183,6 +194,44 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"].genres).toHaveProperty("genre");
   });
 
+  it("getUser → returns authenticated user with admin roles", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getUser?u=tester&p=secret&f=json",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    expect(body["subsonic-response"].user.username).toBe("tester");
+    expect(body["subsonic-response"].user.adminRole).toBe(true);
+    expect(body["subsonic-response"].user.streamRole).toBe(true);
+  });
+
+  it("getUser.view (Feishin style) → ok", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getUser.view?u=tester&p=secret&f=json&username=tester",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    expect(body["subsonic-response"].user.username).toBe("tester");
+  });
+
+  it("getUser as non-admin requesting other user → error 50", async () => {
+    const enc = setPassword("pw2", app.passwordKey);
+    app.db
+      .prepare("INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, 0)")
+      .run("user-2", "alice", enc);
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getUser?u=alice&p=pw2&f=json&username=tester",
+    });
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("failed");
+    expect(body["subsonic-response"].error.code).toBe(50);
+  });
+
   it("getLicense → valid license", async () => {
     const res = await app.inject({
       method: "GET",
@@ -192,6 +241,51 @@ describe("Subsonic routes — endpoints", () => {
     const body = res.json();
     expect(body["subsonic-response"].status).toBe("ok");
     expect(body["subsonic-response"].license.valid).toBe(true);
+  });
+
+  it("getOpenSubsonicExtensions → lists transcodeOffset (authed JSON)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getOpenSubsonicExtensions?u=tester&p=secret&f=json",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    const exts = body["subsonic-response"].openSubsonicExtensions as Array<{
+      name: string;
+      versions: number[];
+    }>;
+    expect(Array.isArray(exts)).toBe(true);
+    const offset = exts.find((e) => e.name === "transcodeOffset");
+    expect(offset).toBeDefined();
+    expect(offset?.versions).toEqual([1]);
+    // formPost is deliberately NOT advertised (no form-body parser).
+    expect(exts.find((e) => e.name === "formPost")).toBeUndefined();
+  });
+
+  it("getOpenSubsonicExtensions → callable WITHOUT credentials (spec)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getOpenSubsonicExtensions?f=json",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    expect(
+      (body["subsonic-response"].openSubsonicExtensions as unknown[]).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("getOpenSubsonicExtensions → XML nests <versions> under named extension", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getOpenSubsonicExtensions.view?f=xml",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("xml");
+    expect(res.body).toContain(
+      '<openSubsonicExtensions name="transcodeOffset"><versions>1</versions></openSubsonicExtensions>',
+    );
   });
 
   it("getMusicFolders → one folder per known instance", async () => {
@@ -228,6 +322,59 @@ describe("Subsonic routes — endpoints", () => {
     const body = res.json();
     expect(body["subsonic-response"].status).toBe("ok");
     expect(body["subsonic-response"]).toHaveProperty("indexes");
+  });
+
+  it("getArtists / getIndexes exclude artists with no release group of their own", async () => {
+    // Album-artist 'a1' (one release group), track-only-credit 'a3' (no
+    // release group of their own — featured on a1's release).
+    app.db
+      .prepare(
+        `INSERT INTO unified_artists (id, name, name_normalized) VALUES
+           ('a1', 'Album Artist', 'album artist'),
+           ('a3', 'Featured Only', 'featured only')`,
+      )
+      .run();
+    app.db
+      .prepare(
+        `INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, year)
+         VALUES ('rg1', 'The Album', 'the album', 'a1', 2020)`,
+      )
+      .run();
+    app.db
+      .prepare(
+        `INSERT INTO unified_releases (id, release_group_id, name)
+         VALUES ('r1', 'rg1', 'The Album')`,
+      )
+      .run();
+    app.db
+      .prepare(
+        `INSERT INTO unified_tracks (id, title, title_normalized, release_id, artist_id, track_number)
+         VALUES ('t1', 'Solo Track', 'solo track', 'r1', 'a1', 1),
+                ('t2', 'Guest Spot', 'guest spot', 'r1', 'a3', 2)`,
+      )
+      .run();
+
+    const flatten = (indexes: Array<{ artist?: unknown }>) =>
+      indexes.flatMap((i) => {
+        const a = i.artist;
+        return Array.isArray(a) ? a : a ? [a] : [];
+      }) as Array<{ name: string }>;
+
+    const a = await app.inject({
+      method: "GET",
+      url: "/rest/getArtists?u=tester&p=secret&f=json",
+    });
+    const aNames = flatten(a.json()["subsonic-response"].artists.index ?? []).map((x) => x.name);
+    expect(aNames).toContain("Album Artist");
+    expect(aNames).not.toContain("Featured Only");
+
+    const i = await app.inject({
+      method: "GET",
+      url: "/rest/getIndexes?u=tester&p=secret&f=json",
+    });
+    const iNames = flatten(i.json()["subsonic-response"].indexes.index ?? []).map((x) => x.name);
+    expect(iNames).toContain("Album Artist");
+    expect(iNames).not.toContain("Featured Only");
   });
 
   it("getArtist with unknown id → error 70", async () => {
@@ -335,6 +482,50 @@ describe("Subsonic routes — endpoints", () => {
     expect(body["subsonic-response"].error.code).toBe(70);
   });
 
+  it("getAlbum song carries albumArtist/albumArtistId from release group (#138)", async () => {
+    // Album artist ≠ track artist (e.g. compilation or "feat." track).
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("ua-album", "Album Artist", "album artist");
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("ua-track", "Featured Artist", "featured artist");
+    app.db
+      .prepare(
+        "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id) VALUES (?, ?, ?, ?)",
+      )
+      .run("rg-138", "Comp Album", "comp album", "ua-album");
+    app.db
+      .prepare(
+        "INSERT INTO unified_releases (id, release_group_id, name) VALUES (?, ?, ?)",
+      )
+      .run("rel-138", "rg-138", "Comp Album");
+    app.db
+      .prepare(
+        `INSERT INTO unified_tracks
+          (id, release_id, artist_id, title, title_normalized)
+          VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("tr-138", "rel-138", "ua-track", "Featured Track", "featured track");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getAlbum?u=tester&p=secret&f=json&id=alrg-138",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body["subsonic-response"].status).toBe("ok");
+    const song = body["subsonic-response"].album.song[0];
+    expect(song.artist).toBe("Featured Artist");
+    expect(song.artistId).toBe("arua-track");
+    expect(song.albumArtist).toBe("Album Artist");
+    expect(song.albumArtistId).toBe("arua-album");
+  });
+
   it("getPlaylists → ok with empty playlist array", async () => {
     const res = await app.inject({
       method: "GET",
@@ -422,6 +613,27 @@ describe("Subsonic routes — endpoints", () => {
       url: "/rest/search3?u=tester&p=secret&f=json&query=mbid-artist-aaaa",
     });
     expect(byMbid.json()["subsonic-response"].searchResult3.artist).toHaveLength(1);
+  });
+
+  it("search3 returns coverArt for an artist with an image_url", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized, image_url) VALUES (?, ?, ?, ?)",
+      )
+      .run(
+        "artist-art-1",
+        "Cover Artist",
+        "cover artist",
+        "https://example.com/art.jpg",
+      );
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/search3?u=tester&p=secret&f=json&query=cover artist",
+    });
+    const artist = res.json()["subsonic-response"].searchResult3.artist[0];
+    expect(artist.name).toBe("Cover Artist");
+    expect(artist.coverArt).toBe("https://example.com/art.jpg");
   });
 
   it("search3 matches album by internal id and MusicBrainz id", async () => {
@@ -670,6 +882,46 @@ describe("Subsonic routes — endpoints", () => {
     });
     const allAlbums = all.json()["subsonic-response"].albumList2.album as Array<{ name: string }>;
     expect(allAlbums.map((a) => a.name).sort()).toEqual(["Peer Only", "Share Album"]);
+  });
+
+  it("getAlbumList2 type=newest orders by created_at DESC and exposes `created` (#148)", async () => {
+    app.db
+      .prepare(
+        "INSERT INTO unified_artists (id, name, name_normalized) VALUES (?, ?, ?)",
+      )
+      .run("ua-rec", "Recent Artist", "recent artist");
+
+    // Insert with explicit created_at so the test is deterministic.
+    const ins = app.db.prepare(
+      "INSERT INTO unified_release_groups (id, name, name_normalized, artist_id, created_at) VALUES (?, ?, ?, ?, ?)",
+    );
+    ins.run("urg-old",   "Old Album",   "old album",   "ua-rec", "2024-01-01 00:00:00");
+    ins.run("urg-mid",   "Mid Album",   "mid album",   "ua-rec", "2024-06-01 00:00:00");
+    ins.run("urg-new",   "New Album",   "new album",   "ua-rec", "2025-01-01 00:00:00");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/rest/getAlbumList2?u=tester&p=secret&f=json&type=newest&size=10",
+    });
+    expect(res.statusCode).toBe(200);
+    const albums = res.json()["subsonic-response"].albumList2.album as Array<{
+      name: string;
+      created?: string;
+    }>;
+    // Only assert relative order of the three we seeded; other seed fixtures
+    // may add albums with their own created_at.
+    const seeded = albums.filter((a) =>
+      ["Old Album", "Mid Album", "New Album"].includes(a.name),
+    );
+    expect(seeded.map((a) => a.name)).toEqual([
+      "New Album",
+      "Mid Album",
+      "Old Album",
+    ]);
+    // OpenSubsonic `created` must be an ISO 8601 timestamp.
+    for (const a of seeded) {
+      expect(a.created).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    }
   });
 
   it("search3 with unknown remote_id returns no results", async () => {

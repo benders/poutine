@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ErrorMessage, formatError } from "./ErrorMessage";
+import { ErrorMessage } from "./ErrorMessage";
+import { formatError } from "./formatError";
 import { SubsonicError } from "@/lib/subsonic";
 
 describe("formatError", () => {
