@@ -101,6 +101,18 @@ export function createRequirePeerAuth(deps: {
       return;
     }
 
+    // #244: peers that are locally disabled or tombstoned are refused inbound
+    // (this gate covers both /federation/* and /proxy/*, since both mount
+    // requirePeerAuth). Deliberately AFTER signature verification: only the
+    // peer actually holding the key learns it has been disabled — an
+    // unauthenticated probe naming a non-active instance id gets the same
+    // 401s as any other unsigned request. Uniform 403 body — the caller must
+    // not distinguish "disabled" from "tombstoned" from the response.
+    if (peer.lifecycle !== "active") {
+      reply.code(403).send({ error: "forbidden" });
+      return;
+    }
+
     request.peer = { id: instanceId, userAssertion };
   };
 }

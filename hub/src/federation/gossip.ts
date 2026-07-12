@@ -45,6 +45,23 @@ export interface GossipResult {
 export type IngestOutcome = "added" | "alreadyKnown" | "rejected";
 
 /**
+ * #244: true if `instanceId` is tombstoned — either it has a row in
+ * `peer_tombstones`, or we still hold an `instances` row for it with
+ * `lifecycle = 'tombstoned'`. Minimal local-only check; full tombstone
+ * semantics (signed records propagated cluster-wide) are Phase 3.
+ */
+function isLocallyTombstoned(db: Database.Database, instanceId: string): boolean {
+  const tombstoned = db
+    .prepare("SELECT 1 FROM peer_tombstones WHERE instance_id = ?")
+    .get(instanceId);
+  if (tombstoned) return true;
+  const row = db
+    .prepare("SELECT lifecycle FROM instances WHERE id = ?")
+    .get(instanceId) as { lifecycle: string } | undefined;
+  return row?.lifecycle === "tombstoned";
+}
+
+/**
  * Validate a single gossip entry and insert it into `instances` if new.
  *
  * Does NOT call `registry.reload()` — callers that batch entries should reload
@@ -70,6 +87,15 @@ export function ingestGossipEntry(
   // Cheap id-check first: if we already know this peer there's nothing to do,
   // and validating an entry we'd throw away wastes log-warn noise.
   if (typeof e.id === "string" && knownIds.has(e.id)) return "alreadyKnown";
+
+  // #244: refuse to re-introduce an instance id we've locally evicted. An
+  // evicted peer must not silently come back just because some other hub
+  // still gossips it. Checked before signature verification — cheap and the
+  // outcome (rejected) is identical either way.
+  if (typeof e.id === "string" && isLocallyTombstoned(db, e.id)) {
+    log?.info?.(`${sourceLabel}: suppressed re-introduction of tombstoned peer ${e.id}`);
+    return "rejected";
+  }
   if (
     typeof e.id !== "string" ||
     typeof e.url !== "string" ||
@@ -94,6 +120,15 @@ export function ingestGossipEntry(
     p.inviter_public_key !== e.inviter_public_key
   ) {
     log?.warn?.(`${sourceLabel}: entry ${e.id} inviter fields do not match payload`);
+    return "rejected";
+  }
+
+  // #244: an inviter we've locally tombstoned must not be allowed to grow
+  // the mesh — an evicted hub could otherwise keep vouching for new peers.
+  // Disabled inviters are NOT rejected here: disabled is local-only policy,
+  // not a trust revocation, so their invitations still verify.
+  if (isLocallyTombstoned(db, p.inviter_id)) {
+    log?.warn?.(`${sourceLabel}: entry ${e.id} rejected — inviter ${p.inviter_id} is locally tombstoned`);
     return "rejected";
   }
 

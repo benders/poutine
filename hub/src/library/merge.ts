@@ -26,8 +26,14 @@ export function mergeLibraries(db: Database.Database): void {
 
     // ── Step 1: Merge Artists ──────────────────────────────────────────────
 
+    // #244: rows from disabled/tombstoned instances are excluded from merge
+    // (they stay in instance_* — re-enable is instant, no re-sync needed).
+    // The 'local' row has no explicit lifecycle filter concern: it defaults
+    // to 'active' and is never itself disabled/tombstoned.
     const instanceArtists = db
-      .prepare("SELECT * FROM instance_artists")
+      .prepare(
+        "SELECT ia.* FROM instance_artists ia WHERE ia.instance_id IN (SELECT id FROM instances WHERE lifecycle = 'active')",
+      )
       .all() as Array<Record<string, unknown>>;
 
     // Group by MBID first, then by normalized name
@@ -167,8 +173,11 @@ export function mergeLibraries(db: Database.Database): void {
 
     // ── Step 2: Merge Release Groups ────────────────────────────────────────
 
+    // #244: same active-instance filter as instanceArtists above.
     const instanceAlbums = db
-      .prepare("SELECT * FROM instance_albums")
+      .prepare(
+        "SELECT ia.* FROM instance_albums ia WHERE ia.instance_id IN (SELECT id FROM instances WHERE lifecycle = 'active')",
+      )
       .all() as Array<Record<string, unknown>>;
 
     const insertReleaseGroup = db.prepare(`
@@ -449,8 +458,11 @@ export function mergeLibraries(db: Database.Database): void {
 
     // ── Step 4: Merge Tracks ────────────────────────────────────────────────
 
+    // #244: same active-instance filter as instanceArtists above.
     const instanceTracks = db
-      .prepare("SELECT * FROM instance_tracks")
+      .prepare(
+        "SELECT it.* FROM instance_tracks it WHERE it.instance_id IN (SELECT id FROM instances WHERE lifecycle = 'active')",
+      )
       .all() as Array<Record<string, unknown>>;
 
     // Build a normalized-name → unified_artist_id map from artists created in

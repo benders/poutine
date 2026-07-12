@@ -154,6 +154,9 @@ export class AutoSyncService {
     let anySynced = false;
     try {
       for (const peer of this.peerDeps.peerRegistry.peers.values()) {
+        // #244: skip disabled/tombstoned peers before the health check so we
+        // stop touching them entirely — no /api/health probe, no sync.
+        if (peer.lifecycle !== "active") continue;
         try {
           const alive = await this.peerHealthCheck(peer);
           if (!alive) continue;

@@ -90,6 +90,8 @@ If a new Player file is added (e.g. another route or service), extend the `playe
 
 Peers stored in `instances` (DB-authoritative since v0.5.0 / federation v5), authenticated by Ed25519 pubkey. Every `/federation/*` and `/proxy/*` request is signed.
 
+**Peer lifecycle (issue #244, Phase 1).** `instances.lifecycle` (`active` | `disabled` | `tombstoned`) is admission state, kept deliberately separate from `instances.status` (`online`/`offline`/`degraded`), which is liveness churned constantly by health checks and auto-sync — never conflate the two. `active` is the default; `disabled` is reversible local-only policy (stops syncing from, proxying to, and accepting requests from the peer); `tombstoned` marks an evicted peer (Phase 3 gossips the eviction — this phase only enforces it locally, via `peer_tombstones` + the column). Enforcement points: `peer-auth.ts` rejects non-active peers inbound with a uniform `403 {error:"forbidden"}` (covers both `/federation/*` and `/proxy/*`); `sync.ts`/`auto-sync.ts` skip non-active peers before any health check or sync operation; `merge.ts` excludes non-active instances' rows from the three `instance_*` reads (rows are kept, not deleted — re-enabling a peer needs no re-sync, the next merge just re-includes it with the same deterministic ids); `gossip.ts` refuses to re-introduce a locally tombstoned instance id and rejects any entry whose inviter is locally tombstoned (disabled inviters remain trusted — disabled is local policy, not a trust revocation).
+
 - No central registry; small trusted networks (4–12).
 - Stable instance ID + long-lived Ed25519 keypair per hub.
 - Admission: one signed invitation (issue → accept → gossip propagates).

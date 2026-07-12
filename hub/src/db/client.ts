@@ -307,6 +307,39 @@ function migratePlaylistTracks(db: Database.Database): void {
   `);
 }
 
+/**
+ * Issue #244: peer lifecycle state (active/disabled/tombstoned), orthogonal
+ * to the pre-existing liveness `status` column. Additive columns on
+ * `instances` plus the new `peer_tombstones` table (idempotent CREATE, so
+ * fresh DBs already carrying it from schema.sql are unaffected).
+ */
+function migrateInstancesLifecycle(db: Database.Database): void {
+  const cols = db
+    .prepare("PRAGMA table_info(instances)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("lifecycle")) {
+    logMigration("Adding lifecycle column to instances table");
+    db.exec(
+      "ALTER TABLE instances ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'",
+    );
+  }
+  if (!names.has("lifecycle_changed_at")) {
+    logMigration("Adding lifecycle_changed_at column to instances table");
+    db.exec("ALTER TABLE instances ADD COLUMN lifecycle_changed_at TEXT");
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS peer_tombstones (
+      instance_id TEXT PRIMARY KEY,
+      removed_by TEXT NOT NULL,
+      reason TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      signature TEXT NOT NULL
+    );
+  `);
+}
+
 export function createDatabase(dbPath: string): Database.Database {
   // Ensure the directory exists
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -344,6 +377,9 @@ export function createDatabase(dbPath: string): Database.Database {
 
   // Issue #242: drop playlist_tracks' unified_track_id FK (CASCADE hazard)
   migratePlaylistTracks(db);
+
+  // Issue #244: add instances.lifecycle/lifecycle_changed_at + peer_tombstones
+  migrateInstancesLifecycle(db);
 
   return db;
 }
