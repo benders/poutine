@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS instance_tracks (
   sampling_rate INTEGER,              -- Hz (44100, 48000, 96000, …) — #199 Sonos hi-res gate
   bit_depth INTEGER,                  -- bits per sample (16, 24); lossy reports 0
   channel_count INTEGER,              -- 1 (mono), 2 (stereo), 6 (5.1), …
+  path TEXT,                          -- library-relative file path from source Navidrome (#252)
   UNIQUE(instance_id, remote_id)
 );
 

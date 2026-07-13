@@ -73,6 +73,9 @@ interface NavidromeSong {
   samplingRate?: number;
   bitDepth?: number;
   channelCount?: number;
+  // #252: library-relative file path (e.g. "Artist/Album/05 - Track.mp3").
+  // Absent on older Navidrome and peer-federated tracks — degrades to NULL.
+  path?: string;
 }
 
 // ── Simple semaphore ──────────────────────────────────────────────────────────
@@ -258,8 +261,8 @@ export async function readNavidromeViaProxy(
   `);
 
   const upsertTrack = db.prepare(`
-    INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, bitrate, format, size, musicbrainz_id, year, genre, sampling_rate, bit_depth, channel_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, bitrate, format, size, musicbrainz_id, year, genre, sampling_rate, bit_depth, channel_count, path)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(instance_id, remote_id) DO UPDATE SET
       album_id = excluded.album_id,
       title = excluded.title,
@@ -275,7 +278,8 @@ export async function readNavidromeViaProxy(
       genre = excluded.genre,
       sampling_rate = excluded.sampling_rate,
       bit_depth = excluded.bit_depth,
-      channel_count = excluded.channel_count
+      channel_count = excluded.channel_count,
+      path = excluded.path
   `);
 
   // Track seen IDs for stale-data cleanup
@@ -465,6 +469,7 @@ export async function readNavidromeViaProxy(
               song.samplingRate ?? null,
               song.bitDepth ?? null,
               song.channelCount ?? null,
+              song.path ?? null,
             );
             seenTrackRemoteIds.add(song.id);
             result.trackCount++;

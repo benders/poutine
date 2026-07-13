@@ -181,6 +181,14 @@ function ensureColumns(db: Database.Database): void {
       db.exec(`ALTER TABLE track_sources ADD COLUMN ${col} INTEGER`);
     }
   }
+
+  // #252: library-relative file path ingested from the source Navidrome.
+  // Nullable — older rows and peers that predate this field stay NULL until
+  // the next sync pass repopulates them.
+  if (!instanceTrackColNames.has("path")) {
+    logMigration("Adding path column to instance_tracks table");
+    db.exec("ALTER TABLE instance_tracks ADD COLUMN path TEXT");
+  }
 }
 
 /**
