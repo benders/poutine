@@ -73,10 +73,21 @@ interface NavidromeSong {
   samplingRate?: number;
   bitDepth?: number;
   channelCount?: number;
-  // #252: library-relative file path (e.g. "Artist/Album/05 - Track.mp3").
-  // Absent on older Navidrome and peer-federated tracks — degrades to NULL.
+  // #252: file path as reported by the source Navidrome. Real absolute path
+  // (e.g. "/music/Incoming/comp2020/01 - Track.flac") when the source runs
+  // ND_SUBSONIC_DEFAULTREPORTREALPATH=true; a tag-derived virtual path
+  // ("Artist/Album/Title.ext", no folder signal) otherwise. Absent on older
+  // peers — degrades to NULL.
   path?: string;
 }
+
+// Subsonic client name for sync requests. Bumped from "poutine-sync" in #252:
+// Navidrome keys player records by (user, client, user-agent) and pins
+// per-player settings — including reportRealPath — at record creation, so
+// ND_SUBSONIC_DEFAULTREPORTREALPATH=true never reaches a pre-existing player.
+// A fresh client name forces a new player record that inherits the flag,
+// making real-path reporting deterministic on upgraded deployments.
+const SYNC_CLIENT_NAME = "poutine-sync-rp";
 
 // ── Simple semaphore ──────────────────────────────────────────────────────────
 
@@ -138,7 +149,7 @@ export function createLocalProxyFetch(opts: {
     url.searchParams.set("t", token);
     url.searchParams.set("s", salt);
     url.searchParams.set("v", "1.16.1");
-    url.searchParams.set("c", "poutine-sync");
+    url.searchParams.set("c", SYNC_CLIENT_NAME);
     url.searchParams.set("f", "json");
 
     return fetch(url.toString(), {
@@ -212,7 +223,7 @@ export async function readNavidromeViaProxy(
 
   async function proxyJson(path: string): Promise<Record<string, unknown>> {
     const sep = path.includes("?") ? "&" : "?";
-    const url = `${path}${sep}f=json&v=1.16.1&c=poutine-sync`;
+    const url = `${path}${sep}f=json&v=1.16.1&c=${SYNC_CLIENT_NAME}`;
     const res = await proxyFetch(url);
     const contentLength = res.headers.get("content-length");
     const sizeLabel = contentLength ? `${contentLength}B` : "?B";

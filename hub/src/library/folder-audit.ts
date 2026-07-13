@@ -59,8 +59,10 @@ function isSentinel(albumName: string): boolean {
   return SENTINEL_NAMES.has(albumName.trim().toLowerCase());
 }
 
-// dirname of a library-relative path: text before the last "/". A path with
-// no "/" (a bare filename) groups under "".
+// dirname of a Navidrome-reported path: text before the last "/". A path with
+// no "/" (a bare filename) groups under "". Works for both real absolute
+// paths and tag-derived virtual paths — the latter simply carry no folder
+// signal (see docs/hub-internals.md "Data quality: folder audit").
 function folderOf(path: string): string {
   const idx = path.lastIndexOf("/");
   return idx === -1 ? "" : path.slice(0, idx);

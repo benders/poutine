@@ -61,6 +61,14 @@ services:
       # discarded rather than reattached. Poutine tracks plays via its own
       # activity service, so this is acceptable.
       - ND_SCANNER_PURGEMISSING=always
+      # Report real on-disk paths (not tag-derived virtual paths) in Subsonic
+      # responses so the hub's folder audit (#252) can detect untagged
+      # compilations split into per-artist [Unknown Album] entries. Caveat:
+      # this default is pinned into Navidrome player records at creation, so
+      # it only reaches players created AFTER the flag — the hub's sync client
+      # name was bumped (poutine-sync-rp) to force a fresh player record.
+      # See docs/pitfalls.md (Navidrome ops).
+      - ND_SUBSONIC_DEFAULTREPORTREALPATH=true
       # Auto-create the "admin" user on first boot using the same credential
       # the hub uses to connect. Username is always "admin" with this method.
       # In Navidrome 0.52+, the internal config key is DevAutoCreateAdminPassword

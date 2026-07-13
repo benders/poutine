@@ -96,6 +96,7 @@ Full flow: [authentication.md](authentication.md).
 | Using `ND_INITIALADMINPASSWORD` to seed the admin user                                              | memory    | No-op in Navidrome 0.52+. Use `ND_DEVAUTOCREATEADMINPASSWORD`                                                                     |
 | Forgetting to log a warning when local `instance_tracks` count drops materially between syncs       | #159      | Early signal that the music volume disappeared — keep the warning if you touch sync metrics                                       |
 | Wiring k8s / LB probes to `/api/health` HTTP status                                                  | #178      | Always returns 200 (so federation handshake survives a Navidrome blip). Key probes on `body.status === "ok"` instead              |
+| Expecting `song.path` in Subsonic responses to be the on-disk path                                   | #252      | Default is a tag-derived **virtual** path (`Artist/Album/Title.ext`) — zero folder signal. Real paths need `ND_SUBSONIC_DEFAULTREPORTREALPATH=true`, and that default is **pinned per player record** (keyed user+client+UA) at creation — flipping the flag never reaches existing players. Poutine's sync client name is versioned (`poutine-sync-rp`) precisely to mint a fresh player; bump it again if the flag semantics ever change |
 
 ## Sonos cast
 

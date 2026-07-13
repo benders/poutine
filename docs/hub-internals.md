@@ -168,8 +168,8 @@ split across several per-artist `[Unknown Album]` entries because the files carr
 no album tag.
 
 - **`runFolderAudit(db)`** (`hub/src/library/folder-audit.ts`): pure and read-only.
-  Groups `instance_tracks` by `(instance_id, dirname(path))` (path is the
-  library-relative file path from #252), finds folders spanning ≥ 2
+  Groups `instance_tracks` by `(instance_id, dirname(path))` (path is whatever
+  the source Navidrome reports — see below), finds folders spanning ≥ 2
   `instance_albums`, and proposes a regroup **only** when ≥ 2 of those albums are
   sentinel-named (`[unknown album]` / `unknown album` / empty, case-insensitive).
   Non-sentinel multi-album folders (multi-disc layouts, artist folders) are
@@ -183,6 +183,15 @@ no album tag.
   zero catalog changes and never touches `merge.ts`. Automatic regrouping is out
   of scope: rewriting album identity churns deterministic ids (see
   [pitfalls.md](pitfalls.md) "Merge / unified IDs").
+- **Path quality depends on the source Navidrome.** With
+  `ND_SUBSONIC_DEFAULTREPORTREALPATH=true` (set in `docker-compose.yml` since
+  #252) paths are real absolute container paths (`/music/…`) and folder
+  detection works. Without it Navidrome serves tag-derived **virtual** paths
+  (`Artist/Album/Title.ext`) whose dirname is just (artist, album) — no folder
+  signal, so the audit degrades to "no clusters", never false proposals. Peers
+  report real paths only once they deploy the flag + re-sync. The default is
+  pinned per Navidrome player record at creation — hence the sync client name
+  bump to `poutine-sync-rp` (see [pitfalls.md](pitfalls.md) "Navidrome ops").
 
 ## Share IDs
 
