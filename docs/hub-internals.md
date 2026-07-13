@@ -190,8 +190,10 @@ no album tag.
   (`Artist/Album/Title.ext`) whose dirname is just (artist, album) — no folder
   signal, so the audit degrades to "no clusters", never false proposals. Peers
   report real paths only once they deploy the flag + re-sync. The default is
-  pinned per Navidrome player record at creation — hence the sync client name
-  bump to `poutine-sync-rp` (see [pitfalls.md](pitfalls.md) "Navidrome ops").
+  pinned per Navidrome player record at creation — hence the client name bumps
+  to `poutine-sync-rp` (local sync) and `poutine-proxy-rp` (the `/proxy`
+  identity that peers' syncs actually hit — the proxy overwrites `c` and drops
+  the caller's UA). See [pitfalls.md](pitfalls.md) "Navidrome ops".
 
 ## Share IDs
 

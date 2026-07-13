@@ -65,8 +65,9 @@ services:
       # responses so the hub's folder audit (#252) can detect untagged
       # compilations split into per-artist [Unknown Album] entries. Caveat:
       # this default is pinned into Navidrome player records at creation, so
-      # it only reaches players created AFTER the flag — the hub's sync client
-      # name was bumped (poutine-sync-rp) to force a fresh player record.
+      # it only reaches players created AFTER the flag — the hub's client
+      # names were bumped (poutine-sync-rp for local sync, poutine-proxy-rp
+      # for peer-facing proxy reads) to force fresh player records.
       # See docs/pitfalls.md (Navidrome ops).
       - ND_SUBSONIC_DEFAULTREPORTREALPATH=true
       # Auto-create the "admin" user on first boot using the same credential
