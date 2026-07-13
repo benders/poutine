@@ -37,6 +37,8 @@ beforeEach(() => {
     volume: 0.8,
     castVolume: 50,
     castVolumeCap: 50,
+    prevVolume: null,
+    prevCastVolume: null,
   });
 });
 
@@ -106,6 +108,51 @@ describe("PlayerBar render stability", () => {
 
     const sameImg = container.querySelector("img");
     expect(sameImg!.getAttribute("src")).toBe(firstSrc);
+  });
+});
+
+describe("PlayerBar local speaker button (#207)", () => {
+  function renderBar() {
+    return render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter></QueryClientProvider>,
+    );
+  }
+
+  it("mute then unmute restores the previous volume", () => {
+    usePlayer.setState({
+      queue: [track("trk-1")],
+      currentIndex: 0,
+      volume: 0.36,
+    });
+    const { getByRole } = renderBar();
+
+    act(() => {
+      fireEvent.click(getByRole("button", { name: "Mute" }));
+    });
+    expect(usePlayer.getState().volume).toBe(0);
+
+    act(() => {
+      fireEvent.click(getByRole("button", { name: "Unmute" }));
+    });
+    expect(usePlayer.getState().volume).toBe(0.36);
+  });
+
+  it("unmuting with no remembered level lands at the halfway slider position", () => {
+    // Raw 0.25 — the slider is square-law (position = sqrt(volume)), so 0.25
+    // renders at 50%. Asserting a raw ~0.5 here would be the original bug.
+    usePlayer.setState({
+      queue: [track("trk-1")],
+      currentIndex: 0,
+      volume: 0,
+    });
+    const { getByRole } = renderBar();
+
+    act(() => {
+      fireEvent.click(getByRole("button", { name: "Unmute" }));
+    });
+    expect(usePlayer.getState().volume).toBe(0.25);
   });
 });
 
@@ -203,6 +250,35 @@ describe("PlayerBar cast volume slider", () => {
       vi.advanceTimersByTime(200);
     });
     expect(api.sonosSetVolume).toHaveBeenCalledWith("RINCON_1", 35);
+  });
+
+  it("cast speaker button mutes and unmutes on the device, restoring the previous level (#207)", () => {
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      castVolume: 30,
+      castVolumeCap: 50,
+      queue: [track("trk-1")],
+      currentIndex: 0,
+    });
+
+    const { getByRole } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter></QueryClientProvider>,
+    );
+
+    act(() => {
+      fireEvent.click(getByRole("button", { name: "Mute" }));
+    });
+    expect(usePlayer.getState().castVolume).toBe(0);
+    // Pushed to the device immediately (no debounce on the button).
+    expect(api.sonosSetVolume).toHaveBeenCalledWith("RINCON_1", 0);
+
+    act(() => {
+      fireEvent.click(getByRole("button", { name: "Unmute" }));
+    });
+    expect(usePlayer.getState().castVolume).toBe(30);
+    expect(api.sonosSetVolume).toHaveBeenCalledWith("RINCON_1", 30);
   });
 
   it("stops the previous Sonos device when sink switches to local (#198)", async () => {
