@@ -161,6 +161,29 @@ source of truth for Subsonic `playCount` / `played`.
 - **DLNA:** not wired for play-counts yet (no SPA controller polling the renderer). When DLNA is put back into use it gets its own position-reporting path; it must not resurrect a server-side wall-clock estimate.
 - **Out of scope for v1 (tracked separately):** Navidrome play-history backfill, and federating aggregate counts between peers.
 
+## Data quality: folder audit (#252)
+
+Read-only diagnostic that flags untagged-compilation damage — one source folder
+split across several per-artist `[Unknown Album]` entries because the files carry
+no album tag.
+
+- **`runFolderAudit(db)`** (`hub/src/library/folder-audit.ts`): pure and read-only.
+  Groups `instance_tracks` by `(instance_id, dirname(path))` (path is the
+  library-relative file path from #252), finds folders spanning ≥ 2
+  `instance_albums`, and proposes a regroup **only** when ≥ 2 of those albums are
+  sentinel-named (`[unknown album]` / `unknown album` / empty, case-insensitive).
+  Non-sentinel multi-album folders (multi-disc layouts, artist folders) are
+  reported as informational clusters with `proposal: null`. Excludes non-active
+  instances to match `merge.ts`. NULL-path rows are counted in per-instance
+  coverage and are non-crashing at 0% coverage (older peers are NULL until their
+  next sync). Resolves each album's current `unifiedReleaseGroupId` via
+  `unified_release_sources → unified_releases` for click-through.
+- **`GET /api/admin/hub/data-quality/folder-report`** (`routes/admin.ts`,
+  owner-gated, Hub namespace only): returns the report. **Dry run only** — makes
+  zero catalog changes and never touches `merge.ts`. Automatic regrouping is out
+  of scope: rewriting album identity churns deterministic ids (see
+  [pitfalls.md](pitfalls.md) "Merge / unified IDs").
+
 ## Share IDs
 
 Users copy a "Share ID" for an album or artist from its detail page and paste it into Search on any peer hub that also syncs the same underlying library.
