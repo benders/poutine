@@ -59,6 +59,8 @@ export function PlayerBar() {
     toggleShuffle,
     cycleRepeat,
     sink,
+    toggleMute,
+    toggleCastMute,
   } = usePlayer();
 
   const currentTrack =
@@ -863,9 +865,8 @@ export function PlayerBar() {
               aria-label={castVolume === 0 ? "Unmute" : "Mute"}
               onClick={() => {
                 if (!deviceId) return;
-                const target = castVolume > 0 ? 0 : Math.min(20, castVolumeCap);
+                const target = toggleCastMute();
                 lastCastVolumeDragRef.current = Date.now();
-                setCastVolume(target);
                 void sonosSetVolume(deviceId, target).catch(() => {});
               }}
               className="p-1 text-text-muted hover:text-text-primary transition-colors"
@@ -903,7 +904,7 @@ export function PlayerBar() {
           <>
             <button
               aria-label={volume === 0 ? "Unmute" : "Mute"}
-              onClick={() => setVolume(volume > 0 ? 0 : 0.8)}
+              onClick={() => toggleMute()}
               className="p-1 text-text-muted hover:text-text-primary transition-colors"
             >
               {volume === 0 ? (

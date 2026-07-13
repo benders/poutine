@@ -32,6 +32,13 @@ interface PlayerState {
   castVolume: number;
   /** Authoritative cap from the hub; mirrored to bound the cast slider. */
   castVolumeCap: number;
+  /**
+   * Volume remembered across a mute/unmute cycle (#207). Session-scoped
+   * (not persisted) — a fresh load has nothing to restore, which is fine
+   * since `setVolume`/`setCastVolume` already seed sane defaults.
+   */
+  prevVolume: number | null;
+  prevCastVolume: number | null;
   currentTime: number;
   duration: number;
   shuffle: boolean;
@@ -74,6 +81,21 @@ interface PlayerState {
   setVolume: (volume: number) => void;
   setCastVolume: (level: number) => void;
   setCastVolumeCap: (cap: number) => void;
+  /**
+   * Mute/unmute the local `<audio>` volume, remembering the pre-mute level
+   * so unmuting restores it (#207). Falls back to slider-halfway (raw 0.25,
+   * since the slider is square-law — see PlayerBar) when there's nothing to
+   * restore, or when the remembered value was itself 0.
+   */
+  toggleMute: () => void;
+  /**
+   * Mute/unmute cast volume, remembering the pre-mute level (#207). Returns
+   * the new level so the caller can push it to the Sonos device — the store
+   * doesn't own that side effect. Falls back to `min(20, castVolumeCap)`,
+   * matching the pre-existing unmute default, and clamps a restored value
+   * to the current cap in case it changed while muted.
+   */
+  toggleCastMute: () => number;
   setCurrentTime: (time: number) => void;
   setDuration: (duration: number) => void;
   toggleShuffle: () => void;
@@ -88,6 +110,8 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   volume: parseFloat(localStorage.getItem("volume") || "0.8"),
   castVolume: DEFAULT_SONOS_VOLUME_CAP,
   castVolumeCap: DEFAULT_SONOS_VOLUME_CAP,
+  prevVolume: null,
+  prevCastVolume: null,
   currentTime: 0,
   duration: 0,
   shuffle: false,
@@ -216,6 +240,33 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       // slider position above its own max.
       castVolume: Math.min(state.castVolume, castVolumeCap),
     })),
+  toggleMute: () =>
+    set((state) => {
+      if (state.volume > 0) {
+        localStorage.setItem("volume", "0");
+        return { volume: 0, prevVolume: state.volume };
+      }
+      // Unmute: restore the remembered level, or fall back to slider-halfway
+      // (raw 0.25 under the square-law slider) if there's nothing usable to
+      // restore to (#207).
+      const restored =
+        state.prevVolume && state.prevVolume > 0 ? state.prevVolume : 0.25;
+      localStorage.setItem("volume", String(restored));
+      return { volume: restored, prevVolume: null };
+    }),
+  toggleCastMute: () => {
+    const state = get();
+    if (state.castVolume > 0) {
+      set({ castVolume: 0, prevCastVolume: state.castVolume });
+      return 0;
+    }
+    const restored =
+      state.prevCastVolume && state.prevCastVolume > 0
+        ? Math.min(state.prevCastVolume, state.castVolumeCap)
+        : Math.min(20, state.castVolumeCap);
+    set({ castVolume: restored, prevCastVolume: null });
+    return restored;
+  },
   setCurrentTime: (currentTime) => set({ currentTime }),
   setDuration: (duration) => set({ duration }),
   toggleShuffle: () => set((state) => ({ shuffle: !state.shuffle })),
