@@ -183,17 +183,24 @@ no album tag.
   zero catalog changes and never touches `merge.ts`. Automatic regrouping is out
   of scope: rewriting album identity churns deterministic ids (see
   [pitfalls.md](pitfalls.md) "Merge / unified IDs").
-- **Path quality depends on the source Navidrome.** With
-  `ND_SUBSONIC_DEFAULTREPORTREALPATH=true` (set in `docker-compose.yml` since
-  #252) paths are real absolute container paths (`/music/…`) and folder
-  detection works. Without it Navidrome serves tag-derived **virtual** paths
-  (`Artist/Album/Title.ext`) whose dirname is just (artist, album) — no folder
-  signal, so the audit degrades to "no clusters", never false proposals. Peers
-  report real paths only once they deploy the flag + re-sync. The default is
-  pinned per Navidrome player record at creation — hence the client name bumps
-  to `poutine-sync-rp` (local sync) and `poutine-proxy-rp` (the `/proxy`
-  identity that peers' syncs actually hit — the proxy overwrites `c` and drops
-  the caller's UA). See [pitfalls.md](pitfalls.md) "Navidrome ops".
+- **Path quality depends on the source Navidrome.** Real absolute container
+  paths (`/music/…`) come from **native-API player provisioning**
+  (`hub/src/services/navidrome-native.ts`): `reportRealPath` is a per-player
+  Navidrome setting pinned into the player record at creation, so the hub sets
+  it to `true` over the native API (`POST /auth/login`, `GET`/`PUT
+  /api/player`) on the `poutine-sync` record (local sync) and the
+  `poutine-proxy` record (the `/proxy` identity peers' syncs actually hit —
+  the proxy overwrites `c` and drops the caller's UA). Runs at boot and before
+  each local sync; `syncLocal` pings first so its player record exists before
+  the flip. Known window: a peer's first sync against a freshly-reset
+  Navidrome can get virtual paths once, self-corrected by the next
+  provisioning pass. Best-effort by design — the native API is
+  unversioned/internal, so any failure logs a warning and paths degrade to
+  tag-derived **virtual** paths (`Artist/Album/Title.ext`): no folder signal,
+  audit degrades to "no clusters", never false proposals; per-instance
+  coverage % in the report is the canary. Peers report real paths once they
+  run a provisioning-capable build + re-sync. See [pitfalls.md](pitfalls.md)
+  "Navidrome ops".
 
 ## Share IDs
 
