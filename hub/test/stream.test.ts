@@ -1,5 +1,6 @@
 /**
- * Integration tests for /rest/stream (and /rest/download alias).
+ * Integration tests for /rest/stream (plus one /rest/download local-path
+ * smoke test — full download coverage lives in download.test.ts, #35).
  *
  * Covers:
  *   - Bad / missing ID → Subsonic error 70
@@ -355,7 +356,7 @@ describe("stream — local source", () => {
     expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
   });
 
-  it("/rest/download alias behaves identically to /rest/stream", async () => {
+  it("/rest/download serves the same bytes as stream, as an attachment (#35)", async () => {
     const track = app.db
       .prepare("SELECT id FROM unified_tracks LIMIT 1")
       .get() as { id: string };
@@ -367,6 +368,7 @@ describe("stream — local source", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toMatch(/audio\/mpeg/);
+    expect(res.headers["content-disposition"]).toMatch(/^attachment/);
     expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
   });
 });
@@ -496,6 +498,21 @@ describe("stream — peer source", () => {
     expect(res.statusCode).toBe(206);
     expect(res.headers["content-range"]).toBe(`bytes 1-4/${FAKE_AUDIO.length}`);
     expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO.subarray(1, 5));
+  });
+
+  it("downloads peer-sourced tracks raw through federation with attachment disposition (#35)", async () => {
+    const track = appA.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+
+    const res = await appA.inject({
+      method: "GET",
+      url: `/rest/download?u=tester&p=secret&f=json&id=t${track.id}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-disposition"]).toMatch(/^attachment/);
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
   });
 
   it("records a kind='proxy' stream on the source hub when a peer fetches via /federation/stream (#121)", async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { isAuthErrorCode, getArtists, SubsonicError } from "./subsonic";
+import { isAuthErrorCode, getArtists, downloadUrl, SubsonicError } from "./subsonic";
 import { setSubsonicCreds } from "./api";
 
 // Subsonic auth-related error codes per OpenSubsonic spec. Codes 10/40/41/42/43/44
@@ -109,5 +109,29 @@ describe("subsonicFetch — redirect on auth error codes", () => {
     });
     await expect(getArtists()).rejects.toBeInstanceOf(SubsonicError);
     expect(replaceSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── downloadUrl (#35) ────────────────────────────────────────────────────────
+
+describe("downloadUrl", () => {
+  it("builds an authed /rest/download URL with no transcode params", () => {
+    setSubsonicCreds({ username: "u", password: "p" });
+    const url = downloadUrl("t123");
+    expect(url).not.toBeNull();
+    expect(url!.startsWith("/rest/download?")).toBe(true);
+    const params = new URLSearchParams(url!.split("?")[1]);
+    expect(params.get("id")).toBe("t123");
+    expect(params.get("u")).toBe("u");
+    expect(params.get("t")).toMatch(/^[0-9a-f]{32}$/);
+    expect(params.get("s")).toMatch(/^[0-9a-f]+$/);
+    // Downloads are original-file — never send format/maxBitRate.
+    expect(params.has("format")).toBe(false);
+    expect(params.has("maxBitRate")).toBe(false);
+  });
+
+  it("returns null when not logged in", () => {
+    setSubsonicCreds(null);
+    expect(downloadUrl("t123")).toBeNull();
   });
 });

@@ -12,6 +12,7 @@ vi.mock("@/lib/subsonic", async () => {
     ...actual,
     getAlbum: vi.fn(),
     artUrl: (id: string) => `/art/${id}`,
+    downloadUrl: (id: string) => `/rest/download?id=${id}`,
   };
 });
 
@@ -105,5 +106,33 @@ describe("ReleaseGroupPage track artist (#138)", () => {
     expect(
       screen.getAllByRole("link", { name: "Album Artist" }),
     ).toHaveLength(1);
+  });
+});
+
+describe("ReleaseGroupPage downloads (#35)", () => {
+  it("renders an album Download button linking to /rest/download with the album id", async () => {
+    vi.mocked(getAlbum).mockResolvedValue(makeAlbum());
+    renderAt("al-1");
+
+    await waitFor(() =>
+      expect(screen.getByText("Featured Track")).toBeInTheDocument(),
+    );
+
+    const albumLink = screen.getByTitle("Download album as ZIP");
+    expect(albumLink).toHaveAttribute("href", "/rest/download?id=al-1");
+  });
+
+  it("renders a per-track download link for each song row", async () => {
+    vi.mocked(getAlbum).mockResolvedValue(makeAlbum());
+    renderAt("al-1");
+
+    await waitFor(() =>
+      expect(screen.getByText("Featured Track")).toBeInTheDocument(),
+    );
+
+    const trackLinks = screen.getAllByTitle("Download");
+    expect(trackLinks).toHaveLength(2);
+    expect(trackLinks[0]).toHaveAttribute("href", "/rest/download?id=tr-1");
+    expect(trackLinks[1]).toHaveAttribute("href", "/rest/download?id=tr-2");
   });
 });

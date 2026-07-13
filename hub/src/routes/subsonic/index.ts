@@ -9,6 +9,7 @@ import { registerSearch } from "./search.js";
 import { registerPlaylists } from "./playlists.js";
 import { registerAnnotations } from "./annotations.js";
 import { registerStream } from "./stream.js";
+import { registerDownload } from "./download.js";
 
 // Extend Fastify app type for stream tracking
 declare module "fastify" {
@@ -22,7 +23,7 @@ declare module "fastify" {
 // ping, getLicense, getOpenSubsonicExtensions (public), getUser,
 // getMusicFolders, getGenres, getArtists, getIndexes, getArtist,
 // getArtistInfo2, getAlbumList2, getAlbum, getSong, search3, getCoverArt
-// (binary), stream (binary), download (binary alias), star, unstar,
+// (binary), stream (binary), download (binary, own handler since #35), star, unstar,
 // getStarred2, getStarred, getPlaylists, getPlaylist, createPlaylist,
 // updatePlaylist, deletePlaylist, scrobble, getNowPlaying.
 
@@ -94,6 +95,7 @@ export const subsonicRoutes: FastifyPluginAsync = async (app) => {
   registerBrowsing(ctx);
   registerSearch(ctx);
   registerStream(ctx);
+  registerDownload(ctx);
   registerAnnotations(ctx);
   registerPlaylists(ctx);
 };

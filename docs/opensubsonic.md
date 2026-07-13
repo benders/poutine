@@ -115,7 +115,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | Endpoint            | Status          | Notes                                                                          |
 |---------------------|-----------------|--------------------------------------------------------------------------------|
 | `stream`            | Implemented     | Supports `format`, `maxBitRate`, and `timeOffset`; selects best source across federated peers. HTTP `Range` forwarded for raw passthrough (206 + `Content-Range`); dropped when transcoding (#97). Frontend uses `timeOffset` to seek inside transcoded streams (#109) |
-| `download`          | Implemented     | Alias for `stream`; clients use them interchangeably                           |
+| `download`          | Implemented     | Original bytes, never transcoded (`format`/`maxBitRate` ignored per spec), `Content-Disposition: attachment`. Track id (`t…`) → single file named `Artist - Title.ext`; album id (`al…`) → streaming ZIP (stored entries, `NN - Title.ext`) of the best release's tracks (#35). Peer-sourced tracks proxied raw via `/federation/stream` |
 | `hls`               | NOT IMPLEMENTED |                                                                                |
 | `getCaptions`       | NOT IMPLEMENTED |                                                                                |
 | `getCoverArt`       | Implemented     | Disk-cached with LRU eviction; ID format `{instanceId}:{coverArtId}`           |

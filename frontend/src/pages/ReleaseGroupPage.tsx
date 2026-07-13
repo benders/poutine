@@ -1,10 +1,10 @@
 import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getAlbum, artUrl } from "@/lib/subsonic";
+import { getAlbum, artUrl, downloadUrl } from "@/lib/subsonic";
 import type { SubsonicSong } from "@/lib/subsonic";
 import { usePlayer } from "@/stores/player";
 import { formatDuration } from "@/lib/format";
-import { Play, Pause, Plus, ChevronRight, Disc, ChevronDown, ChevronUp, FileAudio, Info } from "lucide-react";
+import { Play, Pause, Plus, ChevronRight, Disc, ChevronDown, ChevronUp, Download, FileAudio, Info } from "lucide-react";
 import { useState } from "react";
 import { ShareIdButton } from "@/components/ShareIdButton";
 import { StarButton } from "@/components/StarButton";
@@ -48,6 +48,8 @@ export function ReleaseGroupPage() {
   const toggleTrackMetadata = (trackId: string) => {
     setExpandedTrackId(expandedTrackId === trackId ? null : trackId);
   };
+
+  const albumDownloadHref = downloadUrl(album.id);
 
   return (
     <div className="space-y-8">
@@ -110,6 +112,17 @@ export function ReleaseGroupPage() {
 
             {album.shareId && <ShareIdButton shareId={album.shareId} />}
 
+            {albumDownloadHref && (
+              <a
+                href={albumDownloadHref}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-surface-hover hover:bg-surface text-text-primary rounded-full text-sm font-medium transition-colors cursor-pointer"
+                title="Download album as ZIP"
+              >
+                <Download className="w-4 h-4" />
+                Download
+              </a>
+            )}
+
             <button
               onClick={() => setShowAlbumMetadata(!showAlbumMetadata)}
               className="inline-flex items-center gap-2 px-4 py-2 bg-surface-hover hover:bg-surface text-text-primary rounded-full text-sm font-medium transition-colors cursor-pointer"
@@ -155,7 +168,7 @@ export function ReleaseGroupPage() {
               <th className="py-2.5 px-4 text-left w-24">Bitrate</th>
               <th className="py-2.5 px-4 text-left w-40">Source</th>
               <th className="py-2.5 px-4 text-right w-24">Duration</th>
-              <th className="py-2.5 px-4 text-right w-20"></th>
+              <th className="py-2.5 px-4 text-right w-28"></th>
             </tr>
           </thead>
           <tbody>
@@ -214,6 +227,7 @@ function SongRow({
   // Compilations and "feat." tracks: show the track artist under the title
   // when it differs from the album's release-group artist. (#138)
   const showTrackArtist = !!song.artistId && song.artistId !== albumArtistId;
+  const trackDownloadHref = downloadUrl(song.id);
   return (
     <>
       <tr className="group border-b border-border/50 last:border-0 hover:bg-surface-hover transition-colors">
@@ -283,6 +297,15 @@ function SongRow({
             >
               <Plus className="w-4 h-4" />
             </button>
+            {trackDownloadHref && (
+              <a
+                href={trackDownloadHref}
+                className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary transition-all cursor-pointer"
+                title="Download"
+              >
+                <Download className="w-4 h-4" />
+              </a>
+            )}
             <button
               onClick={onToggleMetadata}
               className="opacity-0 group-hover:opacity-100 p-1 text-text-muted hover:text-text-primary transition-all cursor-pointer"

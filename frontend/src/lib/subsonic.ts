@@ -559,6 +559,18 @@ export function streamUrl(
   return `/rest/stream?${params}`;
 }
 
+/**
+ * URL for /rest/download (#35) — original file bytes, no transcoding, served
+ * with Content-Disposition: attachment. Accepts a track id (`t…`) for a single
+ * file or an album id (`al…`) for a ZIP of the whole album.
+ */
+export function downloadUrl(id: string): string | null {
+  const params = authParams();
+  if (!params) return null;
+  params.set("id", id);
+  return `/rest/download?${params}`;
+}
+
 export function artUrl(coverArtId: string, size?: number): string | null {
   // Everything routes through getCoverArt — including absolute fanart.tv /
   // Last.fm URLs. The hub fetches and caches external art behind an SSRF

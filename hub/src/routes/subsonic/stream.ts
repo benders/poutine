@@ -354,5 +354,6 @@ try {
 }
 
   binaryRoute("/stream", handleStream);
-  binaryRoute("/download", handleStream); // alias — clients use interchangeably
+  // /download is no longer a stream alias — it returns original bytes with a
+  // Content-Disposition header (and album ZIPs). See download.ts (#35).
 }
