@@ -81,6 +81,11 @@ describe("fanart.tv integration during sync", () => {
     vi.spyOn(global, "fetch").mockImplementation(async (input: unknown) => {
       const url = typeof input === "string" ? input : (input as Request).url;
       if (url.startsWith(TEST_BASE_URL)) return fanartMock(url);
+      // #252: answer syncLocal's pre-read ping + native real-path provisioning
+      // out-of-band so they don't consume the Subsonic sequence in subsonicMock.
+      if (url.includes("/rest/ping")) return jsonResponse(subsonicResponse({}));
+      if (url.includes("/auth/login")) return jsonResponse({ token: "t" });
+      if (url.includes("/api/player")) return jsonResponse([]);
       return subsonicMock(url);
     });
 

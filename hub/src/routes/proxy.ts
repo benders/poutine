@@ -101,16 +101,11 @@ export const proxyRoutes: FastifyPluginAsync<ProxyRoutesOptions> = async (
     targetUrl.searchParams.set("t", token);
     targetUrl.searchParams.set("s", salt);
     targetUrl.searchParams.set("v", "1.16.1");
-    // Client name bumped from "poutine-proxy" in #252 (same reason as the
-    // sync client): Navidrome pins per-player defaults — including
-    // reportRealPath — at player-record creation, and this proxy identity is
-    // what PEERS' syncs see (the proxy overwrites the caller's `c` and does
-    // not forward its User-Agent). Without the bump, a peer that enables
-    // ND_SUBSONIC_DEFAULTREPORTREALPATH keeps serving virtual paths to the
-    // federation through its pre-existing player record. NOTE: any manual
-    // per-player transcoding config an operator set on the old player in the
-    // Navidrome UI does not carry over.
-    targetUrl.searchParams.set("c", "poutine-proxy-rp");
+    // The proxy overwrites the caller's `c` and drops its User-Agent, so this
+    // client name is the player identity that PEERS' syncs see in local
+    // Navidrome. Its reportRealPath is provisioned at runtime by the
+    // navidrome-native service (services/navidrome-native.ts).
+    targetUrl.searchParams.set("c", "poutine-proxy");
 
     // ── Collect allowed request headers ──────────────────────────────────────
     const forwardHeaders: Record<string, string> = {};

@@ -24,6 +24,7 @@ import { setPassword } from "./auth/passwords.js";
 import { ensureJwtSecret } from "./auth/jwt-secret.js";
 import { loadOrCreatePasswordKey } from "./auth/password-crypto.js";
 import { AutoSyncService } from "./services/auto-sync.js";
+import { ensureRealPathPlayers } from "./services/navidrome-native.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
 import { PlayEventService } from "./services/play-events.js";
@@ -672,6 +673,27 @@ if (isMain) {
   try {
     await app.listen({ port: config.port, host: config.host });
     app.log.info(`Poutine Hub listening on ${config.host}:${config.port}`);
+
+    // Best-effort: provision reportRealPath on the poutine-proxy player record
+    // at boot so peers' first sync against us gets real paths without waiting
+    // for our own next local sync run. Fire-and-forget; ensureRealPathPlayers
+    // swallows every failure. Lives in the isMain entrypoint (not buildApp) so
+    // the test harness — which builds the app against no live Navidrome — never
+    // makes this network call.
+    //
+    // Accepted window: a peer's very first sync against a freshly-reset
+    // Navidrome can create poutine-proxy with reportRealPath=false and receive
+    // virtual paths once, before this boot pass (or the next local sync's
+    // provisioning pass) flips it. The next sync run self-corrects.
+    void ensureRealPathPlayers({
+      navidromeUrl: config.navidromeUrl,
+      navidromeUsername: config.navidromeUsername,
+      navidromePassword: config.navidromePassword,
+      log: {
+        info: (msg) => app.log.info(msg),
+        warn: (msg) => app.log.warn(msg),
+      },
+    });
   } catch (err) {
     app.log.error(err);
     process.exit(1);

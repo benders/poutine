@@ -74,20 +74,19 @@ interface NavidromeSong {
   bitDepth?: number;
   channelCount?: number;
   // #252: file path as reported by the source Navidrome. Real absolute path
-  // (e.g. "/music/Incoming/comp2020/01 - Track.flac") when the source runs
-  // ND_SUBSONIC_DEFAULTREPORTREALPATH=true; a tag-derived virtual path
-  // ("Artist/Album/Title.ext", no folder signal) otherwise. Absent on older
-  // peers — degrades to NULL.
+  // (e.g. "/music/Incoming/comp2020/01 - Track.flac") when the source's player
+  // record has reportRealPath provisioned (services/navidrome-native.ts); a
+  // tag-derived virtual path ("Artist/Album/Title.ext", no folder signal)
+  // otherwise. Absent on older peers — degrades to NULL.
   path?: string;
 }
 
-// Subsonic client name for sync requests. Bumped from "poutine-sync" in #252:
-// Navidrome keys player records by (user, client, user-agent) and pins
-// per-player settings — including reportRealPath — at record creation, so
-// ND_SUBSONIC_DEFAULTREPORTREALPATH=true never reaches a pre-existing player.
-// A fresh client name forces a new player record that inherits the flag,
-// making real-path reporting deterministic on upgraded deployments.
-const SYNC_CLIENT_NAME = "poutine-sync-rp";
+// Subsonic client name for sync requests. Real on-disk paths (vs Navidrome's
+// tag-derived virtual paths) are flipped on this player record at runtime by
+// the navidrome-native provisioning service (services/navidrome-native.ts),
+// which sets reportRealPath=true on the player keyed by this client name — not
+// by versioning the client name to force a fresh record.
+const SYNC_CLIENT_NAME = "poutine-sync";
 
 // ── Simple semaphore ──────────────────────────────────────────────────────────
 
