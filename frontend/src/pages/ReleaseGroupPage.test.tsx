@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { ReleaseGroupPage } from "./ReleaseGroupPage";
@@ -106,6 +106,69 @@ describe("ReleaseGroupPage track artist (#138)", () => {
     expect(
       screen.getAllByRole("link", { name: "Album Artist" }),
     ).toHaveLength(1);
+  });
+});
+
+describe("ReleaseGroupPage cover art lightbox (#200)", () => {
+  it("opens a lightbox with the full-size cover when the art is clicked", async () => {
+    const album = makeAlbum();
+    album.coverArt = "cover-1";
+    vi.mocked(getAlbum).mockResolvedValue(album);
+    renderAt("al-1");
+
+    await waitFor(() =>
+      expect(screen.getByText("Featured Track")).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /view full-size cover art/i }),
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("img", { name: "Comp Album" }),
+    ).toHaveAttribute("src", "/art/cover-1");
+  });
+
+  it("closes the lightbox on backdrop click but not on image click", async () => {
+    const album = makeAlbum();
+    album.coverArt = "cover-1";
+    vi.mocked(getAlbum).mockResolvedValue(album);
+    renderAt("al-1");
+
+    await waitFor(() =>
+      expect(screen.getByText("Featured Track")).toBeInTheDocument(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /view full-size cover art/i }),
+    );
+
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("img", { name: "Comp Album" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("dialog"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("closes the lightbox on Escape", async () => {
+    const album = makeAlbum();
+    album.coverArt = "cover-1";
+    vi.mocked(getAlbum).mockResolvedValue(album);
+    renderAt("al-1");
+
+    await waitFor(() =>
+      expect(screen.getByText("Featured Track")).toBeInTheDocument(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /view full-size cover art/i }),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
 
