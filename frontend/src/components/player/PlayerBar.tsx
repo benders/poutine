@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 
+const DEFAULT_LOCAL_UNMUTE_VOLUME = 0.5;
+
 export function PlayerBar() {
   const navigate = useNavigate();
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -67,6 +69,13 @@ export function PlayerBar() {
       : null;
 
   const isSonos = sink !== "local";
+  const lastLocalVolumeRef = useRef(
+    volume > 0 ? volume : DEFAULT_LOCAL_UNMUTE_VOLUME,
+  );
+
+  useEffect(() => {
+    if (volume > 0) lastLocalVolumeRef.current = volume;
+  }, [volume]);
 
   // Capabilities drive whether the DevicePicker renders. Use `useQuery` so the
   // admin flipping `sonosAllowNonAdmin` (SonosSection invalidates
@@ -903,7 +912,7 @@ export function PlayerBar() {
           <>
             <button
               aria-label={volume === 0 ? "Unmute" : "Mute"}
-              onClick={() => setVolume(volume > 0 ? 0 : 0.8)}
+              onClick={() => setVolume(volume > 0 ? 0 : lastLocalVolumeRef.current)}
               className="p-1 text-text-muted hover:text-text-primary transition-colors"
             >
               {volume === 0 ? (

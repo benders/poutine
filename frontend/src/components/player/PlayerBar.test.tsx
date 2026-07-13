@@ -109,6 +109,52 @@ describe("PlayerBar render stability", () => {
   });
 });
 
+describe("PlayerBar local volume", () => {
+  it("restores the previous local volume when unmuting from zero", () => {
+    usePlayer.setState({
+      queue: [track("trk-1")],
+      currentIndex: 0,
+      volume: 0.36,
+    });
+
+    const { getByRole } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter></QueryClientProvider>,
+    );
+
+    act(() => {
+      fireEvent.click(getByRole("button", { name: "Mute" }));
+    });
+    expect(usePlayer.getState().volume).toBe(0);
+
+    act(() => {
+      fireEvent.click(getByRole("button", { name: "Unmute" }));
+    });
+    expect(usePlayer.getState().volume).toBe(0.36);
+  });
+
+  it("uses a halfway local volume when unmuting without a previous volume", () => {
+    usePlayer.setState({
+      queue: [track("trk-1")],
+      currentIndex: 0,
+      volume: 0,
+    });
+
+    const { getByRole } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter></QueryClientProvider>,
+    );
+
+    act(() => {
+      fireEvent.click(getByRole("button", { name: "Unmute" }));
+    });
+
+    expect(usePlayer.getState().volume).toBe(0.5);
+  });
+});
+
 describe("PlayerBar cast volume slider", () => {
   beforeEach(() => {
     vi.spyOn(api, "getCapabilities").mockResolvedValue({
