@@ -57,12 +57,18 @@ describe("Last.fm integration during sync", () => {
     // Mock global fetch for both Subsonic and Last.fm API calls
     vi.spyOn(global, "fetch").mockImplementation(async (input: any) => {
       const urlString = typeof input === "string" ? input : input.url;
-      
+
       // Return different mocks based on the URL
       if (urlString?.includes("ws.audioscrobbler.com")) {
         // Last.fm API call - use lastFmFetchMock
         return lastFmFetchMock(input);
       }
+      // #252: syncLocal now pings then provisions real-path players via the
+      // native API before reading albums. Answer those out-of-band so they
+      // don't consume the Subsonic getArtists/getArtist/getAlbum sequence below.
+      if (urlString?.includes("/rest/ping")) return jsonResponse(subsonicResponse({}));
+      if (urlString?.includes("/auth/login")) return jsonResponse({ token: "t" });
+      if (urlString?.includes("/api/player")) return jsonResponse([]);
       // Subsonic API call - use fetchMock
       return fetchMock(input);
     });

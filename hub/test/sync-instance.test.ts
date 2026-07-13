@@ -43,8 +43,9 @@ function makeSubsonicHandler(opts: {
   format: string;
   bitrate: number;
   durationMs: number;
+  path?: string;
 }): http.RequestListener {
-  const { artistId, artistName, albumId, albumName, trackId, trackTitle, format, bitrate, durationMs } = opts;
+  const { artistId, artistName, albumId, albumName, trackId, trackTitle, format, bitrate, durationMs, path: songPath } = opts;
 
   return (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -91,6 +92,7 @@ function makeSubsonicHandler(opts: {
             duration: Math.round(durationMs / 1000),
             bitRate: bitrate,
             suffix: format,
+            ...(songPath !== undefined ? { path: songPath } : {}),
           }],
         },
       }));
@@ -378,5 +380,70 @@ describe("readNavidromeViaProxy trackCount de-duplication (#157)", () => {
       .prepare("SELECT track_count FROM instances WHERE id = 'dup-inst'")
       .get() as { track_count: number };
     expect(instanceRow.track_count).toBe(1);
+  });
+});
+
+// ── #252: library-relative file path ingestion ───────────────────────────────
+
+describe("readNavidromeViaProxy instance_tracks.path ingestion (#252)", () => {
+  let db: Database.Database;
+  let nav: http.Server;
+  let port: number;
+  let ownerId: string;
+
+  afterEach(async () => {
+    db.close();
+    await new Promise<void>((resolve) => nav.close(() => resolve()));
+  });
+
+  async function setup(songPath?: string): Promise<void> {
+    db = createDatabase(":memory:");
+    ownerId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO users (id, username, password_enc, is_admin) VALUES (?, ?, ?, ?)",
+    ).run(ownerId, "admin", "fakehash", 1);
+    db.prepare(
+      "INSERT INTO instances (id, name, url, adapter_type, encrypted_credentials, owner_id, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run("path-inst", "Path Instance", "http://path", "subsonic", "", ownerId, "online");
+
+    ({ server: nav, port } = await startFakeNavidrome(
+      makeSubsonicHandler({
+        artistId: "art-path",
+        artistName: "Epsilon Artist",
+        albumId: "alb-path",
+        albumName: "Big Album",
+        trackId: "trk-path",
+        trackTitle: "Echo Track",
+        format: "mp3",
+        bitrate: 320,
+        durationMs: 240000,
+        path: songPath,
+      }),
+    ));
+  }
+
+  it("stores the song's library-relative path in instance_tracks.path", async () => {
+    const songPath = "Epsilon Artist/Big Album/05 - Echo Track.mp3";
+    await setup(songPath);
+
+    const result = await readNavidromeViaProxy(db, "path-inst", makeProxyFetch(port));
+    expect(result.errors).toHaveLength(0);
+
+    const row = db
+      .prepare("SELECT path FROM instance_tracks WHERE instance_id = 'path-inst' AND remote_id = 'trk-path'")
+      .get() as { path: string | null };
+    expect(row.path).toBe(songPath);
+  });
+
+  it("stores NULL when the song has no path and does not error", async () => {
+    await setup(undefined);
+
+    const result = await readNavidromeViaProxy(db, "path-inst", makeProxyFetch(port));
+    expect(result.errors).toHaveLength(0);
+
+    const row = db
+      .prepare("SELECT path FROM instance_tracks WHERE instance_id = 'path-inst' AND remote_id = 'trk-path'")
+      .get() as { path: string | null };
+    expect(row.path).toBeNull();
   });
 });

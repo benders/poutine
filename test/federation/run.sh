@@ -214,6 +214,31 @@ echo ""
 echo "==> Syncing hub-a (local + federated from hub-b and hub-c)..."
 JWT_A=$(login_and_sync 3011 "hub-a" 180)
 
+# ── #252: real on-disk paths via native-API player provisioning ───────────────
+# After a local sync, instance_tracks.path for the LOCAL instance must be real
+# absolute paths (prefix "/music/"), not Navidrome's tag-derived virtual paths.
+# This locks in end-to-end that the navidrome-native provisioning pass ran
+# inside the Docker cluster (no ND_SUBSONIC_DEFAULTREPORTREALPATH env flag).
+echo ""
+echo "==> Verifying hub-a local tracks report real /music/ paths (#252)..."
+PATH_STATS=$($COMPOSE_A exec -T hub node -e "
+const { execSync } = require('child_process');
+const dir = execSync('find /app/node_modules/.pnpm -maxdepth 3 -name better-sqlite3 -type d 2>/dev/null | head -1').toString().trim();
+const db = new (require(dir))('/app/data/poutine.db', { readonly: true });
+const r = db.prepare(\"SELECT COUNT(*) AS total, SUM(CASE WHEN path LIKE '/music/%' THEN 1 ELSE 0 END) AS real FROM instance_tracks WHERE instance_id='local'\").get();
+console.log(JSON.stringify(r));
+")
+echo "  Local path stats: $PATH_STATS"
+if ! echo "$PATH_STATS" | python3 -c "
+import sys, json
+r = json.loads(sys.stdin.read())
+assert r['total'] > 0, f'no local instance_tracks rows: {r}'
+assert r['real'] == r['total'], f'local tracks not on real /music/ paths: {r}'
+"; then
+  echo "ERROR: hub-a local tracks are not reporting real /music/ paths — native-API provisioning did not take effect" >&2
+  exit 1
+fi
+
 echo ""
 echo "==> Verifying federated metadata on hub-a..."
 ALBUM_LIST=$(curl -sf \

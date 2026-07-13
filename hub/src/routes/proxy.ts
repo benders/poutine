@@ -101,6 +101,10 @@ export const proxyRoutes: FastifyPluginAsync<ProxyRoutesOptions> = async (
     targetUrl.searchParams.set("t", token);
     targetUrl.searchParams.set("s", salt);
     targetUrl.searchParams.set("v", "1.16.1");
+    // The proxy overwrites the caller's `c` and drops its User-Agent, so this
+    // client name is the player identity that PEERS' syncs see in local
+    // Navidrome. Its reportRealPath is provisioned at runtime by the
+    // navidrome-native service (services/navidrome-native.ts).
     targetUrl.searchParams.set("c", "poutine-proxy");
 
     // ── Collect allowed request headers ──────────────────────────────────────

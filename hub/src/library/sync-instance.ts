@@ -73,7 +73,20 @@ interface NavidromeSong {
   samplingRate?: number;
   bitDepth?: number;
   channelCount?: number;
+  // #252: file path as reported by the source Navidrome. Real absolute path
+  // (e.g. "/music/Incoming/comp2020/01 - Track.flac") when the source's player
+  // record has reportRealPath provisioned (services/navidrome-native.ts); a
+  // tag-derived virtual path ("Artist/Album/Title.ext", no folder signal)
+  // otherwise. Absent on older peers — degrades to NULL.
+  path?: string;
 }
+
+// Subsonic client name for sync requests. Real on-disk paths (vs Navidrome's
+// tag-derived virtual paths) are flipped on this player record at runtime by
+// the navidrome-native provisioning service (services/navidrome-native.ts),
+// which sets reportRealPath=true on the player keyed by this client name — not
+// by versioning the client name to force a fresh record.
+const SYNC_CLIENT_NAME = "poutine-sync";
 
 // ── Simple semaphore ──────────────────────────────────────────────────────────
 
@@ -135,7 +148,7 @@ export function createLocalProxyFetch(opts: {
     url.searchParams.set("t", token);
     url.searchParams.set("s", salt);
     url.searchParams.set("v", "1.16.1");
-    url.searchParams.set("c", "poutine-sync");
+    url.searchParams.set("c", SYNC_CLIENT_NAME);
     url.searchParams.set("f", "json");
 
     return fetch(url.toString(), {
@@ -209,7 +222,7 @@ export async function readNavidromeViaProxy(
 
   async function proxyJson(path: string): Promise<Record<string, unknown>> {
     const sep = path.includes("?") ? "&" : "?";
-    const url = `${path}${sep}f=json&v=1.16.1&c=poutine-sync`;
+    const url = `${path}${sep}f=json&v=1.16.1&c=${SYNC_CLIENT_NAME}`;
     const res = await proxyFetch(url);
     const contentLength = res.headers.get("content-length");
     const sizeLabel = contentLength ? `${contentLength}B` : "?B";
@@ -258,8 +271,8 @@ export async function readNavidromeViaProxy(
   `);
 
   const upsertTrack = db.prepare(`
-    INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, bitrate, format, size, musicbrainz_id, year, genre, sampling_rate, bit_depth, channel_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO instance_tracks (id, instance_id, remote_id, album_id, title, artist_name, track_number, disc_number, duration_ms, bitrate, format, size, musicbrainz_id, year, genre, sampling_rate, bit_depth, channel_count, path)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(instance_id, remote_id) DO UPDATE SET
       album_id = excluded.album_id,
       title = excluded.title,
@@ -275,7 +288,8 @@ export async function readNavidromeViaProxy(
       genre = excluded.genre,
       sampling_rate = excluded.sampling_rate,
       bit_depth = excluded.bit_depth,
-      channel_count = excluded.channel_count
+      channel_count = excluded.channel_count,
+      path = excluded.path
   `);
 
   // Track seen IDs for stale-data cleanup
@@ -465,6 +479,7 @@ export async function readNavidromeViaProxy(
               song.samplingRate ?? null,
               song.bitDepth ?? null,
               song.channelCount ?? null,
+              song.path ?? null,
             );
             seenTrackRemoteIds.add(song.id);
             result.trackCount++;

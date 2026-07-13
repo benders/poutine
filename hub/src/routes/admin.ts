@@ -5,6 +5,7 @@ import { syncAll } from "../library/sync.js";
 import { SyncOperationService } from "../services/sync-operations.js";
 import { StreamTrackingService } from "../services/stream-tracking.js";
 import { runMergePipelineAsync } from "../library/merge-pipeline.js";
+import { runFolderAudit } from "../library/folder-audit.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { APP_VERSION, FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
 import {
@@ -967,6 +968,13 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       return { maxEvents: app.streamTracking.getMaxRows() };
     },
   );
+
+  // GET /admin/data-quality/folder-report — read-only dry run (#252). Detects
+  // untagged-compilation damage from instance_tracks.path and reports what a
+  // regroup WOULD propose. Makes zero catalog changes; see folder-audit.ts.
+  app.get("/data-quality/folder-report", { preHandler: requireOwner }, async () => {
+    return runFolderAudit(app.db);
+  });
 };
 
 // Player-owned admin endpoints: Sonos settings (incl. shared `lanUrl`).
