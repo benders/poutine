@@ -58,8 +58,10 @@ function streamClientLabel(
   if (s.kind === "proxy") {
     return s.peerId ? peerName(s.peerId) : "peer";
   }
-  if (!s.clientName) return "—";
-  return s.clientVersion ? `${s.clientName} v${s.clientVersion}` : s.clientName;
+  // clientVersion is the Subsonic protocol version (v=), not the client's
+  // release — always 1.16.1, not useful here. clientName carries the SPA's
+  // build version for poutine (c=poutine/x.y.z) since #255; ignore version.
+  return s.clientName || "—";
 }
 
 function streamUserLabel(s: StreamOperation | ActiveStream): string {

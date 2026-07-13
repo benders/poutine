@@ -1,8 +1,11 @@
 import { md5 } from "js-md5";
 import { getSubsonicCreds, clearTokens } from "./api.js";
+import { APP_VERSION } from "../version.js";
 
 const SUBSONIC_VERSION = "1.16.1";
-const CLIENT = "poutine";
+// SPA release version rides on `c=` (Subsonic reserves `v=` for protocol
+// version), so Activity History can show the real build instead of "1.16.1".
+const CLIENT = `poutine/${APP_VERSION}`;
 
 // Subsonic/OpenSubsonic credential-related error codes. Code 50 (not authorized
 // for operation) is authorization, not authentication, and must NOT redirect.
