@@ -9,6 +9,7 @@ import { useState } from "react";
 import { ShareIdButton } from "@/components/ShareIdButton";
 import { StarButton } from "@/components/StarButton";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
+import { Lightbox } from "@/components/Lightbox";
 
 function hashColor(name: string): string {
   let hash = 0;
@@ -25,6 +26,7 @@ export function ReleaseGroupPage() {
   const currentTrackId = currentIndex >= 0 ? queue[currentIndex]?.id : undefined;
   const [expandedTrackId, setExpandedTrackId] = useState<string | null>(null);
   const [showAlbumMetadata, setShowAlbumMetadata] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
 
   const { data: album, isLoading, error } = useQuery({
     queryKey: ["album", id],
@@ -69,11 +71,18 @@ export function ReleaseGroupPage() {
           style={{ backgroundColor: hashColor(album.name) }}
         >
           {album.coverArt ? (
-            <img
-              src={artUrl(album.coverArt, 400) ?? undefined}
-              alt={album.name}
-              className="w-full h-full object-cover"
-            />
+            <button
+              type="button"
+              onClick={() => setLightboxOpen(true)}
+              className="w-full h-full cursor-pointer"
+              aria-label={`View full-size cover art for ${album.name}`}
+            >
+              <img
+                src={artUrl(album.coverArt, 400) ?? undefined}
+                alt={album.name}
+                className="w-full h-full object-cover"
+              />
+            </button>
           ) : (
             <Disc className="w-16 h-16 text-white/30" />
           )}
@@ -189,6 +198,14 @@ export function ReleaseGroupPage() {
           </tbody>
         </table>
       </div>
+
+      {lightboxOpen && album.coverArt && (
+        <Lightbox
+          src={artUrl(album.coverArt) ?? ""}
+          alt={album.name}
+          onClose={() => setLightboxOpen(false)}
+        />
+      )}
     </div>
   );
 }
