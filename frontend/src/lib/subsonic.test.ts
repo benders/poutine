@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { isAuthErrorCode, getArtists, downloadUrl, SubsonicError } from "./subsonic";
 import { setSubsonicCreds } from "./api";
+import { APP_VERSION } from "../version";
 
 // Subsonic auth-related error codes per OpenSubsonic spec. Codes 10/40/41/42/43/44
 // must redirect to /login; code 50 (authz) and others must not.
@@ -133,5 +134,14 @@ describe("downloadUrl", () => {
   it("returns null when not logged in", () => {
     setSubsonicCreds(null);
     expect(downloadUrl("t123")).toBeNull();
+  });
+
+  // #255: c= carries the SPA build so Activity History shows the real
+  // release instead of the fixed Subsonic protocol version (v=1.16.1).
+  it("sends c=poutine/<APP_VERSION> and the fixed protocol version in v=", () => {
+    setSubsonicCreds({ username: "u", password: "p" });
+    const params = new URLSearchParams(downloadUrl("t123")!.split("?")[1]);
+    expect(params.get("c")).toBe(`poutine/${APP_VERSION}`);
+    expect(params.get("v")).toBe("1.16.1");
   });
 });
