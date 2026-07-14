@@ -6,6 +6,8 @@ import { decodeCoverArtId } from "../../library/cover-art.js";
 import { isAllowedExternalArtUrl } from "../external-art.js";
 import { SubsonicClient } from "../../adapters/subsonic.js";
 import { applyTranscodeRule, buildStreamParams } from "../stream-params.js";
+import { effectiveArtSize } from "./art-size.js";
+import { resizeImage } from "../../services/art-resize.js";
 import type { SubsonicRouteContext } from "./types.js";
 
 export function registerStream(ctx: SubsonicRouteContext): void {
@@ -18,7 +20,7 @@ export function registerStream(ctx: SubsonicRouteContext): void {
   binaryRoute("/getCoverArt", async (request, reply) => {
     const q = request.query as Record<string, string>;
     const id = q.id ?? "";
-    const size = q.size;
+    const effSize = effectiveArtSize(q.size);
 
     // Raw external URL `id` (e.g. 3rd-party Subsonic clients echoing back the
     // `coverArt` value we returned for an artist image). Skip decodeCoverArtId
@@ -40,7 +42,7 @@ export function registerStream(ctx: SubsonicRouteContext): void {
       }
     }
 
-    const cacheKey = size ? `${id}:${size}` : id;
+    const cacheKey = `${id}:${effSize}`;
 
     // Check cache first (covers both local and peer art). Skip a hit if the
     // cached entry is not a real image — old Navidrome "missing cover" XML
@@ -62,13 +64,14 @@ export function registerStream(ctx: SubsonicRouteContext): void {
     }
 
     let response: Response;
+    const isExternal = coverArtId.startsWith("http://") || coverArtId.startsWith("https://");
 
     // External URL (e.g. fanart.tv album cover stored when Navidrome had none).
     // The decoded coverArtId is the full https:// URL — fetch it directly
     // instead of routing through Navidrome or a peer proxy. Restricted to a
     // fanart.tv hostname allowlist; peer-supplied URLs to other hosts are
     // rejected to prevent SSRF.
-    if (coverArtId.startsWith("http://") || coverArtId.startsWith("https://")) {
+    if (isExternal) {
       if (!isAllowedExternalArtUrl(coverArtId)) {
         sendBinaryError(reply, 400, "Disallowed external art URL");
         return;
@@ -88,8 +91,7 @@ export function registerStream(ctx: SubsonicRouteContext): void {
         return;
       }
       try {
-        const artParams = new URLSearchParams({ id: coverArtId });
-        if (size) artParams.set("size", size);
+        const artParams = new URLSearchParams({ id: coverArtId, size: String(effSize) });
         const signingPath = `/proxy/rest/getCoverArt?${artParams.toString()}`;
         // Substitute peer.proxyUrl as the base so the HTTP request goes to the correct host.
         const proxyPeer: Peer = { ...peer, url: peer.proxyUrl };
@@ -112,8 +114,7 @@ export function registerStream(ctx: SubsonicRouteContext): void {
         password: app.config.navidromePassword,
       });
       try {
-        const sizeNum = size ? parseInt(size, 10) : undefined;
-        response = await client.getCoverArt(coverArtId, sizeNum);
+        response = await client.getCoverArt(coverArtId, effSize);
       } catch {
         sendBinaryError(reply, 502, "Failed to fetch art from Navidrome");
         return;
@@ -137,7 +138,7 @@ export function registerStream(ctx: SubsonicRouteContext): void {
       if (done) break;
       if (value) chunks.push(value);
     }
-    const buffer = Buffer.concat(chunks);
+    let buffer = Buffer.concat(chunks);
     const contentType = response.headers.get("content-type") || "image/jpeg";
 
     // Navidrome answers a missing cover with HTTP 200 + a Subsonic XML/JSON
@@ -147,6 +148,14 @@ export function registerStream(ctx: SubsonicRouteContext): void {
     if (buffer.length === 0 || !contentType.startsWith("image/")) {
       sendBinaryError(reply, 404, "Art not found");
       return;
+    }
+
+    // External art (fanart.tv/Last.fm) ignores `size` entirely — downsample
+    // it hub-side to the requested dimension. Local/peer art is already
+    // resized upstream by Navidrome.
+    if (isExternal) {
+      const resized = await resizeImage(buffer, contentType, effSize);
+      buffer = Buffer.from(resized.data);
     }
 
     app.artCache.put(cacheKey, buffer, contentType);
