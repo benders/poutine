@@ -47,3 +47,4 @@ Zustand stores expose `setState` / `getState` directly — reset in `beforeEach`
 - `vi.mock` is hoisted — no top-level variables inside the factory.
 - jsdom does not implement `HTMLMediaElement` playback; test the surrounding logic (state, toast dispatch) rather than `<audio>` behavior itself.
 - If a test imports from `@/lib/api` or `@/lib/subsonic`, the `localStorage` polyfill in `setup.ts` must be in place — do not remove it.
+- Two images sharing alt text (e.g. an album thumbnail and its opened lightbox) make `getByRole("img", { name })` throw on multiple matches — scope the query with `within(getByRole("dialog"))`.

@@ -12,7 +12,7 @@ Recurring traps that have caused bugs and follow-up PRs. Read before touching th
 | Letting `unified_release_groups.created_at` default to `datetime('now')` at merge time                                                                 | #186      | Source it from `MAX(instance_albums.created_at)` so the SPA's "Recently Added" sort reflects Navidrome's actual added time         |
 | Changing a dedup key (or just editing metadata) without the id-remap step orphans `user_stars` / `playlist_tracks` / `play_events`                     | #242      | `runMergePipeline()` / `runMergePipelineAsync()` (`merge-pipeline.ts`) snapshot identity, call `mergeLibraries`, then `applyRemap` before auditing — never call `mergeLibraries()` directly outside tests, or user data silently strands on the next merge |
 | Merge running on the worker (#242 Phase 3) doesn't block WAL readers, but a main-connection WRITE started while the merge holds its write lock waits up to the 5s busy timeout, then throws SQLITE_BUSY | #242 | Keep main-thread write transactions short; don't hold one open across an `await runMergePipelineAsync(...)` |
-| Renaming/moving `merge-worker.ts`                                                                                                                       | #242      | `runMergePipelineAsync` resolves both a dev/test `.ts` path and a prod compiled `.js` path from `import.meta.url` — check both branches when the file moves |
+| Renaming/moving `merge-worker.ts`                                                                                                                       | #242      | `runMergePipelineAsync` resolves both a dev/test `.ts` path and a prod compiled `.js` path from `import.meta.url` — check both branches when the file moves. Keep the worker dependency-light (no fastify/routes/services imports): it must load standalone under tsx (dev) and as compiled JS (prod) |
 
 Every `unified_*` insert in `merge.ts` logs the offending row + prior `existingRow` + source IDs on PK conflict. Preserve that — it is the first thing you read when a collision regresses.
 
@@ -63,6 +63,7 @@ Endpoint coverage detail: [opensubsonic.md](opensubsonic.md).
 | Changing a `/federation/*` contract without bumping `FEDERATION_API_VERSION` in `hub/src/version.ts` and updating federation-api.md | recurring | Contract is the doc; the doc is the contract. Bump both together                                                     |
 | Adding a peer-facing gate to `federation/peer-auth.ts` and assuming `/proxy/*` is covered                                          | #244      | `/proxy/*` has its own auth path (`proxy/auth.ts`); every peer-level policy must land in BOTH. Only the federation suite catches the gap |
 | Version-gating peers against `FEDERATION_API_VERSION` instead of the floor                                                        | #244      | Compare against `MIN_FEDERATION_API_VERSION` — the current version silently cuts supported older peers off at every bump |
+| Exposing the Navidrome native API (`/api/*`) to peers                                                                              | #252 design | Never proxy it — it is the full, unversioned admin surface (incl. user mutation) and breaks silently across Navidrome releases. Native-API use stays local-only (`services/navidrome-native.ts`); peer-visible data goes through Subsonic or a Poutine-owned `/federation/*` contract |
 
 Full protocol: [federation-api.md](federation-api.md).
 
@@ -87,7 +88,7 @@ Full flow: [authentication.md](authentication.md).
 | Trap                                                                                          | Caught by | Rule                                                                                                |
 |-----------------------------------------------------------------------------------------------|-----------|-----------------------------------------------------------------------------------------------------|
 | TOCTOU between `artCache.get()` and concurrent eviction                                       | recurring | `get()` returns content + holds a ref; eviction can't delete an in-flight stream                    |
-| Hoisting prepared statements rebuilt per-request                                              | #130      | Hot-path SQL goes through prepared statements built once at module load                             |
+| Hoisting prepared statements rebuilt per-request                                              | #130      | Hot-path SQL goes through prepared statements built once at module load. Deliberate exception: `getAlbumList2`'s dynamically-assembled SQL stays inline in `routes/subsonic/browsing.ts` — don't "fix" it |
 
 ## Navidrome ops
 
@@ -132,3 +133,5 @@ Full flow: [authentication.md](authentication.md).
 | Broken tests landed on green CI                                     | #116      | CI runs `pnpm verify` (typecheck + lint:boundary + test) on every PR                          |
 | Stacked PRs                                                         | CLAUDE.md | Follow-ups go on the same feature branch — never branch off a draft PR                        |
 | Working without a GitHub issue                                      | AGENTS.md | No issue, no work. Reference the issue in the commit and close on merge                       |
+| Two concurrent agent sessions sharing one working tree              | memory    | Checkouts silently land on the other session's branch and stashes mix both sessions' files. Give each concurrent session its own `git worktree add` directory, or serialize |
+| Treating the live hub as a test bed                                 | memory    | Never reset the live instance's DB; run DB-touching tests against a separate instance. After changing the running instance, confirm it is still up and check its logs       |
