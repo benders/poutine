@@ -37,7 +37,7 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `FANARTTV_API_KEY`           | no       | bundled Poutine project key  | fanart.tv project API key. Primary source for MBID-keyed artist images and an album-cover fallback. Set to `""` to disable. See [fanarttv-integration.md](fanarttv-integration.md) |
 | `FANARTTV_CLIENT_KEY`        | no       | —                            | Optional fanart.tv personal `client_key` — drops the new-image delay from 7 days to 2 |
 | `FANARTTV_API_URL`           | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors)                  |
-| `ART_CACHE_MAX_BYTES`        | no       | `100 MB` (104857600)         | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
+| `ART_CACHE_MAX_BYTES`        | no       | `1 GB` (1073741824)          | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
 | `SONOS_DISCOVERY_INTERVAL_MS`| no       | `30000`                      | How often to re-issue SSDP M-SEARCH                              |
 
 Sonos and DLNA are not env-gated — toggles, volume cap, `lan_url`, friendly name all live in `player.db.player_settings` and are runtime-mutable from the Admin page. Details: [sonos.md#runtime-toggle-184](sonos.md#runtime-toggle-184). `hub/src/config.ts` is the authoritative env-var list.
@@ -87,9 +87,11 @@ Returns `401` if all three methods fail.
 
 - Served via `GET /rest/getCoverArt?id={encodedId}`. Disk cache with LRU eviction.
 - Cache metadata: `art_cache` table. Files: `{dataDir}/cache/art/`.
-- Max size configurable via `GET/PUT /api/admin/hub/cache`; clear via `DELETE /api/admin/hub/cache`. Stored in `settings` table, default 100 MB. `ART_CACHE_MAX_BYTES` env var, when set, overrides the stored value on every boot.
+- Max size configurable via `GET/PUT /api/admin/hub/cache`; clear via `DELETE /api/admin/hub/cache`. Stored in `settings` table, default 1 GB. `ART_CACHE_MAX_BYTES` env var, when set, overrides the stored value on every boot.
 - **Encoded IDs:** `{instanceId}:{coverArtId}`. Subsonic art IDs are instance-local, so the hub must know which upstream to query. Helpers in `hub/src/library/cover-art.ts`.
 - The Subsonic `coverArt` field IS the encoded ID — `buildAlbum`/`buildSong` set it to `row.image_url`, which already stores the encoded form. Pass directly to `artUrl()` on the frontend; no further encoding.
+- **Effective size** (`hub/src/routes/subsonic/art-size.ts`): `size` query param is clamped to `[16, 1024]`; absent/non-numeric/`<= 0` defaults to `1024`. Cache key is always `${id}:${effSize}` — no more bare-`id` entries.
+- **External art downsampling** (fanart.tv/Last.fm branch only — local/peer art is already resized upstream by Navidrome): fetched bytes are passed through `hub/src/services/art-resize.ts` (sharp) to fit within `effSize`x`effSize` before caching. `image/gif` and `image/svg+xml` pass through unresized; a sharp failure on unparseable bytes also falls back to the original buffer.
 
 ## Federation
 

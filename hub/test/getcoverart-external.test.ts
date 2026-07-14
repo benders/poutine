@@ -3,6 +3,7 @@
  * (the fanart.tv path) — SSRF allowlist + content-type guard.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import sharp from "sharp";
 import { buildApp } from "../src/server.js";
 import { setPassword } from "../src/auth/passwords.js";
 import { encodeCoverArtId } from "../src/library/cover-art.js";
@@ -160,5 +161,114 @@ describe("/rest/getCoverArt external URL passthrough", () => {
     );
     const res = await app.inject({ method: "GET", url: artUrl(id) });
     expect(res.statusCode).toBe(502);
+  });
+
+  it("downsamples external art to the requested size", async () => {
+    const original = await sharp({
+      create: { width: 1000, height: 1000, channels: 3, background: { r: 200, g: 50, b: 50 } },
+    })
+      .jpeg()
+      .toBuffer();
+    fetchMock.mockResolvedValueOnce(
+      new Response(original, { status: 200, headers: { "content-type": "image/jpeg" } }),
+    );
+
+    const id = encodeCoverArtId(
+      "local",
+      "https://assets.fanart.tv/fanart/music/resize-test.jpg",
+    );
+    const res = await app.inject({ method: "GET", url: `${artUrl(id)}&size=300` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/jpeg");
+    const meta = await sharp(res.rawPayload).metadata();
+    expect(meta.width).toBeLessThanOrEqual(300);
+    expect(meta.height).toBeLessThanOrEqual(300);
+  });
+
+  it("dedupes unsized and size=1024 requests to the same cache key", async () => {
+    const original = await sharp({
+      create: { width: 1000, height: 1000, channels: 3, background: { r: 10, g: 200, b: 10 } },
+    })
+      .jpeg()
+      .toBuffer();
+    fetchMock.mockResolvedValueOnce(
+      new Response(original, { status: 200, headers: { "content-type": "image/jpeg" } }),
+    );
+
+    const id = encodeCoverArtId(
+      "local",
+      "https://assets.fanart.tv/fanart/music/dedupe-test.jpg",
+    );
+
+    const first = await app.inject({ method: "GET", url: artUrl(id) });
+    expect(first.statusCode).toBe(200);
+    expect(first.headers["x-cache"]).toBe("MISS");
+
+    const second = await app.inject({ method: "GET", url: `${artUrl(id)}&size=1024` });
+    expect(second.statusCode).toBe(200);
+    expect(second.headers["x-cache"]).toBe("HIT");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("clamps size=4096 to the 1024 max", async () => {
+    const original = await sharp({
+      create: { width: 2000, height: 2000, channels: 3, background: { r: 5, g: 5, b: 200 } },
+    })
+      .jpeg()
+      .toBuffer();
+    fetchMock.mockResolvedValueOnce(
+      new Response(original, { status: 200, headers: { "content-type": "image/jpeg" } }),
+    );
+
+    const id = encodeCoverArtId(
+      "local",
+      "https://assets.fanart.tv/fanart/music/clamp-test.jpg",
+    );
+    const res = await app.inject({ method: "GET", url: `${artUrl(id)}&size=4096` });
+
+    expect(res.statusCode).toBe(200);
+    const meta = await sharp(res.rawPayload).metadata();
+    expect(meta.width).toBeLessThanOrEqual(1024);
+    expect(meta.height).toBeLessThanOrEqual(1024);
+  });
+
+  it("falls back to original bytes when upstream image data is unparseable", async () => {
+    const garbage = Buffer.from("not actually a jpeg");
+    fetchMock.mockResolvedValueOnce(
+      new Response(garbage, { status: 200, headers: { "content-type": "image/jpeg" } }),
+    );
+
+    const id = encodeCoverArtId(
+      "local",
+      "https://assets.fanart.tv/fanart/music/garbage-test.jpg",
+    );
+    const res = await app.inject({ method: "GET", url: `${artUrl(id)}&size=300` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/jpeg");
+    expect(Buffer.from(res.rawPayload).equals(garbage)).toBe(true);
+  });
+
+  it("passes GIF bodies through without resizing", async () => {
+    // Minimal valid 1x1 GIF (not resized regardless of dimensions since
+    // image/gif is skipped outright).
+    const gif = Buffer.from(
+      "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7",
+      "base64",
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(gif, { status: 200, headers: { "content-type": "image/gif" } }),
+    );
+
+    const id = encodeCoverArtId(
+      "local",
+      "https://assets.fanart.tv/fanart/music/anim-test.gif",
+    );
+    const res = await app.inject({ method: "GET", url: `${artUrl(id)}&size=48` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/gif");
+    expect(Buffer.from(res.rawPayload).equals(gif)).toBe(true);
   });
 });

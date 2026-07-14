@@ -118,7 +118,7 @@ All endpoints support both GET and POST, with and without the `.view` suffix (e.
 | `download`          | Implemented     | Original bytes, never transcoded (`format`/`maxBitRate` ignored per spec), `Content-Disposition: attachment`. Track id (`t…`) → single file named `Artist - Title.ext`; album id (`al…`) → streaming ZIP (stored entries, `NN - Title.ext`) of the best release's tracks (#35). Peer-sourced tracks proxied raw via `/federation/stream` |
 | `hls`               | NOT IMPLEMENTED |                                                                                |
 | `getCaptions`       | NOT IMPLEMENTED |                                                                                |
-| `getCoverArt`       | Implemented     | Disk-cached with LRU eviction; ID format `{instanceId}:{coverArtId}`           |
+| `getCoverArt`       | Implemented     | Disk-cached with LRU eviction; ID format `{instanceId}:{coverArtId}`. `size` capped at 1024; unsized requests also capped at 1024px |
 | `getLyrics`         | NOT IMPLEMENTED |                                                                                |
 | `getLyricsBySongId` | NOT IMPLEMENTED | OpenSubsonic extension                                                         |
 | `getAvatar`         | NOT IMPLEMENTED |                                                                                |
