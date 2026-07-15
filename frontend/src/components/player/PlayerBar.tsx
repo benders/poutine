@@ -139,6 +139,25 @@ export function PlayerBar() {
     [currentTrack],
   );
 
+  // #237: now-playing pings. While a track is playing on either sink (local
+  // <audio> or Sonos cast), report it via scrobble?submission=false so
+  // getNowPlaying and the admin Activity page see live playback. Ping on
+  // play/resume/track-change, then every 2 minutes — the hub drops an entry
+  // 5 minutes after its last ping, so a paused/closed player ages out on its
+  // own. Best-effort: a failed ping never disrupts playback.
+  useEffect(() => {
+    if (!isPlaying || !currentTrack) return;
+    const trackId = currentTrack.id;
+    scrobble(trackId, false).catch(() => {});
+    const timer = window.setInterval(() => {
+      scrobble(trackId, false).catch(() => {});
+    }, 120_000);
+    return () => window.clearInterval(timer);
+    // Narrow dep on the id (not the track object) — same rationale as
+    // currentStreamUrl below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, currentTrack?.id]);
+
   // streamUrl() generates a fresh u+t+s salt per call, so we MUST memoize
   // by track id — otherwise every render produces a new string, every
   // [currentStreamUrl] effect re-fires, and React throws "Maximum update

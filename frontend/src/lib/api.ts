@@ -396,7 +396,25 @@ export interface ActivitySummary {
   lastStream: StreamOperation | null;
 }
 
+// Live playback entry (#237) — fed by scrobble?submission=false pings, one per
+// (user, client) player. Distinct from ActiveStream: a stream row is an
+// in-flight HTTP transfer (gone in seconds for a buffering client), while a
+// now-playing entry tracks actual listening until its ping TTL lapses.
+export interface NowPlayingActivityEntry {
+  userId: string;
+  username: string;
+  trackId: string;
+  trackTitle: string;
+  artistName: string;
+  clientName: string | null;
+  playerId: number;
+  startedAt: string;
+  updatedAt: string;
+  minutesAgo: number;
+}
+
 export interface ActiveActivity {
+  nowPlaying: NowPlayingActivityEntry[];
   streams: ActiveStream[];
   syncs: SyncOperation[];
 }

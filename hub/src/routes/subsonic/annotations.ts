@@ -1,7 +1,7 @@
 import { sendSubsonicOk, encodeId, decodeId } from "../subsonic-response.js";
 import { sqliteToIso } from "../../util/time.js";
 import type { ArtistRow, ReleaseGroupRow, TrackRow, SubsonicRouteContext } from "./types.js";
-import { buildAlbum, buildSong, annotatePlays } from "./builders.js";
+import { buildAlbum, buildSong, annotatePlays, annotateStarred } from "./builders.js";
 
 type StarKind = "track" | "album" | "artist";
 
@@ -160,9 +160,17 @@ export function registerAnnotations(ctx: SubsonicRouteContext): void {
   // records the rest (Subsonic leniency). Honors the optional `time` param
   // (epoch ms of when the play occurred) so offline/batching clients can
   // backfill; absent, the play is stamped now.
+  //
+  // `submission=false` is the now-playing notification (#237): it records
+  // nothing durable, but updates the in-memory NowPlayingService entry for
+  // this (user, client) so getNowPlaying and the admin Activity page can
+  // surface live playback.
   route("/scrobble", async (request, reply) => {
     const q = request.query as Record<string, string | string[] | undefined>;
-    const submission = q.submission == null ? true : String(q.submission) !== "false";
+    // Case-insensitive like Java's Boolean.parseBoolean — py-sonic (and other
+    // non-JS clients) send `submission=False` with a capital F.
+    const submissionRaw = Array.isArray(q.submission) ? q.submission[0] : q.submission;
+    const submission = submissionRaw == null || !/^(false|0)$/i.test(submissionRaw);
     // Subsonic `time` is epoch milliseconds; ignore a non-numeric value.
     const timeRaw = Array.isArray(q.time) ? q.time[0] : q.time;
     const playedAtMs =
@@ -198,13 +206,63 @@ export function registerAnnotations(ctx: SubsonicRouteContext): void {
           playedAtMs,
         });
       }
+    } else {
+      // Now-playing ping. Clients send a single id here; a multi-id ping is
+      // not meaningful ("now playing" is one track per player), so take the
+      // first decodable, known track.
+      const ids = (Array.isArray(q.id) ? q.id : q.id != null ? [q.id] : []).map(
+        String,
+      );
+      for (const encoded of ids) {
+        let trackId: string;
+        try {
+          trackId = decodeId(encoded, "t");
+        } catch {
+          continue;
+        }
+        const row = queries.trackForSong.get(trackId) as TrackRow | undefined;
+        if (!row) continue;
+        app.nowPlaying.record({
+          userId: request.subsonicUser.id,
+          username: request.subsonicUser.username,
+          trackId,
+          trackTitle: row.title,
+          artistName: row.artist_name,
+          clientName: typeof q.c === "string" ? q.c : null,
+        });
+        break;
+      }
     }
 
     sendSubsonicOk(reply, q as Record<string, string>, {});
   });
 
+  // ── getNowPlaying (#237) ──────────────────────────────────────────────────
+  // Per-user by design (owner decision on #237): the caller sees only their
+  // own active players, not other users' — unlike stock Subsonic, which is a
+  // server-wide list. The admin Activity page gets the cross-user view via
+  // /api/admin/hub/activity/active instead.
   route("/getNowPlaying", async (request, reply) => {
     const q = request.query as Record<string, string>;
-    sendSubsonicOk(reply, q, { nowPlaying: { entry: [] } });
+    const userId = request.subsonicUser.id;
+    const entries = app.nowPlaying.getForUser(userId);
+
+    const built: Array<Record<string, unknown>> = [];
+    for (const e of entries) {
+      // Tracks can vanish between ping and read (sync remap) — drop those.
+      const row = queries.trackForSong.get(e.trackId) as TrackRow | undefined;
+      if (!row) continue;
+      built.push({
+        ...buildSong(row),
+        username: e.username,
+        minutesAgo: app.nowPlaying.minutesAgo(e),
+        playerId: e.playerId,
+        ...(e.clientName ? { playerName: e.clientName } : {}),
+      });
+    }
+    annotateStarred(app.db, userId, "track", "t", built as Array<{ id: string }>);
+    annotatePlays(app.playEvents, userId, "track", "t", built as Array<{ id: string }>);
+
+    sendSubsonicOk(reply, q, { nowPlaying: { entry: built } });
   });
 }

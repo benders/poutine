@@ -9,6 +9,7 @@ import {
 } from "@/lib/api";
 import type {
   ActiveStream,
+  NowPlayingActivityEntry,
   StreamOperation,
   SyncOperation,
   ActivityHistoryKind,
@@ -66,6 +67,32 @@ function streamClientLabel(
 
 function streamUserLabel(s: StreamOperation | ActiveStream): string {
   return s.username || "—";
+}
+
+// Live playback (#237): tracks currently playing per (user, client), fed by
+// now-playing scrobble pings. Shown at the top of the Streams list — the
+// transfer rows below it only exist while bytes are moving, which for a
+// buffering client is seconds, not the length of the listen.
+function NowPlayingRow({ e }: { e: NowPlayingActivityEntry }) {
+  return (
+    <div className="grid grid-cols-12 gap-2 px-3 py-2 text-xs items-center bg-surface-hover border border-border rounded">
+      <span className="col-span-2 font-mono text-text-muted">{formatTs(e.startedAt)}</span>
+      <span className="col-span-3 truncate text-text-primary" title={`${e.trackTitle} — ${e.artistName}`}>
+        <span className="font-medium">{e.trackTitle}</span>
+        <span className="text-text-muted"> · {e.artistName}</span>
+      </span>
+      <span className="col-span-2 flex items-center gap-1.5 text-success">
+        <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" aria-hidden />
+        Playing
+      </span>
+      <span className="col-span-1 text-text-secondary">—</span>
+      <span className="col-span-1 truncate text-text-secondary">{e.username || "—"}</span>
+      <span className="col-span-2 truncate text-text-secondary">{e.clientName || "—"}</span>
+      <span className="col-span-1 text-right tabular-nums text-text-secondary">
+        {e.minutesAgo === 0 ? "now" : `${e.minutesAgo}m ago`}
+      </span>
+    </div>
+  );
 }
 
 function ActiveStreamRow({
@@ -264,6 +291,7 @@ export function ActivityPage() {
     merged.sort((a, b) => (a.ts < b.ts ? 1 : -1));
   }
 
+  const nowPlaying = active?.nowPlaying ?? [];
   const activeStreams = active?.streams ?? [];
   const activeSyncs = active?.syncs ?? [];
   const activeStreamPageCount = Math.max(1, Math.ceil(activeStreams.length / ACTIVE_PAGE_SIZE));
@@ -299,11 +327,16 @@ export function ActivityPage() {
             <div className="flex items-center gap-2 mb-1.5">
               <Activity className="w-4 h-4 text-text-muted" />
               <span className="text-sm font-medium text-text-secondary">Streams</span>
-              <span className="text-xs text-text-muted">({activeStreams.length})</span>
+              <span className="text-xs text-text-muted">
+                ({nowPlaying.length + activeStreams.length})
+              </span>
             </div>
-            {visibleActiveStreams.length > 0 ? (
+            {nowPlaying.length > 0 || visibleActiveStreams.length > 0 ? (
               <>
                 <div className="space-y-1">
+                  {nowPlaying.map((e) => (
+                    <NowPlayingRow key={`np-${e.userId}-${e.playerId}`} e={e} />
+                  ))}
                   {visibleActiveStreams.map((s) => (
                     <ActiveStreamRow key={s.id} s={s} peerName={peerName} />
                   ))}

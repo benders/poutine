@@ -232,12 +232,27 @@ def test_get_cover_art(conn):
         or data[:4] == b"RIFF" or data[:3] == b"GIF", f"unexpected cover bytes: {data!r}"
 
 
+def test_get_now_playing(conn):
+    # #237: implemented, per-user. A submission=false scrobble ping surfaces
+    # the track for the pinging user; entries are in-memory with a 5-min TTL.
+    album = conn.getAlbumList2(ltype="newest", size=1)["albumList2"]["album"]
+    if isinstance(album, list):
+        album = album[0]
+    songs = conn.getAlbum(id=album["id"])["album"].get("song", [])
+    if isinstance(songs, dict):
+        songs = [songs]
+    conn.scrobble(sid=songs[0]["id"], submission=False)
+    entry = conn.getNowPlaying()["nowPlaying"]["entry"]
+    if isinstance(entry, dict):
+        entry = [entry]
+    mine = [e for e in entry if e["id"] == songs[0]["id"]]
+    assert mine, f"pinged song not in nowPlaying: {entry!r}"
+    assert "username" in mine[0]
+    assert "minutesAgo" in mine[0]
+    assert "playerId" in mine[0]
+
+
 # ── Stub endpoints (return well-formed empty/no-op envelopes) ───────────────
-
-
-def test_get_now_playing_stub(conn):
-    r = conn.getNowPlaying()
-    assert "nowPlaying" in r
 
 
 def test_get_playlists_stub(conn):

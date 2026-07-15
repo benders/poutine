@@ -891,9 +891,16 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(204).send();
   });
 
-  // GET /admin/activity/active — combined active streams + running syncs
+  // GET /admin/activity/active — combined now-playing + active streams +
+  // running syncs. `nowPlaying` (#237) is the cross-user view of live playback
+  // (fed by scrobble?submission=false pings); `streams` remains in-flight HTTP
+  // transfers, which for a buffering client finish long before playback does.
   app.get("/activity/active", { preHandler: requireOwner }, async () => {
     return {
+      nowPlaying: app.nowPlaying.getAll().map((e) => ({
+        ...e,
+        minutesAgo: app.nowPlaying.minutesAgo(e),
+      })),
       streams: app.streamTracking.getActive(),
       syncs: app.syncOpService.getRunning(),
     };
