@@ -6,6 +6,10 @@
 
 When posting comments, ALWAYS prefix comments with `FROM @claude:` and use blockquote style
 
+### Tool gotchas
+
+* The Write tool can emit literal control characters for `\u0000`–`\u001f` escapes inside regex character classes; a later Edit `old_string` then never matches. Repair the bytes with `perl -i -pe`. (Hit twice.)
+
 ### Workflow
 
 Default flow should be to use Pull Requests.

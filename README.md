@@ -22,6 +22,8 @@ Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-intern
 
 ## Local development (without Docker)
 
+Requires **Node 22** (what CI and the Docker image run). Newer majors ship before `better-sqlite3` publishes a prebuild — tests then fail with a `NODE_MODULE_VERSION` mismatch or fall back to a source build.
+
 ```bash
 pnpm install
 pnpm dev                        # Hub on :3000 (tsx watch)
