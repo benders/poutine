@@ -9,6 +9,7 @@ export interface StreamStartOptions {
   trackId: string;
   trackTitle: string;
   artistName: string;
+  albumId?: string | null;
   clientName?: string | null;
   clientVersion?: string | null;
   peerId?: string | null;
@@ -27,6 +28,7 @@ export interface StreamOperation {
   trackId: string;
   trackTitle: string;
   artistName: string;
+  albumId: string | null;
   clientName: string | null;
   clientVersion: string | null;
   peerId: string | null;
@@ -57,7 +59,21 @@ export class StreamTrackingService {
   private active = new Map<string, ActiveEntry>();
   private maxRows = 10000;
 
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database) {
+    // Crash/restart recovery: any row still unfinished at construction time
+    // belongs to a previous process (the active map starts empty), so it can
+    // never be finish()ed — close it out instead of leaving it dangling in
+    // History with no end time.
+    this.db
+      .prepare(
+        `UPDATE stream_operations
+         SET finished_at = datetime('now'),
+             duration_ms = CAST((julianday(datetime('now')) - julianday(started_at)) * 86400000 AS INTEGER),
+             error = 'interrupted'
+         WHERE finished_at IS NULL`,
+      )
+      .run();
+  }
 
   setMaxRows(n: number): void {
     this.maxRows = Math.max(0, Math.floor(n));
@@ -73,11 +89,11 @@ export class StreamTrackingService {
     this.db
       .prepare(
         `INSERT INTO stream_operations (
-           id, kind, username, track_id, track_title, artist_name,
+           id, kind, username, track_id, track_title, artist_name, album_id,
            client_name, client_version, peer_id,
            source_kind, source_peer_id, format, bitrate, transcoded, max_bitrate,
            started_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
       )
       .run(
         id,
@@ -86,6 +102,7 @@ export class StreamTrackingService {
         opts.trackId,
         opts.trackTitle,
         opts.artistName,
+        opts.albumId ?? null,
         opts.clientName ?? null,
         opts.clientVersion ?? null,
         opts.peerId ?? null,
@@ -119,6 +136,9 @@ export class StreamTrackingService {
     bytesTransferred: number | null = null,
     error: string | null = null,
   ): void {
+    // Idempotent: a stream can hit both an error/close event and end — only
+    // the first outcome is recorded.
+    if (!this.active.has(operationId)) return;
     this.db
       .prepare(
         `UPDATE stream_operations
@@ -142,6 +162,7 @@ export class StreamTrackingService {
       trackId: entry.opts.trackId,
       trackTitle: entry.opts.trackTitle,
       artistName: entry.opts.artistName,
+      albumId: entry.opts.albumId ?? null,
       clientName: entry.opts.clientName ?? null,
       clientVersion: entry.opts.clientVersion ?? null,
       peerId: entry.opts.peerId ?? null,
@@ -159,7 +180,7 @@ export class StreamTrackingService {
   getRecent(limit: number = 100): StreamOperation[] {
     const rows = this.db
       .prepare(
-        `SELECT id, kind, username, track_id, track_title, artist_name,
+        `SELECT id, kind, username, track_id, track_title, artist_name, album_id,
                 client_name, client_version, peer_id,
                 source_kind, source_peer_id, format, bitrate, transcoded, max_bitrate,
                 started_at, finished_at, duration_ms, bytes_transferred, error
@@ -176,6 +197,7 @@ export class StreamTrackingService {
       trackId: r.track_id as string,
       trackTitle: r.track_title as string,
       artistName: r.artist_name as string,
+      albumId: (r.album_id as string | null) ?? null,
       clientName: (r.client_name as string | null) ?? null,
       clientVersion: (r.client_version as string | null) ?? null,
       peerId: (r.peer_id as string | null) ?? null,

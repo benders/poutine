@@ -265,6 +265,10 @@ function migrateStreamOperations(db: Database.Database): void {
       );
     `);
   }
+  // #263: album link on activity rows.
+  if (cols.length > 0 && !names.has("album_id")) {
+    db.exec("ALTER TABLE stream_operations ADD COLUMN album_id TEXT");
+  }
 }
 
 /**

@@ -536,6 +536,13 @@ describe("PlayerBar Sonos scrobble (#197)", () => {
     vi.restoreAllMocks();
   });
 
+  // The device reports PLAYING, which syncs store isPlaying and fires the
+  // #237 now-playing ping (`scrobble(id, false)`). These tests are about the
+  // durable submission path, so count only calls without the `false` arg.
+  function submissions(spy: { mock: { calls: unknown[][] } }) {
+    return spy.mock.calls.filter((c) => c[1] !== false);
+  }
+
   function renderCasting(durationMs: number, currentTime = 0) {
     usePlayer.setState({
       sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
@@ -572,7 +579,7 @@ describe("PlayerBar Sonos scrobble (#197)", () => {
     });
 
     expect(scrobbleSpy).toHaveBeenCalledWith("trk-1");
-    expect(scrobbleSpy).toHaveBeenCalledTimes(1);
+    expect(submissions(scrobbleSpy)).toHaveLength(1);
   });
 
   it("does not scrobble while the device is below the threshold", async () => {
@@ -594,7 +601,7 @@ describe("PlayerBar Sonos scrobble (#197)", () => {
       await Promise.resolve();
     });
 
-    expect(scrobbleSpy).not.toHaveBeenCalled();
+    expect(submissions(scrobbleSpy)).toHaveLength(0);
   });
 
   it("does not scrobble a paused device even when its position is past the threshold", async () => {
@@ -643,7 +650,7 @@ describe("PlayerBar Sonos scrobble (#197)", () => {
       await Promise.resolve();
     });
 
-    expect(scrobbleSpy).not.toHaveBeenCalled();
+    expect(submissions(scrobbleSpy)).toHaveLength(0);
   });
 });
 
@@ -681,6 +688,110 @@ describe("PlayerBar local scrobble (#197)", () => {
 
     expect(scrobbleSpy).toHaveBeenCalledWith("trk-1");
     expect(scrobbleSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PlayerBar now-playing pings (#237)", () => {
+  beforeEach(() => {
+    vi.spyOn(api, "getCapabilities").mockResolvedValue({
+      sonos: true,
+      dlna: true,
+      sonosAllowNonAdmin: false,
+    } as Awaited<ReturnType<typeof api.getCapabilities>>);
+    vi.spyOn(api, "sonosPlay").mockResolvedValue({ ok: true, transcoded: true });
+    vi.spyOn(api, "sonosSetNext").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosCommand").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosSetVolume").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sonosSeek").mockResolvedValue(undefined as never);
+    // Device position stays below the scrobble threshold so the only
+    // subsonic.scrobble calls in these tests are the submission=false pings.
+    vi.spyOn(api, "getSonosState").mockResolvedValue({
+      state: "PLAYING",
+      position: 30,
+      duration: 200,
+      volume: 25,
+      volumeCap: 50,
+      trackUri: "",
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Cast sink instead of local: jsdom's <audio>.play() is unimplemented, and
+  // the ping effect is sink-agnostic (keyed only on isPlaying + track id).
+  function renderPlaying(isPlaying = true) {
+    usePlayer.setState({
+      sink: { type: "sonos", deviceId: "RINCON_1", deviceName: "Kitchen" },
+      queue: [{ ...track("trk-1"), durationMs: 200_000 }],
+      currentIndex: 0,
+      isPlaying,
+    });
+    return render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
+        <PlayerBar />
+      </MemoryRouter></QueryClientProvider>,
+    );
+  }
+
+  it("pings scrobble?submission=false when playback starts", async () => {
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+
+    renderPlaying();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(scrobbleSpy).toHaveBeenCalledWith("trk-1", false);
+  });
+
+  it("does not ping while paused", async () => {
+    // Device must report paused too — the state poll syncs store isPlaying
+    // from the speaker, which would otherwise re-arm the ping effect.
+    vi.spyOn(api, "getSonosState").mockResolvedValue({
+      state: "PAUSED_PLAYBACK",
+      position: 30,
+      duration: 200,
+      volume: 25,
+      volumeCap: 50,
+      trackUri: "",
+    });
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+
+    renderPlaying(false);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(scrobbleSpy).not.toHaveBeenCalledWith("trk-1", false);
+  });
+
+  it("re-pings on the 2-minute keep-alive interval", async () => {
+    vi.useFakeTimers();
+    const scrobbleSpy = vi
+      .spyOn(subsonic, "scrobble")
+      .mockResolvedValue(undefined as never);
+
+    renderPlaying();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const pings = () =>
+      scrobbleSpy.mock.calls.filter((c) => c[1] === false).length;
+    expect(pings()).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(pings()).toBe(2);
+    vi.useRealTimers();
   });
 });
 

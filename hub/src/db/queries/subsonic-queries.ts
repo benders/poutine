@@ -334,9 +334,11 @@ export function createSubsonicQueries(db: Database.Database): SubsonicQueries {
 
     // ── stream / download ──────────────────────────────────────────────────────
     trackForStream: db.prepare(
-      `SELECT ut.id, ut.title, ut.artist_id, ua.name AS artist_name, ut.duration_ms
+      `SELECT ut.id, ut.title, ut.artist_id, ua.name AS artist_name, ut.duration_ms,
+              ur.release_group_id AS rg_id
        FROM unified_tracks ut
        JOIN unified_artists ua ON ua.id = ut.artist_id
+       JOIN unified_releases ur ON ur.id = ut.release_id
        WHERE ut.id = ?`,
     ),
     // Source selection happens at merge time (merge.ts sets preferred = 1).

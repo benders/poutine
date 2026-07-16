@@ -28,6 +28,7 @@ import { ensureRealPathPlayers } from "./services/navidrome-native.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
 import { PlayEventService } from "./services/play-events.js";
+import { NowPlayingService } from "./services/now-playing.js";
 import { LastFmClient } from "./services/lastfm.js";
 import { FanartTvClient } from "./services/fanarttv.js";
 import { SonosDiscoveryService } from "./services/sonos-discovery.js";
@@ -69,6 +70,7 @@ declare module "fastify" {
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
   playEvents: PlayEventService;
+  nowPlaying: NowPlayingService;
   lastFmClient: LastFmClient | null;
   fanartTvClient: FanartTvClient | null;
   navidromeClient: SubsonicClient;
@@ -301,6 +303,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   app.decorate("syncOpService", syncOpService);
   app.decorate("playEvents", playEvents);
   app.decorate("streamTracking", streamTracking);
+  app.decorate("nowPlaying", new NowPlayingService());
 
   // Load activity history retention from settings (issue #121)
   const activityRow = db
