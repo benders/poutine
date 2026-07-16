@@ -6,6 +6,7 @@ import { useAuth } from "@/stores/auth";
 import { useToasts } from "@/stores/toast";
 import { formatDuration } from "@/lib/format";
 import { streamUrl, artUrl, effectiveStream, scrobble, scrobbleThresholdSec } from "@/lib/subsonic";
+import { consumeRestoredSonosTrackId } from "@/lib/player-snapshot";
 import type { SubsonicSong } from "@/lib/subsonic";
 import {
   getCapabilities,
@@ -380,8 +381,14 @@ export function PlayerBar() {
   // and would re-issue SetAVTransportURI for a track Sonos is already
   // playing, restarting it from byte 0 with an audible stutter (#202).
   // The poll sets this ref to the auto-advanced trackId so the next
-  // effect fire for that id is skipped.
-  const skipNextSonosPlayForTrackRef = useRef<string | null>(null);
+  // effect fire for that id is skipped. Seeded from a post-update-reload
+  // snapshot (#196): when the SPA reloads mid-cast, the device is already
+  // playing the restored track, and re-issuing SetAVTransportURI here
+  // would restart the stream. One-shot — consume returns null afterwards,
+  // so later renders can't resurrect the skip.
+  const skipNextSonosPlayForTrackRef = useRef<string | null>(
+    consumeRestoredSonosTrackId(),
+  );
   // Decision key for the pre-load. When this matches the last successful
   // pre-load, the effect re-fire was for a non-material reason (e.g. a
   // referentially-new `queue` array with identical contents) and we

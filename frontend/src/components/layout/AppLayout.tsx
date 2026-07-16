@@ -2,6 +2,7 @@ import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { PlayerBar } from "@/components/player/PlayerBar";
 import { ToastHost } from "@/components/ui/ToastHost";
+import { UpdateNotifier } from "@/components/UpdateNotifier";
 import { useDocumentTitle } from "@/lib/useDocumentTitle";
 
 export function AppLayout() {
@@ -14,6 +15,9 @@ export function AppLayout() {
       </main>
       <PlayerBar />
       <ToastHost />
+      {/* Mounted post-login only: /login must stay free of background
+          traffic, and updates matter most to a tab someone is using. */}
+      <UpdateNotifier />
     </div>
   );
 }
