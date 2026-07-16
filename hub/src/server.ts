@@ -41,6 +41,7 @@ import { SsdpAdvertiser } from "./services/ssdp-advertiser.js";
 import { DlnaObjectService } from "./services/dlna-objects.js";
 import { dlnaRoutes } from "./routes/dlna.js";
 import { createHubSubsonicCaller } from "./services/hub-subsonic-caller.js";
+import { createSpaBuildIdReader } from "./services/spa-build-id.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
@@ -575,6 +576,17 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     // #232: when false, the SPA hides the device picker for non-admin users
     // (the API also enforces the rule independently).
     sonosAllowNonAdmin: sonosSettings.getAllowNonAdmin(),
+  }));
+
+  // Version signal for SPA auto-update polling (issue #196). Deliberately
+  // separate from /api/health, whose per-call Navidrome ping (1s timeout
+  // budget) is too expensive for one poll per open tab. `buildId` hashes the
+  // on-disk SPA index.html so a rebuild is detected even when APP_VERSION
+  // didn't change and the hub wasn't restarted; "dev" without a staticDir.
+  const readSpaBuildId = createSpaBuildIdReader(config.staticDir);
+  app.get("/api/version", async () => ({
+    appVersion: APP_VERSION,
+    buildId: await readSpaBuildId(),
   }));
 
   // Player health probe (issue #216). The SPA hits this to decide whether
