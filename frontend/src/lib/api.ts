@@ -367,6 +367,7 @@ export interface StreamOperation {
   trackId: string;
   trackTitle: string;
   artistName: string;
+  albumId: string | null;
   clientName: string | null;
   clientVersion: string | null;
   peerId: string | null;
@@ -406,7 +407,14 @@ export interface NowPlayingActivityEntry {
   trackId: string;
   trackTitle: string;
   artistName: string;
+  albumId: string | null;
   clientName: string | null;
+  // Preferred-source snapshot resolved at ping time (source file, not the
+  // per-request transcode the client may actually receive).
+  sourceKind: "local" | "peer" | null;
+  sourcePeerId: string | null;
+  format: string | null;
+  bitrate: number | null;
   playerId: number;
   startedAt: string;
   updatedAt: string;

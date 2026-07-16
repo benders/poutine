@@ -553,11 +553,13 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
       const trackRow = app.db
         .prepare(
           `SELECT ut.id AS track_id, ut.title, ua.name AS artist_name,
+                  ur.release_group_id AS rg_id,
                   ts.format, ts.bitrate
            FROM instance_tracks it
            JOIN track_sources ts ON ts.instance_track_id = it.id
            JOIN unified_tracks ut ON ut.id = ts.unified_track_id
            JOIN unified_artists ua ON ua.id = ut.artist_id
+           JOIN unified_releases ur ON ur.id = ut.release_id
            WHERE it.instance_id = 'local' AND it.remote_id = ?
            LIMIT 1`,
         )
@@ -566,6 +568,7 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
             track_id: string;
             title: string;
             artist_name: string;
+            rg_id: string;
             format: string | null;
             bitrate: number | null;
           }
@@ -586,6 +589,7 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
           trackId: trackRow.track_id,
           trackTitle: trackRow.title,
           artistName: trackRow.artist_name,
+          albumId: trackRow.rg_id,
           peerId: request.peer.id,
           sourceKind: "local",
           format: effectiveFormat,

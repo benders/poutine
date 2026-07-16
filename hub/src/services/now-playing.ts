@@ -21,7 +21,16 @@ export interface NowPlayingRecordInput {
   trackId: string;
   trackTitle: string;
   artistName: string;
+  /** unified_release_groups.id — SPA album link on the Activity page. */
+  albumId: string | null;
   clientName: string | null;
+  // Preferred-source snapshot (what a stream of this track would serve),
+  // resolved at ping time. What the client *actually* receives may differ
+  // (transcode params are per-request), so these describe the source file.
+  sourceKind: "local" | "peer" | null;
+  sourcePeerId: string | null;
+  format: string | null;
+  bitrate: number | null;
 }
 
 export interface NowPlayingEntry extends NowPlayingRecordInput {

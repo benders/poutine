@@ -54,25 +54,24 @@ function seedLibrary(app: FastifyInstance): void {
 
 // ── Service unit tests ───────────────────────────────────────────────────────
 
+// Source-snapshot fields (#263) are irrelevant to the slot/TTL mechanics
+// under test here.
+const npDefaults = {
+  trackTitle: "A",
+  artistName: "X",
+  albumId: null,
+  clientName: "spa",
+  sourceKind: null,
+  sourcePeerId: null,
+  format: null,
+  bitrate: null,
+} as const;
+
 describe("NowPlayingService", () => {
   it("keeps one entry per (user, client), newest ping wins", () => {
     const svc = new NowPlayingService();
-    svc.record({
-      userId: "u1",
-      username: "alice",
-      trackId: "t-a",
-      trackTitle: "A",
-      artistName: "X",
-      clientName: "spa",
-    });
-    svc.record({
-      userId: "u1",
-      username: "alice",
-      trackId: "t-b",
-      trackTitle: "B",
-      artistName: "X",
-      clientName: "spa",
-    });
+    svc.record({ ...npDefaults, userId: "u1", username: "alice", trackId: "t-a" });
+    svc.record({ ...npDefaults, userId: "u1", username: "alice", trackId: "t-b", trackTitle: "B" });
     const all = svc.getAll();
     expect(all).toHaveLength(1);
     expect(all[0].trackId).toBe("t-b");
@@ -80,20 +79,13 @@ describe("NowPlayingService", () => {
 
   it("separate clients for the same user are separate players", () => {
     const svc = new NowPlayingService();
+    svc.record({ ...npDefaults, userId: "u1", username: "alice", trackId: "t-a" });
     svc.record({
-      userId: "u1",
-      username: "alice",
-      trackId: "t-a",
-      trackTitle: "A",
-      artistName: "X",
-      clientName: "spa",
-    });
-    svc.record({
+      ...npDefaults,
       userId: "u1",
       username: "alice",
       trackId: "t-b",
       trackTitle: "B",
-      artistName: "X",
       clientName: "phone",
     });
     expect(svc.getAll()).toHaveLength(2);
@@ -103,14 +95,7 @@ describe("NowPlayingService", () => {
 
   it("playerId is stable across pings from the same player", () => {
     const svc = new NowPlayingService();
-    const input = {
-      userId: "u1",
-      username: "alice",
-      trackId: "t-a",
-      trackTitle: "A",
-      artistName: "X",
-      clientName: "spa",
-    };
+    const input = { ...npDefaults, userId: "u1", username: "alice", trackId: "t-a" };
     svc.record(input);
     const first = svc.getAll()[0].playerId;
     svc.record({ ...input, trackId: "t-b" });
@@ -120,14 +105,7 @@ describe("NowPlayingService", () => {
   it("re-ping of the same track keeps startedAt but refreshes the TTL", () => {
     let nowMs = 1_000_000;
     const svc = new NowPlayingService(() => nowMs);
-    const input = {
-      userId: "u1",
-      username: "alice",
-      trackId: "t-a",
-      trackTitle: "A",
-      artistName: "X",
-      clientName: "spa",
-    };
+    const input = { ...npDefaults, userId: "u1", username: "alice", trackId: "t-a" };
     svc.record(input);
     const startedAt = svc.getAll()[0].startedAt;
 
@@ -143,36 +121,15 @@ describe("NowPlayingService", () => {
   it("entries expire after the TTL", () => {
     let nowMs = 1_000_000;
     const svc = new NowPlayingService(() => nowMs);
-    svc.record({
-      userId: "u1",
-      username: "alice",
-      trackId: "t-a",
-      trackTitle: "A",
-      artistName: "X",
-      clientName: "spa",
-    });
+    svc.record({ ...npDefaults, userId: "u1", username: "alice", trackId: "t-a" });
     nowMs += NOW_PLAYING_TTL_MS + 1;
     expect(svc.getAll()).toHaveLength(0);
   });
 
   it("getForUser filters to that user only", () => {
     const svc = new NowPlayingService();
-    svc.record({
-      userId: "u1",
-      username: "alice",
-      trackId: "t-a",
-      trackTitle: "A",
-      artistName: "X",
-      clientName: "spa",
-    });
-    svc.record({
-      userId: "u2",
-      username: "bob",
-      trackId: "t-b",
-      trackTitle: "B",
-      artistName: "X",
-      clientName: "spa",
-    });
+    svc.record({ ...npDefaults, userId: "u1", username: "alice", trackId: "t-a" });
+    svc.record({ ...npDefaults, userId: "u2", username: "bob", trackId: "t-b", trackTitle: "B" });
     expect(svc.getForUser("u1")).toHaveLength(1);
     expect(svc.getForUser("u1")[0].username).toBe("alice");
   });
@@ -180,14 +137,7 @@ describe("NowPlayingService", () => {
   it("minutesAgo counts whole minutes since the last ping", () => {
     let nowMs = 1_000_000;
     const svc = new NowPlayingService(() => nowMs);
-    svc.record({
-      userId: "u1",
-      username: "alice",
-      trackId: "t-a",
-      trackTitle: "A",
-      artistName: "X",
-      clientName: "spa",
-    });
+    svc.record({ ...npDefaults, userId: "u1", username: "alice", trackId: "t-a" });
     nowMs += 150_000; // 2.5 min
     expect(svc.minutesAgo(svc.getAll()[0])).toBe(2);
   });
@@ -334,5 +284,45 @@ describe("getNowPlaying (#237)", () => {
     const users = body.nowPlaying.map((e) => e.username).sort();
     expect(users).toEqual(["alice", "tester"]);
     expect(body.nowPlaying[0].minutesAgo).toBe(0);
+  });
+
+  it("admin entries carry album + preferred-source snapshot (#263)", async () => {
+    app.db
+      .prepare(
+        `INSERT INTO instance_tracks
+         (id, instance_id, remote_id, album_id, title, artist_name, format, bitrate)
+         VALUES ('local:trk-1', 'local', 'trk-1', 'local:alb-1', 'Now Track', 'Now Artist', 'flac', 1411)`,
+      )
+      .run();
+    app.db
+      .prepare(
+        `INSERT INTO track_sources
+         (id, unified_track_id, instance_id, instance_track_id, format, bitrate, preferred)
+         VALUES ('src-1', ?, 'local', 'local:trk-1', 'flac', 1411, 1)`,
+      )
+      .run(T1_ID);
+    await ping(T1_SUB);
+    const { token } = await seedAdminUser(app);
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/activity/active",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = res.json() as {
+      nowPlaying: Array<{
+        albumId: string | null;
+        sourceKind: string | null;
+        sourcePeerId: string | null;
+        format: string | null;
+        bitrate: number | null;
+      }>;
+    };
+    expect(body.nowPlaying).toHaveLength(1);
+    const e = body.nowPlaying[0];
+    expect(e.albumId).toBe(RG_ID);
+    expect(e.sourceKind).toBe("local");
+    expect(e.sourcePeerId).toBeNull();
+    expect(e.format).toBe("flac");
+    expect(e.bitrate).toBe(1411);
   });
 });

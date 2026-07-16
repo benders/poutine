@@ -39,6 +39,7 @@ describe("StreamTrackingService", () => {
         track_id TEXT NOT NULL,
         track_title TEXT NOT NULL,
         artist_name TEXT NOT NULL,
+        album_id TEXT,
         client_name TEXT,
         client_version TEXT,
         peer_id TEXT,
@@ -118,6 +119,37 @@ describe("StreamTrackingService", () => {
       service.finish(id, 0, "Stream error");
       const row = db.prepare("SELECT * FROM stream_operations WHERE id = ?").get(id) as any;
       expect(row.error).toBe("Stream error");
+    });
+
+    it("is idempotent — only the first outcome is recorded", () => {
+      const id = service.start(makeStart());
+      service.finish(id, 5000, null);
+      service.finish(id, 0, "late error event");
+      const row = db.prepare("SELECT * FROM stream_operations WHERE id = ?").get(id) as any;
+      expect(row.bytes_transferred).toBe(5000);
+      expect(row.error).toBeNull();
+    });
+  });
+
+  describe("albumId (#263)", () => {
+    it("round-trips through the DB and getActive", () => {
+      const id = service.start(makeStart({ albumId: "rg-1" }));
+      expect(service.getActive()[0].albumId).toBe("rg-1");
+      service.finish(id, 100, null);
+      expect(service.getRecent(1)[0].albumId).toBe("rg-1");
+    });
+  });
+
+  describe("startup recovery", () => {
+    it("closes out rows left unfinished by a previous process", () => {
+      service.start(makeStart());
+      // Simulate a crash/restart: a new service over the same DB has an empty
+      // active map, so the row could never be finish()ed.
+      const revived = new StreamTrackingService(db);
+      const rows = revived.getRecent(10);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].finishedAt).toBeTruthy();
+      expect(rows[0].error).toBe("interrupted");
     });
   });
 

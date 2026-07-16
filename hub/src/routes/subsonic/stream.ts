@@ -1,5 +1,6 @@
 import type { RouteHandlerMethod } from "fastify";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { Peer } from "../../federation/peers.js";
 import { sendBinaryError, decodeId } from "../subsonic-response.js";
 import { decodeCoverArtId } from "../../library/cover-art.js";
@@ -186,7 +187,7 @@ try {
 
   // Get track info for streaming
   const trackRow = queries.trackForStream.get(trackId) as
-    | { id: string; title: string; artist_name: string; duration_ms: number | null }
+    | { id: string; title: string; artist_name: string; duration_ms: number | null; rg_id: string }
     | undefined;
 
   if (!trackRow) {
@@ -244,6 +245,7 @@ try {
       trackId: trackRow.id,
       trackTitle: trackRow.title,
       artistName: trackRow.artist_name,
+      albumId: trackRow.rg_id,
       clientName: q.c ?? null,
       clientVersion: q.v ?? null,
       sourceKind: best.instance_id === "local" ? "local" : "peer",
@@ -346,20 +348,28 @@ try {
     if (streamOpId) app.streamTracking.updateBytes(streamOpId, bytesTransferred);
   });
 
-  // Finish tracking when stream ends or errors
-  nodeStream.on("end", () => {
+  // pipeline() (unlike bare .pipe()) propagates a client disconnect back to
+  // the source: the upstream fetch is cancelled instead of drained to
+  // completion into a dead socket. With bare .pipe() an aborted request never
+  // fired end/error — the activity entry stayed "active" forever and recorded
+  // the full file size no matter how little the client took (#263 review).
+  // A premature close is normal listener behavior (skip, seek, page close),
+  // not an error worth flagging in the activity feed.
+  try {
+    await pipeline(nodeStream, reply.raw);
+    if (streamOpId) app.streamTracking.finish(streamOpId, bytesTransferred, null);
+  } catch (err: unknown) {
+    const nodeErr = err as NodeJS.ErrnoException;
     if (streamOpId) {
-      app.streamTracking.finish(streamOpId, bytesTransferred, null);
+      app.streamTracking.finish(
+        streamOpId,
+        bytesTransferred,
+        nodeErr.code === "ERR_STREAM_PREMATURE_CLOSE"
+          ? null
+          : (nodeErr.message ?? "stream error"),
+      );
     }
-  });
-
-  nodeStream.on("error", (err) => {
-    if (streamOpId) {
-      app.streamTracking.finish(streamOpId, bytesTransferred, err instanceof Error ? err.message : String(err));
-    }
-  });
-
-  nodeStream.pipe(reply.raw);
+  }
 }
 
   binaryRoute("/stream", handleStream);

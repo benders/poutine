@@ -222,13 +222,23 @@ export function registerAnnotations(ctx: SubsonicRouteContext): void {
         }
         const row = queries.trackForSong.get(trackId) as TrackRow | undefined;
         if (!row) continue;
+        // Snapshot the preferred source (the one a stream would serve) so the
+        // admin Activity page can show source peer + format/bitrate.
+        const src = queries.preferredSourceForStream.get(trackId) as
+          | { instance_id: string; format: string | null; bitrate: number | null }
+          | undefined;
         app.nowPlaying.record({
           userId: request.subsonicUser.id,
           username: request.subsonicUser.username,
           trackId,
           trackTitle: row.title,
           artistName: row.artist_name,
+          albumId: row.rg_id,
           clientName: typeof q.c === "string" ? q.c : null,
+          sourceKind: src ? (src.instance_id === "local" ? "local" : "peer") : null,
+          sourcePeerId: src && src.instance_id !== "local" ? src.instance_id : null,
+          format: src?.format ?? null,
+          bitrate: src?.bitrate ?? null,
         });
         break;
       }

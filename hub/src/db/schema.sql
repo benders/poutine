@@ -350,6 +350,7 @@ CREATE TABLE IF NOT EXISTS stream_operations (
   track_id TEXT NOT NULL,           -- unified_tracks.id
   track_title TEXT NOT NULL,
   artist_name TEXT NOT NULL,
+  album_id TEXT,                    -- unified_release_groups.id (SPA album link)
   client_name TEXT,                 -- Subsonic c= param
   client_version TEXT,              -- Subsonic v= param
   peer_id TEXT,                     -- non-null when kind='proxy'
