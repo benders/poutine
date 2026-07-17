@@ -5,7 +5,10 @@ import type { SubsonicSong } from "@/lib/subsonic";
  * Playback sink. `"local"` plays through the HTML5 <audio> element in the
  * browser tab; `{ type: "sonos", ... }` routes playback through the hub's
  * Sonos control API (see /api/sonos/devices/:id/*). Not persisted across
- * sessions — always defaults to local on a fresh load.
+ * sessions — always defaults to local on a fresh load. Sole exception: the
+ * auto-update reload snapshot (#196, lib/player-snapshot.ts) restores it
+ * within a 30s freshness window so a mid-cast reload reattaches to the
+ * still-playing device.
  */
 export type PlayerSink =
   | "local"
