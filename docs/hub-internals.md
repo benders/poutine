@@ -39,6 +39,8 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `FANARTTV_API_URL`           | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors)                  |
 | `ART_CACHE_MAX_BYTES`        | no       | `1 GB` (1073741824)          | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
 | `SONOS_DISCOVERY_INTERVAL_MS`| no       | `30000`                      | How often to re-issue SSDP M-SEARCH                              |
+| `NEW_RELIC_LICENSE_KEY`      | no       | —                            | Enables the New Relic APM agent (#3). Secret — `.env` only, never committed. Consumed by the agent + `hub/docker-entrypoint.sh`, not `config.ts` |
+| `NEW_RELIC_APP_NAME`         | no       | `poutine-hub-<instance id>`  | APM entity name; default set in `hub/docker-entrypoint.sh`      |
 
 Sonos and DLNA are not env-gated — toggles, volume cap, `lan_url`, friendly name all live in `player.db.player_settings` and are runtime-mutable from the Admin page. Details: [sonos.md#runtime-toggle-184](sonos.md#runtime-toggle-184). `hub/src/config.ts` is the authoritative env-var list.
 
@@ -265,6 +267,18 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 - **`docker-compose.yml`** — hub (port `${POUTINE_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports). Single service for both API and SPA. (`PEERS_CONFIG_HOST_PATH` is no longer read since v0.5.0.)
 - **Native deps:** `better-sqlite3` needs `python3 make g++`. Root `package.json` has `pnpm.onlyBuiltDependencies` to allow its postinstall scripts. pnpm v10+ ignores build scripts by default — any new native dep must be added there.
 - **Rebuild after source changes.** Running containers use the compiled image, not live source. `docker compose build <service> && docker compose up -d <service>` or stale routes/assets will be served.
+
+## Observability (New Relic APM, #3)
+
+Optional, key-gated, zero app-code integration — the agent attaches at the process level, not from `server.ts`.
+
+- **Wiring:** `hub/docker-entrypoint.sh` (container CMD). If `NEW_RELIC_LICENSE_KEY` is set it execs `node --import newrelic/esm-loader.mjs -r newrelic hub/dist/server.js`; otherwise plain `node hub/dist/server.js` (no agent loaded at all). The hub is ESM, so both the loader hook and the CJS preload are required (`newrelic` README, "ES Modules").
+- **Config is env-only** (`NEW_RELIC_NO_CONFIG_FILE=true` set by the entrypoint) — no `newrelic.cjs` in the repo or image. App name defaults to `poutine-hub-<POUTINE_INSTANCE_ID>` so each federated hub is its own APM entity. Agent log goes to stdout (`NEW_RELIC_LOG=stdout`).
+- **The license key is a secret.** `.env` only (gitignored). Never in compose defaults, docs examples, or test fixtures.
+- **What you get:** Fastify transaction traces, distributed tracing across `/proxy/*` peer calls (undici is instrumented), event-loop/GC/CPU via `@newrelic/native-metrics`, pino logs-in-context.
+- **Native addons:** `@newrelic/native-metrics` and `@newrelic/fn-inspect` are in root `pnpm.onlyBuiltDependencies` (see Docker → Native deps). They compile in the `prod-deps` Docker stage; if compilation ever fails the agent still runs, just without VM metrics.
+- **Merge worker:** workers inherit `execArgv`, so the loader also loads in `merge-worker.ts`. The agent detects non-main threads and stubs itself — harmless, but don't "fix" the worker by stripping `execArgv` without checking #3.
+- **Dev / native runs:** agent is Docker-entrypoint-gated, so `pnpm dev` and `scripts/hub-native-macos.sh` never load it. To profile locally, replicate the entrypoint's env + flags by hand.
 
 ## Release process
 

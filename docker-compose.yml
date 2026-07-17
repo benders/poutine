@@ -26,6 +26,11 @@ services:
       # Set to 1 only for federation test / local-cluster setups where peers
       # reach each other via RFC1918 / Docker DNS. Leave empty in prod.
       - POUTINE_ALLOW_PRIVATE_PEER_URLS=${POUTINE_ALLOW_PRIVATE_PEER_URLS:-}
+      # New Relic APM (issue #3). Agent activates only when the license key is
+      # set (in .env — NEVER commit it). App name defaults to
+      # poutine-hub-<POUTINE_INSTANCE_ID>; override if needed.
+      - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY:-}
+      - NEW_RELIC_APP_NAME=${NEW_RELIC_APP_NAME:-}
       # Sonos casting (issue #108) + DLNA MediaServer (#175). Off by default.
       # To enable Sonos:
       #   1. Switch the hub to host networking (see compose override below)

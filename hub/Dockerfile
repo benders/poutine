@@ -37,8 +37,11 @@ COPY package.json pnpm-workspace.yaml ./
 COPY hub/package.json hub/
 COPY --from=build /app/hub/dist hub/dist/
 COPY --from=build /app/frontend/dist hub/public/
-RUN mkdir -p /app/data
+COPY hub/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /app/data
 ENV NODE_ENV=production
 ENV PUBLIC_DIR=/app/hub/public
 EXPOSE 3000
-CMD ["node", "hub/dist/server.js"]
+# Entrypoint enables the New Relic agent when NEW_RELIC_LICENSE_KEY is set;
+# otherwise it execs plain `node hub/dist/server.js`.
+CMD ["/app/docker-entrypoint.sh"]
