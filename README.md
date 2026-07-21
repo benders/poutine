@@ -103,6 +103,18 @@ git push --follow-tags
 
 The `.github/workflows/release.yml` workflow verifies the tag matches `package.json`, builds `linux/amd64` + `linux/arm64`, and tags the image `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` (non-prerelease only). Pre-release tags (e.g. `v0.3.1-rc.0`) publish without `:latest` and are marked pre-release on GitHub.
 
+### Monitoring with New Relic (optional, issue #3)
+
+The hub can report to [New Relic APM](https://newrelic.com) — transactions, distributed traces, event-loop/GC metrics, and logs-in-context. Off by default.
+
+1. Add your license key to `.env` (it is a secret — never commit it):
+   ```
+   NEW_RELIC_LICENSE_KEY=...
+   ```
+2. Restart the hub: `docker compose up -d hub`
+
+The APM entity is named `poutine-hub-<POUTINE_INSTANCE_ID>` (override with `NEW_RELIC_APP_NAME`). Remove the key and restart to disable — without it, no agent code loads at all.
+
 ### Casting to Sonos (optional, issue #108)
 
 Lets the bottom-of-screen player stream to Sonos devices on the LAN. Requires host networking for SSDP multicast.
