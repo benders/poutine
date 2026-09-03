@@ -87,6 +87,34 @@ CREATE TABLE IF NOT EXISTS invitations (
 CREATE INDEX IF NOT EXISTS idx_invitations_nonce ON invitations(nonce);
 
 -- ============================================================
+-- Local user invitations (issue #272)
+-- ============================================================
+-- Signed, expiring, single-use grants that let an invitee create their own
+-- local account. Same shape as the federation invitation above, but HMAC-signed
+-- with `settings.user_invite_key` (never the Ed25519 federation key — different
+-- blast radius) and verified only by the issuing hub.
+-- `token_hash` is sha256(token); the token itself is never stored, so a stolen
+-- DB copy yields no redeemable invites.
+
+CREATE TABLE IF NOT EXISTS user_invitations (
+  id TEXT PRIMARY KEY,                -- UUID
+  token_hash TEXT NOT NULL UNIQUE,    -- sha256 hex of the wire token
+  payload TEXT NOT NULL,              -- canonical JSON of the signed payload
+  signature TEXT NOT NULL,            -- base64 HMAC-SHA-256
+  suggested_username TEXT,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  consumed_by_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_invitations_token ON user_invitations(token_hash);
+
+-- ============================================================
 -- Federation: Peer Tombstones (issue #244)
 -- ============================================================
 -- Local record of peers this hub has evicted (lifecycle='tombstoned').

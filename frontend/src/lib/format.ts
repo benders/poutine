@@ -14,6 +14,25 @@ export function formatDurationLong(ms: number): string {
   return `${minutes} min`;
 }
 
+/**
+ * Countdown counterpart to `formatTimeAgo`, for deadlines rather than events
+ * (invite expiry, #272). `formatTimeAgo` clamps a future timestamp to
+ * "just now", which reads as "already expired" on an invite that has two days
+ * left — hence a separate helper rather than a sign tweak in that one.
+ */
+export function formatTimeUntil(dateStr: string | null | undefined): string {
+  if (!dateStr) return "never";
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return "never";
+  const diffMs = date.getTime() - Date.now();
+  if (diffMs <= 0) return "expired";
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 60) return `in ${Math.max(diffMin, 1)}m`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `in ${diffHours}h`;
+  return `in ${Math.floor(diffHours / 24)}d`;
+}
+
 export function formatTimeAgo(dateStr: string | null | undefined): string {
   if (!dateStr) return "Never";
   const date = new Date(dateStr);
