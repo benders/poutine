@@ -26,3 +26,4 @@ data-native/
 .hub-native.pid
 .hub-native.log
 hub-native.env
+.codebase-memory/
