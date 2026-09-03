@@ -82,6 +82,12 @@ Running containers use the compiled image, not live source — rebuild is requir
 2. After the hub starts, log in as the owner and re-create or re-set passwords for any other users via the admin UI.
 3. Back up `data/poutine_password_key` (auto-generated on first boot, mode 0600) alongside your SQLite DB. **Losing the key file makes every stored password unrecoverable.** Override the path with `POUTINE_PASSWORD_KEY_PATH` if needed.
 
+### Adding a user
+
+From **Admin → Hub → Invitations**, issue an invite link (optionally suggesting a username, granting admin, and choosing an expiry — 48 h by default), then send the link to the person. They open it, pick their own username and password, and land signed in. The link works once and is shown only at issue time; the hub stores a hash of it, not the link. Revoke an unused one from the same list.
+
+Creating an account directly (admin types both username and password) is still available under **Users**.
+
 ### Resetting the owner password
 
 Owner seeding only runs on first boot (when `users` is empty). To reset a password while the hub is running:
