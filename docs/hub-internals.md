@@ -19,41 +19,41 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 
 ## Environment variables
 
-| Variable                     | Required | Default                      | Description                                                     |
-|------------------------------|----------|------------------------------|-----------------------------------------------------------------|
-| `DATABASE_PATH`              | no       | `./data/poutine.db`          | Hub SQLite file (`hub.db`) path                                 |
-| `PLAYER_DATABASE_PATH`       | no       | sibling of `DATABASE_PATH`   | Player SQLite file (`player.db`) path — see #215, #212          |
-| `PORT` / `HOST`              | no       | `3000` / `0.0.0.0`           | Hub bind                                                        |
-| `NAVIDROME_URL`              | no       | `http://navidrome:4533`      | Internal Navidrome URL                                          |
-| `NAVIDROME_USERNAME`         | prod     | —                            | Navidrome admin user                                            |
-| `NAVIDROME_PASSWORD`         | prod     | —                            | Navidrome admin password                                        |
-| `POUTINE_INSTANCE_ID`        | prod     | —                            | Unique instance ID (e.g. `poutine-alice`)                       |
-| `POUTINE_OWNER_USERNAME`     | no       | —                            | Seeds owner on first boot; also used to recover post-#106 migration |
-| `POUTINE_OWNER_PASSWORD`     | no       | —                            | Seeds owner on first boot; also used to recover post-#106 migration |
-| `POUTINE_PRIVATE_KEY_PATH`   | no       | `./data/poutine_ed25519.pem` | Ed25519 federation key. Auto-generated if absent. **Never commit this file — it contains the private key for federation signing.** |
-| `POUTINE_PASSWORD_KEY_PATH`  | no       | `./data/poutine_password_key`| AES-256 password encryption key (32 bytes, base64, mode 0600). Auto-generated if absent. **Back this up — losing it makes every stored password unrecoverable.** |
-| `PUBLIC_DIR`                 | no       | —                            | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
-| `LASTFM_API_KEY`             | no       | —                            | Last.fm API key. Fallback artist-image source for artists **without** an MBID. See [lastfm-integration.md](lastfm-integration.md) |
-| `FANARTTV_API_KEY`           | no       | bundled Poutine project key  | fanart.tv project API key. Primary source for MBID-keyed artist images and an album-cover fallback. Set to `""` to disable. See [fanarttv-integration.md](fanarttv-integration.md) |
-| `FANARTTV_CLIENT_KEY`        | no       | —                            | Optional fanart.tv personal `client_key` — drops the new-image delay from 7 days to 2 |
-| `FANARTTV_API_URL`           | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors)                  |
-| `ART_CACHE_MAX_BYTES`        | no       | `1 GB` (1073741824)          | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
-| `SONOS_DISCOVERY_INTERVAL_MS`| no       | `30000`                      | How often to re-issue SSDP M-SEARCH                              |
-| `NEW_RELIC_LICENSE_KEY`      | no       | —                            | Enables the New Relic APM agent (#3). Secret — `.env` only, never committed. Consumed by the agent + `hub/docker-entrypoint.sh`, not `config.ts` |
-| `NEW_RELIC_APP_NAME`         | no       | `poutine-hub-<instance id>`  | APM entity name; default set in `hub/docker-entrypoint.sh`      |
+| Variable                      | Required | Default                             | Description |
+|-------------------------------|----------|-------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `DATABASE_PATH`               | no       | `./data/poutine.db`                 | Hub SQLite file (`hub.db`) path |
+| `PLAYER_DATABASE_PATH`        | no       | sibling of `DATABASE_PATH`          | Player SQLite file (`player.db`) path — see #215, #212 |
+| `PORT` / `HOST`               | no       | `3000` / `0.0.0.0`                  | Hub bind |
+| `NAVIDROME_URL`               | no       | `http://navidrome:4533`             | Internal Navidrome URL |
+| `NAVIDROME_USERNAME`          | prod     | —                                   | Navidrome admin user |
+| `NAVIDROME_PASSWORD`          | prod     | —                                   | Navidrome admin password |
+| `POUTINE_INSTANCE_ID`         | prod     | —                                   | Unique instance ID (e.g. `poutine-alice`) |
+| `POUTINE_OWNER_USERNAME`      | no       | —                                   | Seeds owner on first boot; also used to recover post-#106 migration |
+| `POUTINE_OWNER_PASSWORD`      | no       | —                                   | Seeds owner on first boot; also used to recover post-#106 migration |
+| `POUTINE_PRIVATE_KEY_PATH`    | no       | `./data/poutine_ed25519.pem`        | Ed25519 federation key. Auto-generated if absent. **Never commit this file — it contains the private key for federation signing.** |
+| `POUTINE_PASSWORD_KEY_PATH`   | no       | `./data/poutine_password_key`       | AES-256 password encryption key (32 bytes, base64, mode 0600). Auto-generated if absent. **Back this up — losing it makes every stored password unrecoverable.** |
+| `PUBLIC_DIR`                  | no       | —                                   | Compiled frontend `dist/`. Baked into Docker image. Unset in dev |
+| `LASTFM_API_KEY`              | no       | —                                   | Last.fm API key. Fallback artist-image source for artists **without** an MBID. See [lastfm-integration.md](lastfm-integration.md) |
+| `FANARTTV_API_KEY`            | no       | bundled Poutine project key         | fanart.tv project API key. Primary source for MBID-keyed artist images and an album-cover fallback. Set to `""` to disable. See [fanarttv-integration.md](fanarttv-integration.md) |
+| `FANARTTV_CLIENT_KEY`         | no       | —                                   | Optional fanart.tv personal `client_key` — drops the new-image delay from 7 days to 2 |
+| `FANARTTV_API_URL`            | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors) |
+| `ART_CACHE_MAX_BYTES`         | no       | `1 GB` (1073741824)                 | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
+| `SONOS_DISCOVERY_INTERVAL_MS` | no       | `30000`                             | How often to re-issue SSDP M-SEARCH |
+| `NEW_RELIC_LICENSE_KEY`       | no       | —                                   | Enables the New Relic APM agent (#3). Secret — `.env` only, never committed. Consumed by the agent + `hub/docker-entrypoint.sh`, not `config.ts` |
+| `NEW_RELIC_APP_NAME`          | no       | `poutine-hub-<instance id>`         | APM entity name; default set in `hub/docker-entrypoint.sh` |
 
 Sonos and DLNA are not env-gated — toggles, volume cap, `lan_url`, friendly name all live in `player.db.player_settings` and are runtime-mutable from the Admin page. Details: [sonos.md#runtime-toggle-184](sonos.md#runtime-toggle-184). `hub/src/config.ts` is the authoritative env-var list.
 
 ## API surface
 
-| Surface           | Prefix          | Auth                                                             | Purpose                                   |
-|-------------------|-----------------|------------------------------------------------------------------|--------------------------------------------|
-| Subsonic          | `/rest/*`       | Subsonic `u+p` or `u+t+s` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art — see [opensubsonic.md](opensubsonic.md) for compatibility |
-| Proxy             | `/proxy/*`      | Ed25519, JWT, or Subsonic `u+p`/`u+t+s` (unified — see below)    | Authenticated transparent proxy to Navidrome |
-| Federation        | `/federation/*` | Ed25519-signed (see [federation-api.md](federation-api.md))      | Peer-to-peer only                         |
-| Admin             | `/admin/*`, `/api/admin/hub/*`, `/api/admin/player/*` | JWT (see [authentication.md](authentication.md))   | Three partitioned mounts (#226). `/admin/*` is auth-only (refresh cookie path). Hub/Player admin handlers live only at their matching namespace — cross-namespace requests 404. See [system-architecture.md](system-architecture.md#admin-namespaces). |
-| Health            | `/api/health`   | None                                                             | `{ status, appVersion, apiVersion, navidrome }` — see note below             |
-| Version           | `/api/version`  | None                                                             | `{ appVersion, buildId }` — SPA auto-update poll target (#196), see note below |
+| Surface    | Prefix                                                | Auth                                                                   | Purpose |
+|------------|-------------------------------------------------------|------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Subsonic   | `/rest/*`                                             | Subsonic `u+p` or `u+t+s` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art — see [opensubsonic.md](opensubsonic.md) for compatibility |
+| Proxy      | `/proxy/*`                                            | Ed25519, JWT, or Subsonic `u+p`/`u+t+s` (unified — see below)          | Authenticated transparent proxy to Navidrome |
+| Federation | `/federation/*`                                       | Ed25519-signed (see [federation-api.md](federation-api.md))            | Peer-to-peer only |
+| Admin      | `/admin/*`, `/api/admin/hub/*`, `/api/admin/player/*` | JWT (see [authentication.md](authentication.md))                       | Three partitioned mounts (#226). `/admin/*` is auth-only (refresh cookie path). Hub/Player admin handlers live only at their matching namespace — cross-namespace requests 404. See [system-architecture.md](system-architecture.md#admin-namespaces). |
+| Health     | `/api/health`                                         | None                                                                   | `{ status, appVersion, apiVersion, navidrome }` — see note below |
+| Version    | `/api/version`                                        | None                                                                   | `{ appVersion, buildId }` — SPA auto-update poll target (#196), see note below |
 
 `/api/health` probes the local Navidrome via Subsonic `/rest/ping` (~1 s budget, `AbortSignal.timeout`) and reports `navidrome: "ok" | "unreachable"` plus a rolled-up `status: "ok" | "degraded"`. Always returns HTTP 200 so the federation handshake (which only reads `apiVersion` / `appVersion` from a peer's `/api/health`) keeps working when a peer's Navidrome is briefly down. Operators and LB / k8s probes must key on `body.status`, not the HTTP status (issue #178).
 
@@ -132,25 +132,25 @@ Contract: [federation-api.md](federation-api.md). Read before modifying `/federa
 
 Two separate version identifiers:
 
-| Identifier                         | Type          | Purpose                                                     |
-|------------------------------------|---------------|-------------------------------------------------------------|
-| `Poutine-Api-Version` (resp header) | Integer       | Federation protocol version. No `X-` prefix (RFC 6648).     |
-| `User-Agent: Poutine/<semver>`     | Semver string | Application version on ALL outgoing hub HTTP calls          |
+| Identifier                          | Type          | Purpose |
+|-------------------------------------|---------------|---------------------------------------------------------|
+| `Poutine-Api-Version` (resp header) | Integer       | Federation protocol version. No `X-` prefix (RFC 6648). |
+| `User-Agent: Poutine/<semver>`      | Semver string | Application version on ALL outgoing hub HTTP calls |
 
-Both defined in `hub/src/version.ts`. Protocol version also appears in `/library/export` bodies as `apiVersion`. `GET /admin/peers` surfaces `appVersion` + `apiVersion` per peer (from each peer's `/api/health`).
+Both defined in `hub/src/version.ts`. Protocol version also appears in `/library/export` bodies as `apiVersion`. `GET /api/admin/hub/peers` surfaces `appVersion` + `apiVersion` per peer (from each peer's `/api/health`).
 
 `USER_AGENT` is sent on every outgoing HTTP call from the hub: federation (`sign-request.ts`), Navidrome Subsonic (`adapters/subsonic.ts`), and peer health checks (`routes/admin.ts`).
 
 ## Activity tracking
 
-Streams and syncs are recorded in `stream_operations` and `sync_operations`. Surfaced under `/admin/activity/*` and rendered by the SPA's top-level Activity page (issue #121).
+Streams and syncs are recorded in `stream_operations` and `sync_operations`. Surfaced under `/api/admin/hub/activity/*` and rendered by the SPA's top-level Activity page (issue #121).
 
 - **`StreamTrackingService`** (`hub/src/services/stream-tracking.ts`) records every Subsonic stream from `/rest/stream` and every peer-served stream from `/federation/stream/:id`. Subsonic-originated rows are `kind='subsonic'`; peer-served rows are `kind='proxy'` with `peer_id` + `username` set from the signed-request `x-poutine-user` header. Both capture `format`, `bitrate`, `transcoded`, `max_bitrate`, `source_kind` (`local` | `peer`), `album_id` (release group — SPA album link, #263), and `bytes_transferred`. The federation route honours the caller's `format` / `maxBitRate` query params so the source hub's row reflects the transcoded output, not the original file. Both stream routes pipe with `stream/promises` `pipeline()` so a client abort cancels the upstream fetch and `finish()`es the row with the real byte count (see `docs/pitfalls.md`); as a crash backstop, the service closes out any rows left unfinished by a previous process at construction (`error='interrupted'`).
 - **`SyncOperationService`** (`hub/src/services/sync-operations.ts`) records every local + peer sync. `AutoSyncService` only inserts a row when there is actual work to do (Navidrome `lastScan > last_synced_at`); no-op poll ticks no longer create rows. `failStaleRunning(600)` runs at boot to mark any orphaned `running` rows as failed. `setDetails(id, details)` persists arbitrary JSON onto a row (currently the orphan-audit report below).
 - **Merge hardening (#242).** `executeMergePipeline(db)` (`hub/src/library/merge-pipeline.ts`) is the only call site that should ever run `mergeLibraries()` — every sync path (`sync.ts`, `auto-sync.ts`, `routes/admin.ts` peer-data reset) goes through it, via `runMergePipelineAsync`. It runs, in one `run.immediate()` transaction (write lock acquired up front, not deferred): `snapshotIdentity(db)` (pre-merge), `mergeLibraries(db)` (rebuilds `unified_*`), `applyRemap(db, snapshot)`, `auditOrphans(db)`. Unified ids are deterministic metadata hashes (`id-generator.ts`), so a metadata edit or a dedup-key change can produce a different id for the same logical entity on the next merge; `id-remap.ts` diffs the identity snapshot across stable per-instance keys (`track_sources.instance_track_id`, `unified_release_sources.instance_album_id` → release group, `unified_artist_sources.instance_artist_id`) and set-based `UPDATE`s `user_stars` / `playlist_tracks` / `play_events` from old id to new id. Splits (one old id → multiple new ids) keep the majority-instance-row winner and log the rest (`splitsLogged`); collisions (two old ids → one new id) keep one `user_stars` row per user and drop the loser (`collisionsDropped`) rather than error on the `(user_id, kind, target_id)` PK. `auditOrphans(db)` (`hub/src/library/orphan-audit.ts`) then scans the same three tables for anything still left dangling — counts + up-to-10 sample ids per category, logged as a warning when non-zero. The pipeline returns `{ orphans, remap }`; both are persisted via `SyncOperationService.setDetails`. `playlist_tracks.unified_track_id` has no FK (migrated off one in `db/client.ts`'s `migratePlaylistTracks` — it used to CASCADE-DELETE every row on a merge), matching the `user_stars`/`play_events` no-FK convention.
 - **Merge pipeline runs off-thread (#242 Phase 3).** better-sqlite3 is synchronous, so `executeMergePipeline` running on the main connection would stall the whole event loop for the entire merge at 200k–600k track scale. `runMergePipelineAsync(db, { logger, inProcess? })` is the production entry: for a file-backed DB it spawns a `node:worker_threads` `Worker` (`hub/src/library/merge-worker.ts`) that opens its OWN connection to the same file (`new Database(dbPath)` + WAL + foreign_keys — no schema/migration re-run, the main process already did that) and runs `executeMergePipeline` there; the main thread keeps serving requests since WAL readers are never blocked by another connection's write transaction. Logging (`logPipelineReport`) happens back on the main thread after the worker's result message arrives — the worker itself never logs. For an in-memory DB (`db.name === ":memory:"` or `""`), or when the caller passes `{ inProcess: true }` (the unit-test path), the pipeline runs synchronously in-process instead — there's no second connection to hand a worker. A module-level promise-chain mutex serializes merges process-wide: concurrent callers queue rather than run interleaved, though each queued caller still gets its own independent merge run. `shutdownMergeWorker()` is wired into `server.ts`'s `onClose` — it `terminate()`s any in-flight worker (safe: the merge transaction just rolls back) before the main connection closes. The worker entry resolves dual `.ts`/`.js` paths (`import.meta.url.endsWith(".ts")`) so it loads under tsx in dev/test and as plain compiled JS in prod — see `docs/pitfalls.md`.
-- **Retention** is count-based via `settings.activity_history_max_events` (default 10000), exposed as `GET/PUT /admin/settings/activity`. `pruneToCount()` runs after every `finish()`. Stream pruning excludes rows with `finished_at IS NULL` so an in-flight stream's row is never deleted out from under its eventual `finish()` UPDATE.
-- **API**: `GET /admin/activity/active` (cross-user `nowPlaying[]` + active stream transfers + running syncs), `GET /admin/activity/history?kinds=stream,sync&limit=N` (combined timeline), `DELETE /admin/activity` (clear both), `GET /admin/activity/summary` (dashboard counters). Now-playing entries carry a preferred-source snapshot (`sourceKind`/`sourcePeerId`/`format`/`bitrate`) and `albumId`, resolved at ping time. The SPA Activity page renders Now Playing and Transfers as separate subsections and coalesces consecutive same-listen History rows (clients issue several HTTP requests per listen) into one ×N row.
+- **Retention** is count-based via `settings.activity_history_max_events` (default 10000), exposed as `GET/PUT /api/admin/hub/settings/activity`. `pruneToCount()` runs after every `finish()`. Stream pruning excludes rows with `finished_at IS NULL` so an in-flight stream's row is never deleted out from under its eventual `finish()` UPDATE.
+- **API**: `GET /api/admin/hub/activity/active` (cross-user `nowPlaying[]` + active stream transfers + running syncs), `GET /api/admin/hub/activity/history?kinds=stream,sync&limit=N` (combined timeline), `DELETE /api/admin/hub/activity` (clear both), `GET /api/admin/hub/activity/summary` (dashboard counters). Now-playing entries carry a preferred-source snapshot (`sourceKind`/`sourcePeerId`/`format`/`bitrate`) and `albumId`, resolved at ping time. The SPA Activity page renders Now Playing and Transfers as separate subsections and coalesces consecutive same-listen History rows (clients issue several HTTP requests per listen) into one ×N row.
 
 ## Play counts (#197)
 
@@ -256,7 +256,7 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 ## SQLite notes
 
-- **Two SQLite files.** Dual-DB layout, opener locations, ownership rules and migration boundary are documented in [system-architecture.md#data-model](system-architecture.md#data-model). Boundary enforcement: [system-architecture.md#hub-player-boundary-enforcement-221](system-architecture.md#hub-player-boundary-enforcement-221). Schemas: `hub/src/db/schema.sql` and `hub/src/db/player-schema.sql` (both picked up by the Dockerfile `hub/src/db/*.sql` copy rule).
+- **Two SQLite files.** Dual-DB layout, opener locations, ownership rules and migration boundary are documented in [system-architecture.md#data-model](system-architecture.md#data-model). Boundary enforcement: [system-architecture.md#hubplayer-boundary-enforcement-221](system-architecture.md#hubplayer-boundary-enforcement-221). Schemas: `hub/src/db/schema.sql` and `hub/src/db/player-schema.sql` (both picked up by the Dockerfile `hub/src/db/*.sql` copy rule).
 - **`datetime('now')` has no timezone marker.** Output: `"2026-04-10 03:54:22"` (space separator, no `Z`). JavaScript `new Date()` parses this as local time, so users west of UTC see timestamps in the future — `formatTimeAgo` returns `"just now"` forever. **Always use `strftime('%Y-%m-%dT%H:%M:%SZ', col)`** in SELECTs that return timestamps to the frontend.
 - **`.sql` files are not copied by `tsc`.** The hub Dockerfile explicitly copies `hub/src/db/*.sql` → `hub/dist/db/` after `tsc`. Update the Dockerfile if new non-TS assets are added under `hub/src/`.
 - **Schema or merge-logic change → resync required.** Changes to unified-table storage only take effect after `syncAll()` + merge runs.

@@ -170,8 +170,16 @@ Navidrome's admin-bootstrap env vars only run on a fresh volume. To force a rese
 
 ## Docs
 
-| File                                                             | Purpose                                             |
-|------------------------------------------------------------------|-----------------------------------------------------|
-| [docs/system-architecture.md](docs/system-architecture.md) | System architecture                                 |
-| [docs/federation-api.md](docs/federation-api.md)                 | Federation protocol contract                        |
-| [docs/hub-internals.md](docs/hub-internals.md)                   | Engineering conventions, gotchas, lessons learned   |
+| File                                                         | Purpose                                                                |
+|--------------------------------------------------------------|------------------------------------------------------------------------|
+| [docs/system-architecture.md](docs/system-architecture.md)   | System architecture, Hub/Player boundary, design decisions             |
+| [docs/pitfalls.md](docs/pitfalls.md)                         | Recurring traps — read before touching merge, SQLite, auth, federation |
+| [docs/federation-api.md](docs/federation-api.md)             | Federation protocol contract                                           |
+| [docs/authentication.md](docs/authentication.md)             | JWT, Subsonic dual-auth, token refresh                                 |
+| [docs/hub-internals.md](docs/hub-internals.md)               | Engineering conventions, env vars, gotchas, Docker                     |
+| [docs/opensubsonic.md](docs/opensubsonic.md)                 | OpenSubsonic endpoint compatibility                                    |
+| [docs/frontend-testing.md](docs/frontend-testing.md)         | Vitest + RTL setup, patterns, gotchas                                  |
+| [docs/sonos.md](docs/sonos.md)                               | Sonos casting — protocol, components, testing                          |
+| [docs/dlna.md](docs/dlna.md)                                 | DLNA MediaServer — protocol, LAN gate, testing                         |
+| [docs/fanarttv-integration.md](docs/fanarttv-integration.md) | fanart.tv artist/album art (primary, MBID-keyed)                       |
+| [docs/lastfm-integration.md](docs/lastfm-integration.md)     | Last.fm fallback for artists without an MBID                           |
