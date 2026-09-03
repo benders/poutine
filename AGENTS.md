@@ -9,44 +9,51 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 ## Task tracking (GitHub Issues)
 
 1. Never start coding without an open GitHub Issue. No exceptions. Create one if none exists.
-2. Close the issue immediately after committing, before anything else.
-3. Check existing issues before creating new ones: `gh issue list --repo benders/poutine`
-4. Post progress updates as comments on the issue as you work. Agent comments must include the agent name prefix (e.g. `@claude:`), and the rest of the message should be a block-quote `> `.
-5. When unsure what's next, check open issues — don't freelance.
-6. Reference the issue number in the commit message (e.g. `closes #42`)
-7. Assign the issue to self when work starts
+2. Check existing issues before creating new ones: `gh issue list --repo benders/poutine`
+3. Assign the issue to self when work starts.
+4. Reference the issue in the commit message (e.g. `closes #42`). **The issue closes when the PR merges** — never close it by hand at commit time. Work isn't done until it is reviewed and merged.
+5. Post progress updates as comments on the issue as you work. Agent comments must include the agent name prefix (e.g. `@claude:`), and the rest of the message should be a block-quote `> `.
+6. When unsure what's next, check open issues — don't freelance.
+
+## Branching and commits
+
+- **Work on a feature branch.** Branch before the first edit. Never commit to `main` unless the user explicitly asks for that in this session.
+- Direct-to-`main` work, when the user does ask for it: make the change and run the gate, then stop. Committing and pushing on `main` need their own explicit ask — never do either automatically.
+- Commit in phases, as each phase's tests pass — not one lump at the end.
+- Push the branch to origin, then open a Pull Request in **Draft** state when the work is ready for the user to review.
+- **No stacked PRs.** Work identified during review lands on the same feature branch.
 
 ## Per-task checklist
 
 1. **Start every task by reading `docs/system-architecture.md` and skimming `docs/pitfalls.md`.** Both are short by design. No exceptions.
-2. Open or assign a GitHub Issue.
+2. Open or assign a GitHub Issue; create the feature branch.
 3. Read the relevant doc(s):
    - Touching auth, JWT, login, tokens, or Subsonic credentials: read `docs/authentication.md` FIRST.
    - Touching `/federation/*`: read `docs/federation-api.md` FIRST. Update it AND bump `FEDERATION_API_VERSION` in `hub/src/version.ts` on any contract change.
    - Touching hub internals, conventions, or anything with a known gotcha: check `docs/hub-internals.md`.
-   - Touching Player code (Sonos, DLNA, cast, player-admin): obey the **Hub/Player boundary** (section below) and run `pnpm lint:boundary`.
+   - Touching Player code (Sonos, DLNA, cast, player-admin): obey the **Hub/Player boundary** (section below).
    - Architectural changes: update `docs/system-architecture.md` as part of the work.
-4. Write tests alongside code. Run `pnpm verify` (typecheck + lint:boundary + unit tests) before declaring done.
+4. Write tests alongside code. Run `pnpm verify` before declaring done — it is the full local gate (typecheck + lint + unit tests + hub integration tests) and matches CI's `unit` job. Resolve **all** lint errors AND warnings, including pre-existing ones in files you didn't author; zero lint output is the bar. If a warning is a deliberate false-positive, suppress it inline with a one-line rationale rather than leaving it noisy.
    - **Touching the Subsonic API (`/rest/*`, `getAlbumList2`, scrobble/play-counts, search, stream), `/federation/*`, auth, or the merged-catalog shape? `pnpm verify` is NOT enough** — it does not run the Python `subsonic-compat` suite. Run `pnpm test:federation` (Docker; spins up hub-a/b/c) and get a green run before declaring done. `pnpm verify:full` runs both. CI gates every PR on the `federation` job regardless, so a skip here only delays the failure to post-push.
    - When querying the live database: check `hub/src/db/schema.sql` for the schema, then use `scripts/db-query.sh "SQL"`. Never exec into the container and try to import `better-sqlite3` manually.
-   - Run `pnpm lint` and resolve **all** errors AND warnings before declaring done — including pre-existing ones in files you didn't author. Zero lint output is the bar. If a warning is a deliberate false-positive, suppress it inline with a one-line rationale rather than leaving it noisy.
 5. Update documentation and check for any outdated or inconsistent information.
-6. Commit work in phases, when all tests are passing.
-7. Push branch to origin.
-8. When work is completed, open a Pull Request in the Draft state.
+6. Commit, push, and open a Draft PR — see **Branching and commits** above.
 
 ## Hub/Player boundary
 
-The backend is split into two bounded contexts inside one process — **Hub** (library, catalog, federation, users, hub-admin) and **Player** (Sonos cast, DLNA, player-admin) — so Player can later be lifted into its own process as a wiring change, not a rewrite (#212/#225). The split is real and machine-enforced. Do not erode it.
+The backend is two bounded contexts inside one process — **Hub** (library, catalog, federation, users, hub-admin) and **Player** (Sonos cast, DLNA, player-admin) — so Player can later be lifted into its own process as a wiring change, not a rewrite (#212/#225). The split is machine-enforced. Do not erode it.
 
-- **Player-side code** = `hub/src/routes/{sonos,dlna}.ts`, `hub/src/services/{sonos-*,dlna-*,cast-tokens,didl,soap,ssdp-advertiser,player-settings}.ts`, and frontend `features/player-admin/` + `features/player/`.
-- **Player code reaches Hub state only through `HubSubsonicCaller`** (`hub/src/services/hub-subsonic-caller.ts`) over `app.inject()`. It must NOT import `better-sqlite3` at runtime (type-only `import type Database` is fine), the in-process `SubsonicClient` (`adapters/subsonic`), `app.db`, or any `hub/src/db/*` module. Player-owned storage is `player.db` via a capability-injected handle (`app.playerDb` / `PlayerSettings` / `app.sonosSettings`), never `hub.db`.
-- **Frontend bounded dirs may not cross-import.** `features/hub-admin/`, `features/player-admin/`, and `features/player/` are isolated; shared pure-UI helpers go in `features/shared/`.
-- **Backend admin mounts are partitioned** (#226): `/api/admin/hub/*` (Hub) and `/api/admin/player/*` (Player); `/admin/*` is auth-only. Handlers mount only in their namespace — cross-namespace requests 404.
-- **Adding a Player route/service?** Add the file to the `playerFiles` glob in `hub/eslint.config.js` (and the frontend equivalent for UI), then extend the negative tests so the rule is proven to fire: `hub/test/boundary-lint.test.ts`, `frontend/src/features/boundary-lint.test.ts`. If an exception is unavoidable, document the carve-out inline in the config — never silently relax the rule.
-- **Test it:** run `pnpm lint:boundary` (also bundled into `pnpm verify` and CI). Zero output is the bar — a boundary violation is a build failure, not a warning.
+Rules:
 
-Full rationale and enforcement matrix: `docs/system-architecture.md` ("Hub/Player boundary enforcement", "SPA admin split", "Data model" dual-DB). Recurring traps: `docs/pitfalls.md` ("Hub/Player boundary", "Sonos cast"). Boundary test patterns: `docs/frontend-testing.md`. The trusted in-process auth path Player uses to call Hub Subsonic as the SPA user: `docs/authentication.md` ("Trusted in-process auth").
+- **Player code reaches Hub state only through `HubSubsonicCaller`** (`hub/src/services/hub-subsonic-caller.ts`). Never widen that door.
+- **Neither side touches the other's SQLite file.** Player-owned storage is `player.db` via the capability-injected handle (`app.playerDb` / `PlayerSettings` / `app.sonosSettings`); Hub-owned storage is `hub.db`.
+- **Bounded directories may not cross-import** — backend Player files, and frontend `features/hub-admin/`, `features/player-admin/`, `features/player/`. Shared pure-UI helpers go in `features/shared/`.
+- **Handlers mount only in their own admin namespace** — `/api/admin/hub/*` (Hub), `/api/admin/player/*` (Player), `/admin/*` auth-only.
+- **Adding a Player route or service?** Add the file to the `playerFiles` glob in `hub/eslint.config.js` (and the frontend equivalent for UI), then extend the negative tests so the rule is proven to fire: `hub/test/boundary-lint.test.ts`, `frontend/src/features/boundary-lint.test.ts`.
+- **An unavoidable exception is documented inline in the eslint config** — never silently relaxed.
+- **Test it:** `pnpm lint:boundary` isolates just these rules (`pnpm verify` and CI run them too). Zero output is the bar — a boundary violation is a build failure, not a warning.
+
+Architecture, the full file lists, and the enforcement matrix: `docs/system-architecture.md` ("Hub/Player boundary enforcement", "SPA admin split", "Data model" dual-DB). Recurring traps: `docs/pitfalls.md` ("Hub/Player boundary", "Sonos cast"). Boundary test patterns: `docs/frontend-testing.md`. The trusted in-process auth path Player uses to call Hub Subsonic as the SPA user: `docs/authentication.md` ("Trusted in-process auth").
 
 ## Documentation rules
 

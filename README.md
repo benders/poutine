@@ -38,12 +38,13 @@ Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static file
 |-----------------------------|-------------------------------------------------|
 | `pnpm dev`                  | Start hub in watch mode                         |
 | `pnpm build`                | Build hub + frontend                            |
-| `pnpm test`                 | Run hub unit tests (vitest)                     |
+| `pnpm test`                 | Run hub + frontend unit tests (vitest)          |
+| `pnpm test:integration`     | Hub integration tests (merge-worker, DLNA/SSDP) |
 | `pnpm test:federation`      | Three-hub federation integration test           |
 | `pnpm lint`                 | Lint both packages (must report zero output)    |
-| `pnpm lint:boundary`        | Boundary-only lint subset (used by CI / verify) |
+| `pnpm lint:boundary`        | Boundary-only lint subset (isolated CI signal)  |
 | `pnpm typecheck`            | Typecheck both packages                         |
-| `pnpm verify`               | Typecheck + lint:boundary + unit test (pre-commit gate) |
+| `pnpm verify`               | Typecheck + lint + unit + integration tests — the pre-commit gate; matches CI's `unit` job |
 | `pnpm verify:full`          | `verify` + `test:federation` (for Subsonic/federation changes) |
 | `pnpm hub:up`               | `docker compose up -d --build`                  |
 | `pnpm hub:up:fresh`         | Same, with `--force-recreate`                   |
@@ -53,8 +54,8 @@ Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static file
 ## Testing
 
 - `pnpm test` — fast unit tests (vitest). CI runs this (the `unit` job).
+- `pnpm test:integration` — hub `*.integration.test.ts` (merge-worker, DLNA SOAP/SSDP). Real sockets and UDP multicast, so a host without multicast (or without macOS local-network permission for the terminal) sees flakes. CI runs this in the `unit` job.
 - `pnpm test:federation` — three-hub federation integration test, incl. the Python `subsonic-compat` suite. Boots three Compose projects, verifies cross-instance dedup, federated streaming, and Subsonic-client compatibility. **CI runs this on every PR** (the `federation` job), and `pnpm verify` does NOT cover it — run it locally (or `pnpm verify:full`) when changing the Subsonic API or federation surface.
-- `*.integration.test.ts` — excluded from CI; hit real external servers. Run manually.
 
 See [docs/hub-internals.md#testing-notes](docs/hub-internals.md#testing-notes) for test patterns and gotchas.
 
