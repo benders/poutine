@@ -15,6 +15,14 @@ import {
   verifyInvitationSignature,
   signInviteeProof,
 } from "../federation/invitations.js";
+import {
+  createUserInvite,
+  encodeUserInvite,
+  recordUserInvite,
+  revokeUserInvite,
+  inviteState,
+  type UserInviteRow,
+} from "../services/user-invites.js";
 import { randomUUID } from "node:crypto";
 import { normalizeLanUrl } from "../services/sonos-settings.js";
 import { requireAuth } from "../auth/middleware.js";
@@ -27,6 +35,22 @@ declare module "fastify" {
     userId: string;
     isAdmin: boolean;
   }
+}
+
+/**
+ * Best-effort public origin of this hub, used when the caller doesn't supply
+ * one. Honors the reverse-proxy headers Fastify already trusts; the SPA sends
+ * an explicit `baseUrl` (its own origin) in practice.
+ */
+function requestOrigin(request: FastifyRequest): string {
+  const proto =
+    (request.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0] ??
+    request.protocol;
+  const host =
+    (request.headers["x-forwarded-host"] as string | undefined)?.split(",")[0] ??
+    request.headers.host ??
+    "localhost";
+  return `${proto}://${host}`;
 }
 
 async function requireOwner(
@@ -304,6 +328,100 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       }
 
       app.db.prepare("DELETE FROM users WHERE id = ?").run(id);
+      return reply.code(204).send();
+    },
+  );
+
+  // ── User invitations (#272) ───────────────────────────────────────────────
+  // The user-facing mirror of the peer invite flow below: issue a signed,
+  // expiring, single-use URL instead of typing a password on someone's behalf.
+  // Redemption is public and lives in routes/invites.ts.
+
+  // POST /admin/user-invites — issue an invite
+  app.post<{
+    Body: {
+      expiresInSec?: number;
+      suggestedUsername?: string;
+      isAdmin?: boolean;
+      note?: string;
+      baseUrl?: string;
+    };
+  }>("/user-invites", { preHandler: requireOwner }, async (request, reply) => {
+    const { expiresInSec, suggestedUsername, isAdmin, note, baseUrl } =
+      request.body ?? {};
+
+    const signed = createUserInvite({
+      key: app.userInviteKey,
+      expiresInSec,
+      suggestedUsername: suggestedUsername?.trim() || null,
+      isAdmin: isAdmin === true,
+    });
+    const token = encodeUserInvite(signed);
+    const id = recordUserInvite(app.db, {
+      signed,
+      token,
+      createdBy: request.userId,
+      note: note?.trim() || null,
+    });
+
+    // The token rides in the fragment: it never reaches the server on a GET,
+    // so it stays out of access logs and Referer headers.
+    const base = (baseUrl ?? requestOrigin(request)).replace(/\/+$/, "");
+    return reply.code(201).send({
+      id,
+      url: `${base}/invite#${token}`,
+      token,
+      expiresAt: signed.payload.expires_at,
+      isAdmin: signed.payload.is_admin,
+      suggestedUsername: signed.payload.suggested_username,
+    });
+  });
+
+  // GET /admin/user-invites — never returns the token; only its hash is stored
+  app.get("/user-invites", { preHandler: requireOwner }, async () => {
+    const rows = app.db
+      .prepare(
+        `SELECT i.*, u.username AS consumed_by_username, c.username AS created_by_username
+           FROM user_invitations i
+           LEFT JOIN users u ON u.id = i.consumed_by_id
+           LEFT JOIN users c ON c.id = i.created_by
+          ORDER BY i.issued_at DESC`,
+      )
+      .all() as Array<
+      UserInviteRow & {
+        consumed_by_username: string | null;
+        created_by_username: string | null;
+      }
+    >;
+    return rows.map((r) => ({
+      id: r.id,
+      state: inviteState(r),
+      suggestedUsername: r.suggested_username,
+      isAdmin: r.is_admin === 1,
+      note: r.note,
+      createdBy: r.created_by_username,
+      issuedAt: r.issued_at,
+      expiresAt: r.expires_at,
+      consumedAt: r.consumed_at,
+      consumedBy: r.consumed_by_username,
+      revokedAt: r.revoked_at,
+    }));
+  });
+
+  // DELETE /admin/user-invites/:id — revoke an outstanding invite
+  app.delete<{ Params: { id: string } }>(
+    "/user-invites/:id",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const row = app.db
+        .prepare("SELECT id FROM user_invitations WHERE id = ?")
+        .get(request.params.id);
+      if (!row) return reply.code(404).send({ error: "Invitation not found" });
+      if (!revokeUserInvite(app.db, request.params.id)) {
+        return reply
+          .code(409)
+          .send({ error: "Invitation is already consumed or revoked" });
+      }
       return reply.code(204).send();
     },
   );
