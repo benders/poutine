@@ -73,6 +73,7 @@ Architecture, the full file lists, and the enforcement matrix: `docs/system-arch
 | `docs/authentication.md`             | **Auth reference** — JWT, Subsonic dual-auth, token refresh      |
 | `docs/federation-api.md`             | **Federation protocol contract** — read before `/federation/*`   |
 | `docs/hub-internals.md`              | Conventions, env vars, lessons learned, Docker                   |
+| `docs/migration.md`                  | **Relocate an instance** to another machine — volumes, keys, music |
 | `docs/pitfalls.md`                   | **Recurring traps** — check before touching merge, SQLite, auth, federation, external fetches, Hub/Player boundary |
 | `docs/opensubsonic.md`               | OpenSubsonic endpoint compatibility table and caveats            |
 | `hub/src/db/schema.sql`              | Canonical DB schema — source of truth; read before writing DB queries |

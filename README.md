@@ -83,6 +83,14 @@ Running containers use the compiled image, not live source — rebuild is requir
 2. After the hub starts, log in as the owner and re-create or re-set passwords for any other users via the admin UI.
 3. Back up `data/poutine_password_key` (auto-generated on first boot, mode 0600) alongside your SQLite DB. **Losing the key file makes every stored password unrecoverable.** Override the path with `POUTINE_PASSWORD_KEY_PATH` if needed.
 
+### Migrating to another machine
+
+To relocate an instance (hub + Navidrome) to a new host without losing its
+federation identity or stored passwords, see [docs/migration.md](docs/migration.md).
+The short version: copy the two named Docker volumes (`<project>_hub-data`,
+`<project>_navidrome-data`), the env file, and the music library; keep the project
+name and `POUTINE_INSTANCE_ID` identical.
+
 ### Resetting the owner password
 
 Owner seeding only runs on first boot (when `users` is empty). To reset a password while the hub is running:
