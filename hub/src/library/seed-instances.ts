@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
+import { SYSTEM_USERNAME } from "../db/system-user.js";
 
 /**
  * Ensure the synthetic `instances` row for the local Navidrome exists.
@@ -29,8 +30,8 @@ export function seedSyntheticInstances(
         "Register a real user to replace this.",
     );
     db.prepare(
-      `INSERT OR IGNORE INTO users (id, username, password_enc, is_admin) VALUES (?, '__system__', '', 0)`,
-    ).run(ownerId);
+      `INSERT OR IGNORE INTO users (id, username, password_enc, is_admin) VALUES (?, ?, '', 0)`,
+    ).run(ownerId, SYSTEM_USERNAME);
   }
 
   const nextFolderId = (): number => {

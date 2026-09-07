@@ -397,6 +397,279 @@ describe("admin — users CRUD", () => {
   });
 });
 
+// ── /api/admin/hub/users admin status + admin deletion (issue #274) ───────────
+
+describe("admin — admin status and admin deletion (#274)", () => {
+  let app: FastifyInstance;
+  let token: string;
+
+  /** Create a guest and return its id. */
+  async function createGuest(username: string): Promise<string> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/users",
+      headers: authHeader(token),
+      payload: { username, password: "guestpass1" },
+    });
+    expect(res.statusCode).toBe(201);
+    return (res.json() as { id: string }).id;
+  }
+
+  function isAdminOf(id: string): number {
+    return (
+      app.db.prepare("SELECT is_admin FROM users WHERE id = ?").get(id) as {
+        is_admin: number;
+      }
+    ).is_admin;
+  }
+
+  beforeEach(async () => {
+    app = await buildApp(testConfig);
+    await app.ready();
+    seedAdmin(app);
+    token = await loginAs(app, "owner", "adminpass");
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("PUT /users/:id/admin { isAdmin: true } → promotes a guest (204)", async () => {
+    const id = await createGuest("promoteme");
+    expect(isAdminOf(id)).toBe(0);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(isAdminOf(id)).toBe(1);
+  });
+
+  it("a promoted user can then reach an owner-only endpoint", async () => {
+    const id = await createGuest("promoted");
+
+    const before = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/users",
+      headers: authHeader(await loginAs(app, "promoted", "guestpass1")),
+    });
+    expect(before.statusCode).toBe(403);
+
+    await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+
+    const after = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/users",
+      headers: authHeader(await loginAs(app, "promoted", "guestpass1")),
+    });
+    expect(after.statusCode).toBe(200);
+  });
+
+  it("PUT /users/:id/admin { isAdmin: false } → demotes another admin and revokes their access", async () => {
+    const id = await createGuest("demoteme");
+    await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(isAdminOf(id)).toBe(1);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: false },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(isAdminOf(id)).toBe(0);
+
+    const denied = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/users",
+      headers: authHeader(await loginAs(app, "demoteme", "guestpass1")),
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+
+  it("the users list reflects the new admin flag", async () => {
+    const id = await createGuest("listme");
+    await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/users",
+      headers: authHeader(token),
+    });
+    const users = list.json() as Array<{ id: string; isAdmin: boolean }>;
+    expect(users.find((u) => u.id === id)?.isAdmin).toBe(true);
+  });
+
+  it("PUT /users/:id/admin on own account → 400 and leaves is_admin untouched", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/admin/hub/users/admin-1/admin",
+      headers: authHeader(token),
+      payload: { isAdmin: false },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(isAdminOf("admin-1")).toBe(1);
+  });
+
+  it("PUT /users/:id/admin without a boolean isAdmin → 400", async () => {
+    const id = await createGuest("badbody");
+    for (const payload of [{}, { isAdmin: "true" }, { isAdmin: 1 }]) {
+      const res = await app.inject({
+        method: "PUT",
+        url: `/api/admin/hub/users/${id}/admin`,
+        headers: authHeader(token),
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(isAdminOf(id)).toBe(0);
+  });
+
+  it("PUT /users/:id/admin for an unknown id → 404", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/admin/hub/users/nonexistent-id/admin",
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("PUT /users/:id/admin targeting the __system__ placeholder → 400", async () => {
+    const sys = app.db
+      .prepare("SELECT id FROM users WHERE username = '__system__'")
+      .get() as { id: string };
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${sys.id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(isAdminOf(sys.id)).toBe(0);
+  });
+
+  it("PUT /users/:id/admin as a non-admin → 403 and no change", async () => {
+    const id = await createGuest("nosy");
+    const guestToken = await loginAs(app, "nosy", "guestpass1");
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(guestToken),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(isAdminOf(id)).toBe(0);
+  });
+
+  it("DELETE /users/:id → an admin can now delete another admin (204)", async () => {
+    const id = await createGuest("otheradmin");
+    await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${id}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(204);
+    expect(
+      app.db.prepare("SELECT id FROM users WHERE id = ?").get(id),
+    ).toBeUndefined();
+  });
+
+  it("DELETE reassigns instances.owner_id to the acting admin instead of failing the FK", async () => {
+    const id = await createGuest("instanceowner");
+    app.db
+      .prepare("UPDATE instances SET owner_id = ? WHERE id = 'local'")
+      .run(id);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${id}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(204);
+
+    const local = app.db
+      .prepare("SELECT owner_id FROM instances WHERE id = 'local'")
+      .get() as { owner_id: string };
+    expect(local.owner_id).toBe("admin-1");
+  });
+
+  it("DELETE targeting the __system__ placeholder → 400", async () => {
+    const sys = app.db
+      .prepare("SELECT id FROM users WHERE username = '__system__'")
+      .get() as { id: string };
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${sys.id}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(
+      app.db.prepare("SELECT id FROM users WHERE id = ?").get(sys.id),
+    ).toBeDefined();
+  });
+
+  it("DELETE cascades the target's stars and play events", async () => {
+    const id = await createGuest("hasdata");
+    app.db
+      .prepare(
+        "INSERT INTO user_stars (user_id, kind, target_id) VALUES (?, 'album', 'al-1')",
+      )
+      .run(id);
+    app.db
+      .prepare(
+        "INSERT INTO play_events (id, user_id, unified_track_id) VALUES ('pe-1', ?, 'tr-1')",
+      )
+      .run(id);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${id}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(204);
+
+    expect(
+      app.db
+        .prepare("SELECT COUNT(*) AS n FROM user_stars WHERE user_id = ?")
+        .get(id),
+    ).toEqual({ n: 0 });
+    expect(
+      app.db
+        .prepare("SELECT COUNT(*) AS n FROM play_events WHERE user_id = ?")
+        .get(id),
+    ).toEqual({ n: 0 });
+  });
+});
+
 // ── /api/admin/hub/peers ──────────────────────────────────────────────────────────────
 
 describe("admin — peers", () => {

@@ -64,6 +64,16 @@ The body's `accessToken` goes into `localStorage` for `Authorization` header use
 
 `PUT /api/admin/hub/users/:id/password` (admin-only) with `{ password }`. Re-encrypts via `setPassword` and updates `users.password_enc`. Returns 204. Validates `password.length >= 8`. An admin can target their own id; when they do, the `subsonicCredentials` cached in `localStorage` are now stale — the admin must log out and back in to refresh them. JWTs remain valid until expiry (no forced revocation).
 
+### Admin status and user deletion (#274)
+
+`PUT /api/admin/hub/users/:id/admin` (admin-only) with `{ isAdmin: boolean }` → 204. `DELETE /api/admin/hub/users/:id` (admin-only) → 204; an admin may delete **any** user, including other admins.
+
+Both refuse `id === request.userId` with 400 — an admin can neither demote nor delete themselves. That self-rule is what makes a "last admin" guard unnecessary: the acting admin is never a valid target, so at least one admin always survives either operation. Both also refuse the `__system__` placeholder (`db/system-user.ts`), which `GET /users` already hides.
+
+Neither operation revokes outstanding tokens. A demoted or deleted user's access JWT stays syntactically valid until it expires (≤15 min), but `requireOwner` and `requireAuth` both re-read the `users` row per request, so a demotion 403s on the next call and a deletion 401s ("User not found"). Refresh fails the same way.
+
+Deletion relies on `ON DELETE CASCADE` to drop `playlists`, `user_stars`, and `play_events`. `instances.owner_id` has **no** cascade, so owned instance rows are reassigned to the acting admin first — see [pitfalls.md](pitfalls.md#auth). That column is vestigial and read by nothing; #275 removes it.
+
 ## Subsonic auth flow
 
 `/rest/*` accepts only Subsonic-style query params; there is no JWT path.

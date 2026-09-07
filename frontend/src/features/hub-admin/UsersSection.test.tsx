@@ -12,6 +12,7 @@ vi.mock("@/lib/api", async () => {
     createUser: vi.fn(),
     deleteUser: vi.fn(),
     updateUserPassword: vi.fn(),
+    setUserAdmin: vi.fn(),
   };
 });
 
@@ -19,7 +20,7 @@ vi.mock("@/stores/auth", () => ({
   useAuth: vi.fn(),
 }));
 
-import { getUsers, updateUserPassword } from "@/lib/api";
+import { getUsers, updateUserPassword, deleteUser, setUserAdmin } from "@/lib/api";
 import { useAuth } from "@/stores/auth";
 
 function baseUser(overrides: Partial<User> = {}): User {
@@ -56,6 +57,8 @@ function renderSection() {
 beforeEach(() => {
   vi.mocked(getUsers).mockReset();
   vi.mocked(updateUserPassword).mockReset();
+  vi.mocked(deleteUser).mockReset();
+  vi.mocked(setUserAdmin).mockReset();
   vi.mocked(useAuth).mockReset();
   mockCurrentUserId("user-a");
 });
@@ -68,10 +71,10 @@ describe("UsersSection change-password form (#115)", () => {
     await waitFor(() => expect(screen.getByText("alice")).toBeInTheDocument());
     expect(screen.queryByLabelText("New password")).toBeNull();
 
-    fireEvent.click(screen.getByTitle("Change password"));
+    fireEvent.click(screen.getByRole("button", { name: "Password" }));
     expect(screen.getByLabelText("New password")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByTitle("Change password"));
+    fireEvent.click(screen.getByRole("button", { name: "Password" }));
     expect(screen.queryByLabelText("New password")).toBeNull();
   });
 
@@ -80,7 +83,7 @@ describe("UsersSection change-password form (#115)", () => {
     renderSection();
 
     await waitFor(() => expect(screen.getByText("alice")).toBeInTheDocument());
-    fireEvent.click(screen.getByTitle("Change password"));
+    fireEvent.click(screen.getByRole("button", { name: "Password" }));
 
     fireEvent.change(screen.getByLabelText("New password"), { target: { value: "password1" } });
     fireEvent.change(screen.getByLabelText("Confirm"), { target: { value: "password2" } });
@@ -96,7 +99,7 @@ describe("UsersSection change-password form (#115)", () => {
     renderSection();
 
     await waitFor(() => expect(screen.getByText("alice")).toBeInTheDocument());
-    fireEvent.click(screen.getByTitle("Change password"));
+    fireEvent.click(screen.getByRole("button", { name: "Password" }));
 
     fireEvent.change(screen.getByLabelText("New password"), { target: { value: "password1" } });
     fireEvent.change(screen.getByLabelText("Confirm"), { target: { value: "password1" } });
@@ -114,7 +117,7 @@ describe("UsersSection change-password form (#115)", () => {
     renderSection();
 
     await waitFor(() => expect(screen.getByText("alice")).toBeInTheDocument());
-    fireEvent.click(screen.getByTitle("Change password"));
+    fireEvent.click(screen.getByRole("button", { name: "Password" }));
 
     fireEvent.change(screen.getByLabelText("New password"), { target: { value: "password1" } });
     fireEvent.change(screen.getByLabelText("Confirm"), { target: { value: "password1" } });
@@ -133,7 +136,7 @@ describe("UsersSection change-password form (#115)", () => {
     renderSection();
 
     await waitFor(() => expect(screen.getByText("alice")).toBeInTheDocument());
-    fireEvent.click(screen.getByTitle("Change password"));
+    fireEvent.click(screen.getByRole("button", { name: "Password" }));
 
     fireEvent.change(screen.getByLabelText("New password"), { target: { value: "password1" } });
     fireEvent.change(screen.getByLabelText("Confirm"), { target: { value: "password1" } });
@@ -151,12 +154,139 @@ describe("UsersSection change-password form (#115)", () => {
     renderSection();
 
     await waitFor(() => expect(screen.getByText("alice")).toBeInTheDocument());
-    fireEvent.click(screen.getByTitle("Change password"));
+    fireEvent.click(screen.getByRole("button", { name: "Password" }));
 
     fireEvent.change(screen.getByLabelText("New password"), { target: { value: "password1" } });
     fireEvent.change(screen.getByLabelText("Confirm"), { target: { value: "password1" } });
     fireEvent.click(screen.getByRole("button", { name: /update password/i }));
 
     expect(await screen.findByText("Server exploded")).toBeInTheDocument();
+  });
+});
+
+describe("UsersSection admin status + deletion (#274)", () => {
+  it("offers promote on a non-admin row and calls setUserAdmin with true", async () => {
+    vi.mocked(getUsers).mockResolvedValue([baseUser({ id: "user-b", username: "bob" })]);
+    vi.mocked(setUserAdmin).mockResolvedValue(undefined);
+    mockCurrentUserId("user-a");
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /make admin/i }));
+
+    await waitFor(() => expect(setUserAdmin).toHaveBeenCalledWith("user-b", true));
+  });
+
+  it("offers revoke on an admin row and calls setUserAdmin with false", async () => {
+    vi.mocked(getUsers).mockResolvedValue([
+      baseUser({ id: "user-b", username: "bob", isAdmin: true }),
+    ]);
+    vi.mocked(setUserAdmin).mockResolvedValue(undefined);
+    mockCurrentUserId("user-a");
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /revoke admin/i }));
+
+    await waitFor(() => expect(setUserAdmin).toHaveBeenCalledWith("user-b", false));
+  });
+
+  it("hides the admin toggle and the delete button on the current user's own row", async () => {
+    vi.mocked(getUsers).mockResolvedValue([
+      baseUser({ id: "user-a", username: "alice", isAdmin: true }),
+    ]);
+    mockCurrentUserId("user-a");
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("alice")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /revoke admin/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /make admin/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /remove/i })).toBeNull();
+  });
+
+  it("shows the delete button on another admin's row", async () => {
+    vi.mocked(getUsers).mockResolvedValue([
+      baseUser({ id: "user-b", username: "bob", isAdmin: true }),
+    ]);
+    mockCurrentUserId("user-a");
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /remove/i })).toBeInTheDocument();
+  });
+
+  it("confirms before deleting and calls deleteUser with the row's id", async () => {
+    vi.mocked(getUsers).mockResolvedValue([baseUser({ id: "user-b", username: "bob" })]);
+    vi.mocked(deleteUser).mockResolvedValue(undefined);
+    mockCurrentUserId("user-a");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /remove/i }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('"bob"'));
+    await waitFor(() => expect(deleteUser).toHaveBeenCalledWith("user-b"));
+    confirmSpy.mockRestore();
+  });
+
+  it("does not call deleteUser when the confirmation is declined", async () => {
+    vi.mocked(getUsers).mockResolvedValue([baseUser({ id: "user-b", username: "bob" })]);
+    mockCurrentUserId("user-a");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /remove/i }));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(deleteUser).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("warns that the target is an admin in the delete confirmation", async () => {
+    vi.mocked(getUsers).mockResolvedValue([
+      baseUser({ id: "user-b", username: "bob", isAdmin: true }),
+    ]);
+    vi.mocked(deleteUser).mockResolvedValue(undefined);
+    mockCurrentUserId("user-a");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /remove/i }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("admin user"));
+    confirmSpy.mockRestore();
+  });
+
+  it("surfaces a failed admin-status change", async () => {
+    vi.mocked(getUsers).mockResolvedValue([baseUser({ id: "user-b", username: "bob" })]);
+    vi.mocked(setUserAdmin).mockRejectedValue(
+      new Error("Cannot change your own admin status"),
+    );
+    mockCurrentUserId("user-a");
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /make admin/i }));
+
+    expect(
+      await screen.findByText("Cannot change your own admin status"),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a failed deletion", async () => {
+    vi.mocked(getUsers).mockResolvedValue([baseUser({ id: "user-b", username: "bob" })]);
+    vi.mocked(deleteUser).mockRejectedValue(new Error("User not found"));
+    mockCurrentUserId("user-a");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /remove/i }));
+
+    expect(await screen.findByText("User not found")).toBeInTheDocument();
+    confirmSpy.mockRestore();
   });
 });

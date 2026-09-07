@@ -20,6 +20,7 @@ import { normalizeLanUrl } from "../services/sonos-settings.js";
 import { requireAuth } from "../auth/middleware.js";
 import { createTombstone } from "../federation/tombstones.js";
 import type { PeerLifecycle } from "../federation/peers.js";
+import { SYSTEM_USERNAME } from "../db/system-user.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -201,9 +202,9 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
   app.get("/users", { preHandler: requireOwner }, async () => {
     const users = app.db
       .prepare(
-        "SELECT id, username, is_admin, created_at FROM users WHERE username != '__system__' ORDER BY created_at ASC",
+        "SELECT id, username, is_admin, created_at FROM users WHERE username != ? ORDER BY created_at ASC",
       )
-      .all() as Array<{
+      .all(SYSTEM_USERNAME) as Array<{
       id: string;
       username: string;
       is_admin: number;
@@ -283,7 +284,50 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
-  // DELETE /admin/users/:id
+  // PUT /admin/users/:id/admin — grant or revoke admin on another user (#274).
+  // Self is not a valid target, so the acting admin always survives: no
+  // last-admin guard is needed here or on DELETE.
+  app.put<{ Params: { id: string }; Body: { isAdmin?: boolean } }>(
+    "/users/:id/admin",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { isAdmin } = request.body ?? {};
+      if (typeof isAdmin !== "boolean") {
+        return reply.code(400).send({ error: "isAdmin (boolean) required" });
+      }
+      if (id === request.userId) {
+        return reply
+          .code(400)
+          .send({ error: "Cannot change your own admin status" });
+      }
+
+      const user = app.db
+        .prepare("SELECT id, username, is_admin FROM users WHERE id = ?")
+        .get(id) as
+        | { id: string; username: string; is_admin: number }
+        | undefined;
+      if (!user) {
+        return reply.code(404).send({ error: "User not found" });
+      }
+      if (user.username === SYSTEM_USERNAME) {
+        return reply
+          .code(400)
+          .send({ error: "Cannot modify the system placeholder user" });
+      }
+
+      app.db
+        .prepare(
+          "UPDATE users SET is_admin = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .run(isAdmin ? 1 : 0, id);
+
+      return reply.code(204).send();
+    },
+  );
+
+  // DELETE /admin/users/:id — an admin may delete any user but themselves
+  // (#274), including other admins.
   app.delete<{ Params: { id: string } }>(
     "/users/:id",
     { preHandler: requireOwner },
@@ -294,16 +338,29 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const user = app.db
-        .prepare("SELECT id, is_admin FROM users WHERE id = ?")
-        .get(id) as { id: string; is_admin: number } | undefined;
+        .prepare("SELECT id, username FROM users WHERE id = ?")
+        .get(id) as { id: string; username: string } | undefined;
       if (!user) {
         return reply.code(404).send({ error: "User not found" });
       }
-      if (user.is_admin === 1) {
-        return reply.code(400).send({ error: "Cannot delete admin users" });
+      if (user.username === SYSTEM_USERNAME) {
+        return reply
+          .code(400)
+          .send({ error: "Cannot delete the system placeholder user" });
       }
 
-      app.db.prepare("DELETE FROM users WHERE id = ?").run(id);
+      // `instances.owner_id` has no ON DELETE CASCADE (deliberately — losing
+      // the peer registry with a user account would be catastrophic), so a
+      // user who owns instance rows would fail the FK check on delete. The
+      // seeded first user owns `local`, which makes that the common case once
+      // admins are deletable. Reassign to the acting admin instead.
+      app.db.transaction(() => {
+        app.db
+          .prepare("UPDATE instances SET owner_id = ? WHERE owner_id = ?")
+          .run(request.userId, id);
+        app.db.prepare("DELETE FROM users WHERE id = ?").run(id);
+      })();
+
       return reply.code(204).send();
     },
   );
