@@ -8,8 +8,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { buildApp } from "../src/server.js";
+import { otherAdminCount } from "../src/routes/admin.js";
 import { setPassword } from "../src/auth/passwords.js";
 import type { Config } from "../src/config.js";
 
@@ -667,6 +668,158 @@ describe("admin — admin status and admin deletion (#274)", () => {
         .prepare("SELECT COUNT(*) AS n FROM play_events WHERE user_id = ?")
         .get(id),
     ).toEqual({ n: 0 });
+  });
+
+  it("POST /users cannot claim the reserved __system__ username", async () => {
+    // Re-home `instances.local` first: the placeholder exists only to satisfy
+    // that FK, and this hub already has a real admin to hand it to.
+    app.db.prepare("UPDATE instances SET owner_id = 'admin-1'").run();
+    app.db.prepare("DELETE FROM users WHERE username = '__system__'").run();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/users",
+      headers: authHeader(token),
+      payload: { username: "__system__", password: "guestpass1" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(
+      app.db
+        .prepare("SELECT COUNT(*) AS n FROM users WHERE username = '__system__'")
+        .get(),
+    ).toEqual({ n: 0 });
+  });
+
+  it("PUT /users/:id/password targeting the __system__ placeholder → 400", async () => {
+    const sys = app.db
+      .prepare("SELECT id, password_enc FROM users WHERE username = '__system__'")
+      .get() as { id: string; password_enc: string };
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${sys.id}/password`,
+      headers: authHeader(token),
+      payload: { password: "sneakypass1" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(
+      (
+        app.db
+          .prepare("SELECT password_enc FROM users WHERE id = ?")
+          .get(sys.id) as { password_enc: string }
+      ).password_enc,
+    ).toBe(sys.password_enc);
+  });
+
+  it("otherAdminCount reaches zero once a concurrent write removes the acting admin", () => {
+    // The state the demote/delete race produces: `requireOwner` authorized
+    // both admins from its preHandler read, then the first write landed. No
+    // single request can reach it — the second admin would just 403 — so the
+    // guard is asserted directly rather than by racing two injects.
+    const request = { server: app } as unknown as FastifyRequest;
+    app.db
+      .prepare(
+        "INSERT INTO users (id, username, password_enc, is_admin) VALUES ('admin-2', 'racer', '', 1)",
+      )
+      .run();
+
+    // Both still admins: demoting or deleting either is allowed.
+    expect(otherAdminCount(request, "admin-1")).toBe(1);
+    expect(otherAdminCount(request, "admin-2")).toBe(1);
+
+    // admin-1's write lands first. admin-2's handler now sees no other admin
+    // and must refuse.
+    app.db.prepare("UPDATE users SET is_admin = 0 WHERE id = 'admin-2'").run();
+    expect(otherAdminCount(request, "admin-1")).toBe(0);
+  });
+
+});
+
+// ── owner-account protection ─────────────────────────────────────────────────────────────────────
+
+describe("admin — the POUTINE_OWNER_USERNAME account is protected (#274)", () => {
+  let app: FastifyInstance;
+  let token: string;
+  let ownerId: string;
+
+  beforeEach(async () => {
+    // A real owner username makes `seedOwner` insert the config-seeded row at
+    // boot; `seedAdmin` then adds a second, unrelated admin to act as.
+    app = await buildApp({
+      ...testConfig,
+      poutineOwnerUsername: "hubowner",
+      poutineOwnerPassword: "hubownerpass",
+    });
+    await app.ready();
+    ownerId = (
+      app.db
+        .prepare("SELECT id FROM users WHERE username = 'hubowner'")
+        .get() as { id: string }
+    ).id;
+    seedAdmin(app, "otheradmin", "adminpass");
+    token = await loginAs(app, "otheradmin", "adminpass");
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("DELETE on the owner row → 400 and the row survives", async () => {
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${ownerId}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/POUTINE_OWNER_USERNAME/);
+    expect(
+      app.db.prepare("SELECT id FROM users WHERE id = ?").get(ownerId),
+    ).toBeDefined();
+  });
+
+  it("demoting the owner → 400 and is_admin stays 1", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${ownerId}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: false },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(
+      app.db.prepare("SELECT is_admin FROM users WHERE id = ?").get(ownerId),
+    ).toEqual({ is_admin: 1 });
+  });
+
+  it("promoting the owner is still allowed — it is the recovery path", async () => {
+    app.db.prepare("UPDATE users SET is_admin = 0 WHERE id = ?").run(ownerId);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${ownerId}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(
+      app.db.prepare("SELECT is_admin FROM users WHERE id = ?").get(ownerId),
+    ).toEqual({ is_admin: 1 });
+  });
+
+  it("an ordinary guest is still deletable on the same hub", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/users",
+      headers: authHeader(token),
+      payload: { username: "plainguest", password: "guestpass1" },
+    });
+    const guestId = (created.json() as { id: string }).id;
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${guestId}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(204);
   });
 });
 

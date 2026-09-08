@@ -260,6 +260,24 @@ describe("UsersSection admin status + deletion (#274)", () => {
     confirmSpy.mockRestore();
   });
 
+  it("warns about peer reassignment when deleting a non-admin too", async () => {
+    // `instances.owner_id` rows are held by an arbitrary user, guests
+    // included, so the warning must not be gated on `isAdmin` (#274).
+    vi.mocked(getUsers).mockResolvedValue([baseUser({ id: "user-b", username: "bob" })]);
+    vi.mocked(deleteUser).mockResolvedValue(undefined);
+    mockCurrentUserId("user-a");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /remove/i }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining("peer records they own are reassigned to you"),
+    );
+    confirmSpy.mockRestore();
+  });
+
   it("surfaces a failed admin-status change", async () => {
     vi.mocked(getUsers).mockResolvedValue([baseUser({ id: "user-b", username: "bob" })]);
     vi.mocked(setUserAdmin).mockRejectedValue(
@@ -287,6 +305,25 @@ describe("UsersSection admin status + deletion (#274)", () => {
     fireEvent.click(screen.getByRole("button", { name: /remove/i }));
 
     expect(await screen.findByText("User not found")).toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
+  it("replaces a stale delete error with the later admin-toggle error", async () => {
+    vi.mocked(getUsers).mockResolvedValue([baseUser({ id: "user-b", username: "bob" })]);
+    vi.mocked(deleteUser).mockRejectedValue(new Error("Delete failed"));
+    vi.mocked(setUserAdmin).mockRejectedValue(new Error("Promote failed"));
+    mockCurrentUserId("user-a");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /remove/i }));
+    expect(await screen.findByText("Delete failed")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /make admin/i }));
+
+    expect(await screen.findByText("Promote failed")).toBeInTheDocument();
+    expect(screen.queryByText("Delete failed")).toBeNull();
     confirmSpy.mockRestore();
   });
 });

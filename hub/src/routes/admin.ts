@@ -65,6 +65,90 @@ async function requireOwner(
   }
 }
 
+/** A `users` row an admin mutation may target. */
+interface TargetUser {
+  id: string;
+  username: string;
+  is_admin: number;
+}
+
+/** Either the loaded target row, or the reply the caller should send instead. */
+type TargetLookup = { user: TargetUser } | { code: number; error: string };
+
+/**
+ * Load the target of an admin-initiated mutation of another user's row and
+ * apply the guards those endpoints share (#274). Every guard lives here so
+ * adding one cannot be half-applied across the three call sites.
+ *
+ * - `__system__` is never a target. It is hidden from `GET /users` and exists
+ *   only so `instances.owner_id`'s FK has a row to point at.
+ * - `selfError` rejects `id === request.userId`. Set on demote and delete;
+ *   *not* on the password endpoint, where an admin may target their own id.
+ * - `protectOwner` rejects the `POUTINE_OWNER_USERNAME` row. Losing it is
+ *   permanent — `seedOwner` re-seeds only when the table holds no real
+ *   accounts, and `reset-password.sh` errors on a missing user — and the DLNA
+ *   browse path authenticates as that account's u+p (`HubSubsonicCaller` with
+ *   no `asUser`), so a delete silently blanks the whole DLNA library.
+ */
+function loadTargetUser(
+  request: FastifyRequest,
+  id: string,
+  opts: { selfError?: string; protectOwner?: boolean } = {},
+): TargetLookup {
+  const { config, db } = request.server;
+
+  if (opts.selfError && id === request.userId) {
+    return { code: 400, error: opts.selfError };
+  }
+
+  const user = db
+    .prepare("SELECT id, username, is_admin FROM users WHERE id = ?")
+    .get(id) as TargetUser | undefined;
+  if (!user) {
+    return { code: 404, error: "User not found" };
+  }
+
+  if (user.username === SYSTEM_USERNAME) {
+    return { code: 400, error: "Cannot modify the system placeholder user" };
+  }
+  if (
+    opts.protectOwner &&
+    config.poutineOwnerUsername &&
+    user.username === config.poutineOwnerUsername
+  ) {
+    return {
+      code: 400,
+      error:
+        "Cannot demote or delete the hub owner account " +
+        "(POUTINE_OWNER_USERNAME) — it is not recoverable and internal " +
+        "services authenticate as it",
+    };
+  }
+
+  return { user };
+}
+
+/**
+ * Admins other than `excludeId`. The self-guard alone does not keep an admin
+ * alive: `requireOwner` reads `is_admin` in the preHandler, so two admins who
+ * both pass authorization before either write lands can demote or delete each
+ * other and leave the hub with none — after which no `requireOwner` route is
+ * reachable and recovery is manual SQL. This count runs in the handler body,
+ * synchronously with the write, so the second request observes the first.
+ *
+ * Exported for its own test: the state it guards against — actor authorized,
+ * target now the sole admin — is not reachable through a single request, so
+ * `admin-routes.test.ts` asserts it directly rather than racing two injects.
+ */
+export function otherAdminCount(request: FastifyRequest, excludeId: string): number {
+  const row = request.server.db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM users WHERE is_admin = 1 AND id != ?",
+    )
+    .get(excludeId) as { count: number };
+  return row.count;
+}
+
 // Auth endpoints. Mounted at all three admin prefixes so /login, /refresh,
 // /logout, and /me are reachable from any namespace. The refresh-token cookie
 // is hard-bound to path `/admin/refresh` for backward compatibility with
@@ -227,6 +311,13 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       if (!username || !password) {
         return reply.code(400).send({ error: "Username and password required" });
       }
+      // `__system__` is load-bearing: `GET /users` hides it and every user
+      // mutation refuses it. Letting an admin claim the name would create a
+      // usable account that is invisible in the UI and undeletable via the
+      // API, and that `seedOwner` does not count as a real user (#274).
+      if (username === SYSTEM_USERNAME) {
+        return reply.code(400).send({ error: "Username is reserved" });
+      }
       if (password.length < 8) {
         return reply
           .code(400)
@@ -268,11 +359,10 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
           .send({ error: "Password must be at least 8 characters" });
       }
 
-      const user = app.db
-        .prepare("SELECT id FROM users WHERE id = ?")
-        .get(id) as { id: string } | undefined;
-      if (!user) {
-        return reply.code(404).send({ error: "User not found" });
+      // No `selfError`: an admin may re-set their own password here.
+      const target = loadTargetUser(request, id);
+      if (!("user" in target)) {
+        return reply.code(target.code).send({ error: target.error });
       }
 
       const enc = setPassword(password, app.passwordKey);
@@ -285,8 +375,8 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
   );
 
   // PUT /admin/users/:id/admin — grant or revoke admin on another user (#274).
-  // Self is not a valid target, so the acting admin always survives: no
-  // last-admin guard is needed here or on DELETE.
+  // Neither self, the `__system__` placeholder, nor the config-seeded owner is
+  // a valid target; a demotion that would leave zero admins is refused.
   app.put<{ Params: { id: string }; Body: { isAdmin?: boolean } }>(
     "/users/:id/admin",
     { preHandler: requireOwner },
@@ -296,24 +386,23 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       if (typeof isAdmin !== "boolean") {
         return reply.code(400).send({ error: "isAdmin (boolean) required" });
       }
-      if (id === request.userId) {
+      // Only a *demotion* of the owner is refused — promoting it back is the
+      // recovery path if the row ever ends up non-admin.
+      const target = loadTargetUser(request, id, {
+        selfError: "Cannot change your own admin status",
+        protectOwner: !isAdmin,
+      });
+      if (!("user" in target)) {
+        return reply.code(target.code).send({ error: target.error });
+      }
+      if (
+        !isAdmin &&
+        target.user.is_admin === 1 &&
+        otherAdminCount(request, id) === 0
+      ) {
         return reply
           .code(400)
-          .send({ error: "Cannot change your own admin status" });
-      }
-
-      const user = app.db
-        .prepare("SELECT id, username, is_admin FROM users WHERE id = ?")
-        .get(id) as
-        | { id: string; username: string; is_admin: number }
-        | undefined;
-      if (!user) {
-        return reply.code(404).send({ error: "User not found" });
-      }
-      if (user.username === SYSTEM_USERNAME) {
-        return reply
-          .code(400)
-          .send({ error: "Cannot modify the system placeholder user" });
+          .send({ error: "Cannot demote the last remaining admin" });
       }
 
       app.db
@@ -327,26 +416,24 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
   );
 
   // DELETE /admin/users/:id — an admin may delete any user but themselves
-  // (#274), including other admins.
+  // (#274), including other admins, but not the config-seeded owner and not
+  // the last remaining admin.
   app.delete<{ Params: { id: string } }>(
     "/users/:id",
     { preHandler: requireOwner },
     async (request, reply) => {
       const { id } = request.params;
-      if (id === request.userId) {
-        return reply.code(400).send({ error: "Cannot delete your own account" });
+      const target = loadTargetUser(request, id, {
+        selfError: "Cannot delete your own account",
+        protectOwner: true,
+      });
+      if (!("user" in target)) {
+        return reply.code(target.code).send({ error: target.error });
       }
-
-      const user = app.db
-        .prepare("SELECT id, username FROM users WHERE id = ?")
-        .get(id) as { id: string; username: string } | undefined;
-      if (!user) {
-        return reply.code(404).send({ error: "User not found" });
-      }
-      if (user.username === SYSTEM_USERNAME) {
+      if (target.user.is_admin === 1 && otherAdminCount(request, id) === 0) {
         return reply
           .code(400)
-          .send({ error: "Cannot delete the system placeholder user" });
+          .send({ error: "Cannot delete the last remaining admin" });
       }
 
       // `instances.owner_id` has no ON DELETE CASCADE (deliberately — losing

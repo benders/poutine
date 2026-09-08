@@ -215,11 +215,25 @@ function UserRow({ user, currentUserId }: { user: User; currentUserId: string })
     ? `Revoke admin rights from ${user.username}`
     : `Grant ${user.username} full admin rights over this hub`;
 
-  const deleteConfirmMessage = user.isAdmin
-    ? `Remove admin user "${user.username}"? They lose all access to this hub, and any peer records they own are reassigned to you. This cannot be undone.`
-    : `Remove user "${user.username}"? This cannot be undone.`;
+  // The peer-reassignment warning is unconditional. `instances.owner_id` rows
+  // are held by an arbitrary user — non-admins included — and the SPA has no
+  // way to tell which, so gating the sentence on `isAdmin` would let guest
+  // deletions re-home peer records silently (#274). #275 drops the column and
+  // this sentence with it.
+  const deleteConfirmMessage =
+    `Remove ${user.isAdmin ? "admin user" : "user"} "${user.username}"? ` +
+    "They lose all access to this hub, their playlists, stars, and play " +
+    "history are deleted, and any peer records they own are reassigned to " +
+    "you. This cannot be undone.";
 
-  const actionError = deleteMutation.error ?? adminMutation.error;
+  // Surface whichever action ran most recently. react-query keeps `error` set
+  // until that same mutation runs again, so `delete ?? admin` would pin a
+  // stale delete failure to the row and swallow every later toggle error.
+  const lastAction =
+    deleteMutation.submittedAt > adminMutation.submittedAt
+      ? deleteMutation
+      : adminMutation;
+  const actionError = lastAction.error;
 
   return (
     <div className="bg-surface border border-border rounded-lg">
