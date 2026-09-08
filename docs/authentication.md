@@ -64,6 +64,25 @@ The body's `accessToken` goes into `localStorage` for `Authorization` header use
 
 `PUT /api/admin/hub/users/:id/password` (admin-only) with `{ password }`. Re-encrypts via `setPassword` and updates `users.password_enc`. Returns 204. Validates `password.length >= 8`. An admin can target their own id; when they do, the `subsonicCredentials` cached in `localStorage` are now stale — the admin must log out and back in to refresh them. JWTs remain valid until expiry (no forced revocation).
 
+### Admin status and user deletion (#274)
+
+`PUT /api/admin/hub/users/:id/admin` (admin-only) with `{ isAdmin: boolean }` → 204. `DELETE /api/admin/hub/users/:id` (admin-only) → 204; an admin may delete **any** user, including other admins, subject to the guards below.
+
+Both run their target through `loadTargetUser()` (`routes/admin.ts`), which holds the guard set shared with the password endpoint:
+
+| Guard                              | Applies to               | Result |
+|------------------------------------|--------------------------|--------|
+| `id === request.userId`            | demote, delete           | 400. An admin may still re-set their own password. |
+| target is `__system__`             | demote, delete, password | 400. `GET /users` hides it and `POST /users` reserves the name. |
+| target is `POUTINE_OWNER_USERNAME` | demote, delete           | 400. Unrecoverable and internal services auth as it — see [pitfalls.md](pitfalls.md#auth). Promoting it back is allowed; that is the recovery path. |
+| write would leave zero admins      | demote, delete           | 400, via `otherAdminCount()`. |
+
+The self-check alone does **not** keep an admin alive. `requireOwner` reads `is_admin` in the preHandler, so two admins can both be authorized before either write lands and then demote or delete each other, leaving none — after which no `requireOwner` route is reachable and recovery is manual SQL. `otherAdminCount()` runs in the handler body, synchronously with the write, so the second request observes the first.
+
+Neither operation revokes outstanding tokens. A demoted or deleted user's access JWT stays syntactically valid until it expires (≤15 min), but `requireOwner` and `requireAuth` both re-read the `users` row per request, so a demotion 403s on the next call and a deletion 401s ("User not found"). Refresh fails the same way.
+
+Deletion relies on `ON DELETE CASCADE` to drop `playlists`, `user_stars`, and `play_events`. `instances.owner_id` has **no** cascade, so owned instance rows are reassigned to the acting admin first — see [pitfalls.md](pitfalls.md#auth). That column is vestigial and read by nothing; #275 removes it.
+
 ## Subsonic auth flow
 
 `/rest/*` accepts only Subsonic-style query params; there is no JWT path.

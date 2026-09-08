@@ -8,8 +8,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { buildApp } from "../src/server.js";
+import { otherAdminCount } from "../src/routes/admin.js";
 import { setPassword } from "../src/auth/passwords.js";
 import type { Config } from "../src/config.js";
 
@@ -394,6 +395,431 @@ describe("admin — users CRUD", () => {
       .get("admin-1") as { password_enc: string };
     const { verifyPassword } = await import("../src/auth/passwords.js");
     expect(verifyPassword(row.password_enc, "adminpass", app.passwordKey)).toBe(true);
+  });
+});
+
+// ── /api/admin/hub/users admin status + admin deletion (issue #274) ───────────
+
+describe("admin — admin status and admin deletion (#274)", () => {
+  let app: FastifyInstance;
+  let token: string;
+
+  /** Create a guest and return its id. */
+  async function createGuest(username: string): Promise<string> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/users",
+      headers: authHeader(token),
+      payload: { username, password: "guestpass1" },
+    });
+    expect(res.statusCode).toBe(201);
+    return (res.json() as { id: string }).id;
+  }
+
+  function isAdminOf(id: string): number {
+    return (
+      app.db.prepare("SELECT is_admin FROM users WHERE id = ?").get(id) as {
+        is_admin: number;
+      }
+    ).is_admin;
+  }
+
+  beforeEach(async () => {
+    app = await buildApp(testConfig);
+    await app.ready();
+    seedAdmin(app);
+    token = await loginAs(app, "owner", "adminpass");
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("PUT /users/:id/admin { isAdmin: true } → promotes a guest (204)", async () => {
+    const id = await createGuest("promoteme");
+    expect(isAdminOf(id)).toBe(0);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(isAdminOf(id)).toBe(1);
+  });
+
+  it("a promoted user can then reach an owner-only endpoint", async () => {
+    const id = await createGuest("promoted");
+
+    const before = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/users",
+      headers: authHeader(await loginAs(app, "promoted", "guestpass1")),
+    });
+    expect(before.statusCode).toBe(403);
+
+    await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+
+    const after = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/users",
+      headers: authHeader(await loginAs(app, "promoted", "guestpass1")),
+    });
+    expect(after.statusCode).toBe(200);
+  });
+
+  it("PUT /users/:id/admin { isAdmin: false } → demotes another admin and revokes their access", async () => {
+    const id = await createGuest("demoteme");
+    await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(isAdminOf(id)).toBe(1);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: false },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(isAdminOf(id)).toBe(0);
+
+    const denied = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/users",
+      headers: authHeader(await loginAs(app, "demoteme", "guestpass1")),
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+
+  it("the users list reflects the new admin flag", async () => {
+    const id = await createGuest("listme");
+    await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/hub/users",
+      headers: authHeader(token),
+    });
+    const users = list.json() as Array<{ id: string; isAdmin: boolean }>;
+    expect(users.find((u) => u.id === id)?.isAdmin).toBe(true);
+  });
+
+  it("PUT /users/:id/admin on own account → 400 and leaves is_admin untouched", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/admin/hub/users/admin-1/admin",
+      headers: authHeader(token),
+      payload: { isAdmin: false },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(isAdminOf("admin-1")).toBe(1);
+  });
+
+  it("PUT /users/:id/admin without a boolean isAdmin → 400", async () => {
+    const id = await createGuest("badbody");
+    for (const payload of [{}, { isAdmin: "true" }, { isAdmin: 1 }]) {
+      const res = await app.inject({
+        method: "PUT",
+        url: `/api/admin/hub/users/${id}/admin`,
+        headers: authHeader(token),
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(isAdminOf(id)).toBe(0);
+  });
+
+  it("PUT /users/:id/admin for an unknown id → 404", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/admin/hub/users/nonexistent-id/admin",
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("PUT /users/:id/admin targeting the __system__ placeholder → 400", async () => {
+    const sys = app.db
+      .prepare("SELECT id FROM users WHERE username = '__system__'")
+      .get() as { id: string };
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${sys.id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(isAdminOf(sys.id)).toBe(0);
+  });
+
+  it("PUT /users/:id/admin as a non-admin → 403 and no change", async () => {
+    const id = await createGuest("nosy");
+    const guestToken = await loginAs(app, "nosy", "guestpass1");
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(guestToken),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(isAdminOf(id)).toBe(0);
+  });
+
+  it("DELETE /users/:id → an admin can now delete another admin (204)", async () => {
+    const id = await createGuest("otheradmin");
+    await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${id}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${id}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(204);
+    expect(
+      app.db.prepare("SELECT id FROM users WHERE id = ?").get(id),
+    ).toBeUndefined();
+  });
+
+  it("DELETE reassigns instances.owner_id to the acting admin instead of failing the FK", async () => {
+    const id = await createGuest("instanceowner");
+    app.db
+      .prepare("UPDATE instances SET owner_id = ? WHERE id = 'local'")
+      .run(id);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${id}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(204);
+
+    const local = app.db
+      .prepare("SELECT owner_id FROM instances WHERE id = 'local'")
+      .get() as { owner_id: string };
+    expect(local.owner_id).toBe("admin-1");
+  });
+
+  it("DELETE targeting the __system__ placeholder → 400", async () => {
+    const sys = app.db
+      .prepare("SELECT id FROM users WHERE username = '__system__'")
+      .get() as { id: string };
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${sys.id}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(
+      app.db.prepare("SELECT id FROM users WHERE id = ?").get(sys.id),
+    ).toBeDefined();
+  });
+
+  it("DELETE cascades the target's stars and play events", async () => {
+    const id = await createGuest("hasdata");
+    app.db
+      .prepare(
+        "INSERT INTO user_stars (user_id, kind, target_id) VALUES (?, 'album', 'al-1')",
+      )
+      .run(id);
+    app.db
+      .prepare(
+        "INSERT INTO play_events (id, user_id, unified_track_id) VALUES ('pe-1', ?, 'tr-1')",
+      )
+      .run(id);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${id}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(204);
+
+    expect(
+      app.db
+        .prepare("SELECT COUNT(*) AS n FROM user_stars WHERE user_id = ?")
+        .get(id),
+    ).toEqual({ n: 0 });
+    expect(
+      app.db
+        .prepare("SELECT COUNT(*) AS n FROM play_events WHERE user_id = ?")
+        .get(id),
+    ).toEqual({ n: 0 });
+  });
+
+  it("POST /users cannot claim the reserved __system__ username", async () => {
+    // Re-home `instances.local` first: the placeholder exists only to satisfy
+    // that FK, and this hub already has a real admin to hand it to.
+    app.db.prepare("UPDATE instances SET owner_id = 'admin-1'").run();
+    app.db.prepare("DELETE FROM users WHERE username = '__system__'").run();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/users",
+      headers: authHeader(token),
+      payload: { username: "__system__", password: "guestpass1" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(
+      app.db
+        .prepare("SELECT COUNT(*) AS n FROM users WHERE username = '__system__'")
+        .get(),
+    ).toEqual({ n: 0 });
+  });
+
+  it("PUT /users/:id/password targeting the __system__ placeholder → 400", async () => {
+    const sys = app.db
+      .prepare("SELECT id, password_enc FROM users WHERE username = '__system__'")
+      .get() as { id: string; password_enc: string };
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${sys.id}/password`,
+      headers: authHeader(token),
+      payload: { password: "sneakypass1" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(
+      (
+        app.db
+          .prepare("SELECT password_enc FROM users WHERE id = ?")
+          .get(sys.id) as { password_enc: string }
+      ).password_enc,
+    ).toBe(sys.password_enc);
+  });
+
+  it("otherAdminCount reaches zero once a concurrent write removes the acting admin", () => {
+    // The state the demote/delete race produces: `requireOwner` authorized
+    // both admins from its preHandler read, then the first write landed. No
+    // single request can reach it — the second admin would just 403 — so the
+    // guard is asserted directly rather than by racing two injects.
+    const request = { server: app } as unknown as FastifyRequest;
+    app.db
+      .prepare(
+        "INSERT INTO users (id, username, password_enc, is_admin) VALUES ('admin-2', 'racer', '', 1)",
+      )
+      .run();
+
+    // Both still admins: demoting or deleting either is allowed.
+    expect(otherAdminCount(request, "admin-1")).toBe(1);
+    expect(otherAdminCount(request, "admin-2")).toBe(1);
+
+    // admin-1's write lands first. admin-2's handler now sees no other admin
+    // and must refuse.
+    app.db.prepare("UPDATE users SET is_admin = 0 WHERE id = 'admin-2'").run();
+    expect(otherAdminCount(request, "admin-1")).toBe(0);
+  });
+
+});
+
+// ── owner-account protection ─────────────────────────────────────────────────────────────────────
+
+describe("admin — the POUTINE_OWNER_USERNAME account is protected (#274)", () => {
+  let app: FastifyInstance;
+  let token: string;
+  let ownerId: string;
+
+  beforeEach(async () => {
+    // A real owner username makes `seedOwner` insert the config-seeded row at
+    // boot; `seedAdmin` then adds a second, unrelated admin to act as.
+    app = await buildApp({
+      ...testConfig,
+      poutineOwnerUsername: "hubowner",
+      poutineOwnerPassword: "hubownerpass",
+    });
+    await app.ready();
+    ownerId = (
+      app.db
+        .prepare("SELECT id FROM users WHERE username = 'hubowner'")
+        .get() as { id: string }
+    ).id;
+    seedAdmin(app, "otheradmin", "adminpass");
+    token = await loginAs(app, "otheradmin", "adminpass");
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("DELETE on the owner row → 400 and the row survives", async () => {
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${ownerId}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/POUTINE_OWNER_USERNAME/);
+    expect(
+      app.db.prepare("SELECT id FROM users WHERE id = ?").get(ownerId),
+    ).toBeDefined();
+  });
+
+  it("demoting the owner → 400 and is_admin stays 1", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${ownerId}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: false },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(
+      app.db.prepare("SELECT is_admin FROM users WHERE id = ?").get(ownerId),
+    ).toEqual({ is_admin: 1 });
+  });
+
+  it("promoting the owner is still allowed — it is the recovery path", async () => {
+    app.db.prepare("UPDATE users SET is_admin = 0 WHERE id = ?").run(ownerId);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/admin/hub/users/${ownerId}/admin`,
+      headers: authHeader(token),
+      payload: { isAdmin: true },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(
+      app.db.prepare("SELECT is_admin FROM users WHERE id = ?").get(ownerId),
+    ).toEqual({ is_admin: 1 });
+  });
+
+  it("an ordinary guest is still deletable on the same hub", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/hub/users",
+      headers: authHeader(token),
+      payload: { username: "plainguest", password: "guestpass1" },
+    });
+    const guestId = (created.json() as { id: string }).id;
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/hub/users/${guestId}`,
+      headers: authHeader(token),
+    });
+    expect(res.statusCode).toBe(204);
   });
 });
 

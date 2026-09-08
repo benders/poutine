@@ -249,6 +249,13 @@ export function updateUserPassword(id: string, password: string) {
   });
 }
 
+export function setUserAdmin(id: string, isAdmin: boolean) {
+  return apiFetch(`/api/admin/hub/users/${id}/admin`, {
+    method: "PUT",
+    body: JSON.stringify({ isAdmin }),
+  });
+}
+
 export function getPeers() {
   return apiFetch<Peer[]>("/api/admin/hub/peers");
 }

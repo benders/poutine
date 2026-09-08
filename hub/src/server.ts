@@ -5,6 +5,7 @@ import fastifyStatic from "@fastify/static";
 import { loadConfig } from "./config.js";
 import { APP_VERSION, FEDERATION_API_VERSION } from "./version.js";
 import { createDatabase } from "./db/client.js";
+import { SYSTEM_USERNAME } from "./db/system-user.js";
 import { shutdownMergeWorker } from "./library/merge-pipeline.js";
 import { createPlayerDatabase, defaultPlayerDbPath } from "./db/player-db.js";
 import {
@@ -132,9 +133,9 @@ function seedOwner(
   // Treat a single __system__ placeholder as "no real users yet".
   const realUsers = db
     .prepare(
-      "SELECT COUNT(*) as count FROM users WHERE username != '__system__'",
+      "SELECT COUNT(*) as count FROM users WHERE username != ?",
     )
-    .get() as { count: number };
+    .get(SYSTEM_USERNAME) as { count: number };
   if (realUsers.count > 0) return;
 
   const enc = setPassword(config.poutineOwnerPassword, passwordKey);
