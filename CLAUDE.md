@@ -2,26 +2,14 @@
 
 ## Claude Code
 
+Everything else — task tracking, branching, commits, the PR flow, the verify gate — lives in `AGENTS.md`.
+
 ### Posting to GitHub
 
 When posting comments, ALWAYS prefix comments with `FROM @claude:` and use blockquote style
 
 ### Tool gotchas
 
-* The Write tool can emit literal control characters for `\u0000`–`\u001f` escapes inside regex character classes; a later Edit `old_string` then never matches. Repair the bytes with `perl -i -pe`. (Hit twice.)
-
-### Workflow
-
-Default flow should be to use Pull Requests.
-
-* Create a feature branch before starting work
-* Work in phases
-* Check documentation and tests after implementation to make sure they cover new behavior
-* Commit when tests pass and push branch to origin
-* Create a PR when it is ready for the user to review it. PR should be created in "Draft" state
-* DO NOT create "stacked" PRs. If new work is identified during review, it must be made directly onto the same feature branch
-
-At user's explicit direction, minor changes can be made directly to `main` branch
-* Never automatically commit when working on `main`
+* **A `\uXXXX` escape in a tool argument is decoded before the tool sees it.** Every tool argument arrives as a JSON string, so documenting a C0 control character (U+0000–U+001F) — in a regex character class, say — puts the *real* control byte in the file instead of the six characters you meant. It is invisible in a terminal, and a later Edit `old_string` carrying the visible form then never matches. Double the backslash (`\\uXXXX`) to emit literal text. Not Write-specific: Write, Edit and Bash all decode, though Bash is rejected outright with "command contains control characters" — the cheap way to find out. Repair bytes already on disk with `perl -i -pe`: its regex matches raw bytes, which an Edit `old_string` cannot express. (Hit three times.)
 
 **DO NOT** put any rules in here unless it is unique to Claude Code. All other updates **MUST** go into either `AGENTS.md` or the relevant file in `docs/`.

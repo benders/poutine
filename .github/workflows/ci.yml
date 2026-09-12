@@ -35,6 +35,9 @@ jobs:
       - name: Boundary lint (Hub/Player directory boundary, #221)
         run: pnpm lint:boundary
 
+      - name: Lint
+        run: pnpm lint
+
       - name: Unit tests
         run: pnpm test
 
