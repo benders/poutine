@@ -89,7 +89,9 @@ async function apiFetch<T = unknown>(
         if (newToken) return apiFetch<T>(path, options, false);
       }
       clearTokens();
-      if (window.location.pathname !== "/login") {
+      // Never bounce the unauthenticated routes back to /login — that is the
+      // 401 self-redirect loop (docs/pitfalls.md, Auth).
+      if (!["/login", "/invite"].includes(window.location.pathname)) {
         window.location.replace("/login");
       }
       return undefined as T;
@@ -247,6 +249,98 @@ export function updateUserPassword(id: string, password: string) {
     method: "PUT",
     body: JSON.stringify({ password }),
   });
+}
+
+// ── User invitations (#272) ───────────────────────────────────────────────────
+
+export interface UserInvite {
+  id: string;
+  state: "pending" | "consumed" | "expired" | "revoked";
+  suggestedUsername: string | null;
+  isAdmin: boolean;
+  note: string | null;
+  createdBy: string | null;
+  issuedAt: string;
+  expiresAt: string;
+  consumedAt: string | null;
+  consumedBy: string | null;
+  revokedAt: string | null;
+}
+
+export interface IssuedUserInvite {
+  id: string;
+  url: string;
+  token: string;
+  expiresAt: string;
+  isAdmin: boolean;
+  suggestedUsername: string | null;
+}
+
+export function getUserInvites() {
+  return apiFetch<UserInvite[]>("/api/admin/hub/user-invites");
+}
+
+export function createUserInvite(opts: {
+  expiresInSec?: number;
+  suggestedUsername?: string;
+  isAdmin?: boolean;
+  note?: string;
+  baseUrl?: string;
+}) {
+  return apiFetch<IssuedUserInvite>("/api/admin/hub/user-invites", {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+}
+
+export function revokeUserInvite(id: string) {
+  return apiFetch(`/api/admin/hub/user-invites/${id}`, { method: "DELETE" });
+}
+
+export interface InvitePreview {
+  valid: true;
+  expiresAt: string;
+  suggestedUsername: string | null;
+  isAdmin: boolean;
+  hubName: string;
+}
+
+/**
+ * Public invite endpoints. Plain `fetch`, never `apiFetch`: the redeem page is
+ * unauthenticated, and a 401-triggered refresh/redirect there is the classic
+ * self-redirect loop (see docs/pitfalls.md, Auth).
+ */
+async function publicPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, payload.error || res.statusText);
+  }
+  return res.json() as Promise<T>;
+}
+
+export function previewInvite(token: string) {
+  return publicPost<InvitePreview>("/api/invites/preview", { token });
+}
+
+/** Redeems the invite and signs the new account in, exactly like `login`. */
+export async function redeemInvite(opts: {
+  token: string;
+  username: string;
+  password: string;
+}) {
+  const data = await publicPost<{
+    user: { id: string; username: string; isAdmin: boolean };
+    accessToken: string;
+    subsonicCredentials: SubsonicCreds | null;
+  }>("/api/invites/redeem", opts);
+  setToken(data.accessToken);
+  setSubsonicCreds(data.subsonicCredentials);
+  return data.user;
 }
 
 export function getPeers() {

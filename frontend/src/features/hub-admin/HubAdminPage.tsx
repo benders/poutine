@@ -1,5 +1,6 @@
 import { InstanceSection } from "./InstanceSection";
 import { InvitationsSection } from "./InvitationsSection";
+import { UserInvitesSection } from "./UserInvitesSection";
 import { PeersSection } from "./PeersSection";
 import { UsersSection } from "./UsersSection";
 import { CacheSection } from "./CacheSection";
@@ -7,7 +8,7 @@ import { ActivitySection } from "./ActivitySection";
 
 /**
  * Hub admin destination — owns the federation-side concerns: identity,
- * peers, invitations, users, library cache, activity retention.
+ * peers, peer + user invitations, users, library cache, activity retention.
  *
  * Sibling: `features/player-admin/PlayerAdminPage`. The two pages must
  * never co-exist on the same view — that's the structural commitment of
@@ -22,13 +23,15 @@ export function HubAdminPage() {
       </section>
 
       <section>
-        <h1 className="text-xl font-bold text-text-primary mb-4">Invitations</h1>
+        <h1 className="text-xl font-bold text-text-primary mb-4">Peer Invitations</h1>
         <InvitationsSection />
       </section>
 
       <PeersSection />
 
       <UsersSection />
+
+      <UserInvitesSection />
 
       <section>
         <h2 className="text-xl font-bold text-text-primary mb-4">Cache</h2>

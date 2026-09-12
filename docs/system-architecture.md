@@ -56,7 +56,7 @@ Navidrome credentials live in env vars, not the DB. SPA + API on one port. Audio
 | Auto-sync      | `AutoSyncService`: trigger on Navidrome scan complete; fan out to peers per `SYNC_INTERVAL_MS`                                                                                           |
 | Stream/art     | Route to source's Navidrome via `/proxy/*` (local or peer)                                                                                                                               |
 | External art   | `/external-art/*`: fanart.tv (MBID) → Last.fm fallback → `art_cache`                                                                                                                     |
-| Admin          | `/api/admin/hub/*` and `/api/admin/player/*` (owner-only). `/admin/*` reserved for auth (refresh-cookie path).                                                                           |
+| Admin          | `/api/admin/hub/*` and `/api/admin/player/*` (owner-only). `/admin/*` reserved for auth (refresh-cookie path). `/api/invites/*` is public — invite redemption (#272).                    |
 | Version signal | `GET /api/version` → `{ appVersion, buildId }` (#196). Unauthenticated, deliberately separate from `/api/health`, whose per-call Navidrome ping is too costly for one poll per open tab. |
 
 **Navidrome** — private per hub. Driven entirely through Subsonic (`getArtists`, `getAlbum`, `stream`, `getCoverArt`, `getScanStatus`, `startScan`). Its native `/api/*` is unused.
@@ -65,10 +65,10 @@ Navidrome credentials live in env vars, not the DB. SPA + API on one port. Audio
 
 The admin SPA exposes **two distinct top-level destinations** that never co-exist on the same page:
 
-| Route           | Bounded dir                           | Owns                                                               |
-|-----------------|---------------------------------------|--------------------------------------------------------------------|
-| `/admin/hub`    | `frontend/src/features/hub-admin/`    | Instance, peers, invitations, users, art cache, activity retention |
-| `/admin/player` | `frontend/src/features/player-admin/` | LAN URL, Sonos casting, DLNA (#217), cast device settings          |
+| Route           | Bounded dir                           | Owns                                                                             |
+|-----------------|---------------------------------------|----------------------------------------------------------------------------------|
+| `/admin/hub`    | `frontend/src/features/hub-admin/`    | Instance, peers, invitations, users, user invites, art cache, activity retention |
+| `/admin/player` | `frontend/src/features/player-admin/` | LAN URL, Sonos casting, DLNA (#217), cast device settings                        |
 
 `/admin/player` is gated on a `GET /player/health` probe (added in #216). When that probe is absent or non-200, the route renders a "Player not deployed on this host" placeholder and the sidebar destination hides. Today both sides always run in one process, so the probe always answers — but the gate means a future Hub-only deployment degrades gracefully with zero frontend changes.
 
@@ -80,7 +80,8 @@ Backend endpoint paths exposed under three mounts, partitioned per namespace sin
 | Mount                 | Owner  | What lives here                                                                                                                                                             |
 |-----------------------|--------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `/admin/*`            | auth   | Auth only (`/login`, `/refresh`, `/logout`, `/me`). Kept because the refresh cookie path is bound to `/admin/refresh`. Hub and Player admin handlers do **not** mount here. |
-| `/api/admin/hub/*`    | Hub    | Auth + users, peers, invitations, sync, cache, activity, instance, activity retention. SPA's `features/hub-admin/` is the only frontend consumer.                           |
+| `/api/invites/*`      | Hub    | Public, unauthenticated invite redemption (#272) — `preview` + `redeem`. Outside both admin namespaces on purpose: the invite token is the only credential.                 |
+| `/api/admin/hub/*`    | Hub    | Auth + users, user invites, peers, invitations, sync, cache, activity, instance, activity retention. SPA's `features/hub-admin/` is the only frontend consumer.             |
 | `/api/admin/player/*` | Player | Auth + Sonos enable/volume-cap, LAN URL, future DLNA toggles. SPA's `features/player-admin/` is the only frontend consumer.                                                 |
 
 Cross-namespace requests (e.g. `POST /api/admin/player/users`) return 404 — the handler isn't mounted there. The three plugins (`authRoutes`, `hubAdminRoutes`, `playerAdminRoutes`) live in `hub/src/routes/admin.ts`. This finishes the Hub/Player boundary at the request level, so lifting Player into its own process is a wiring change.
@@ -182,7 +183,8 @@ Phase 3 (#217) migrated Player-owned rows out of `hub.db.settings` into `player.
 |----------------------------------------|---------------------------------------------------------------------|
 | `users`                                | Local accounts; AES-256-GCM password (reversible for `u+t+s`)       |
 | `instances`                            | Peer registry: id, pubkey, proxy URL, version, last-seen/sync       |
-| `invitations`                          | Nonce-tracked signed invitations (consumed once)                    |
+| `invitations`                          | Nonce-tracked signed peer invitations (consumed once)               |
+| `user_invitations`                     | Signed single-use account invites (#272); stores sha256(token) only |
 | `settings`                             | Singleton key/value (instance metadata, JWT secret ref)             |
 | `playlists`, `playlist_tracks`         | User playlists over unified track IDs                               |
 | `user_stars`                           | Per-user stars (artist/album/track unified IDs)                     |
@@ -233,6 +235,7 @@ Load-bearing choices and what each one costs. Read before proposing to undo one.
 | **Merge-time source selection** (`preferred = 1`) rather than per-request              | Stream requests do one indexed read; no fan-out on the hot path                                                               | The preferred copy is stale between merges, and there is no per-request failover when a source is unreachable (#241)                                           |
 | **Denormalized dual catalog** (`instance_*` **and** `unified_*`)                       | Peer data stays re-mergeable without re-syncing; a disabled peer's rows survive re-enabling                                   | Roughly double the storage, and merge becomes a real pipeline with an id-remap step                                                                            |
 | **Navidrome driven only through Subsonic**, its native `/api/*` unused                 | Keeps it a replaceable component behind a standard protocol                                                                   | Anything Subsonic doesn't expose (e.g. `getArtistInfo2`, which Navidrome doesn't implement) has to be sourced elsewhere                                        |
+| **User invites HMAC-signed under their own key**, not the Ed25519 federation key       | A user invite is issued and redeemed by the same hub, so asymmetric signing buys nothing; the federation key is cluster trust                                                  | A second secret to back up and rotate, and no way for a peer hub to honor another's user invite (not a goal)                                                    |
 | **Legacy rows left in place** after the #217 `hub.db` → `player.db` settings migration | Idempotent gap-fill never overwrites; a destructive cleanup on live deployments buys nothing                                  | Inert duplicate `sonos_*` / `lan_url` rows in `hub.db.settings` that read as authoritative if you don't know better ([pitfalls.md](pitfalls.md#sqlite-quirks)) |
 
 ## Scale envelope
