@@ -51,7 +51,8 @@ services:
     restart: unless-stopped
 
   navidrome:
-    image: deluan/navidrome:latest
+    # Override to test or pin a specific release, e.g. NAVIDROME_IMAGE=deluan/navidrome:0.64.0 (#283).
+    image: ${NAVIDROME_IMAGE:-deluan/navidrome:latest}
     environment:
       - ND_LOGLEVEL=info
       - ND_SCANSCHEDULE=1h

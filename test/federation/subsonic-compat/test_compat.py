@@ -221,11 +221,15 @@ def test_download_returns_audio_bytes(conn):
 
 
 def test_get_cover_art(conn):
-    album = conn.getAlbumList2(ltype="newest", size=1)["albumList2"]["album"]
-    if isinstance(album, list):
-        album = album[0]
-    cover = album.get("coverArt") or album["id"]
-    resp = conn.getCoverArt(aid=cover)
+    # `coverArt` is optional: Navidrome 0.64+ omits it for albums with no
+    # artwork (#283), and so does the hub. Each hub's fixture library has one
+    # album with a cover.jpg — find an album that reports art and fetch that.
+    albums = conn.getAlbumList2(ltype="alphabeticalByName", size=500)["albumList2"]["album"]
+    if isinstance(albums, dict):
+        albums = [albums]
+    covers = [a["coverArt"] for a in albums if a.get("coverArt")]
+    assert covers, "no album reports coverArt — fixture cover.jpg not picked up"
+    resp = conn.getCoverArt(aid=covers[0])
     data = resp.read(16)
     # JPEG/PNG/WebP/GIF magic bytes — accept any image format.
     assert data[:2] == b"\xff\xd8" or data[:8].startswith(b"\x89PNG") \
