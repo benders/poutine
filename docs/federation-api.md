@@ -24,7 +24,7 @@ Peers report both versions through `/api/health`, which `GET /api/admin/hub/peer
 
 | Field                              | Value                                          |
 |------------------------------------|------------------------------------------------|
-| Protocol (`Poutine-Api-Version`)   | `7`                                            |
+| Protocol (`Poutine-Api-Version`)   | `8`                                            |
 | Application (`User-Agent`)         | `Poutine/<APP_VERSION>` — see `hub/src/version.ts` |
 
 The minimum accepted protocol version is **5**. Peers below the floor are
@@ -78,7 +78,7 @@ All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header i
 | `POST` | `/federation/handshake`    | invitation    | Invitee→inviter peer admission. Body: `{ invitation: <base64>, invitee: { id, url, public_key, proof_signature } }`. Inserts the invitee into the inviter's `instances` and marks the invitation consumed. See **Invitations & handshake** below.                                                                                |
 | `GET`  | `/federation/peers`        | peer-signed   | Gossip endpoint. Returns the receiver's known peers (minus `local`, the caller, and any peer without invitation provenance). Each entry carries the original signed invitation that admitted that peer to the cluster, so receivers can verify provenance against the named inviter's public key without prior trust (issue #147). Since v7, also returns a sibling `tombstones` array — see **Tombstone gossip (v7)** below. |
 | `POST` | `/federation/peers/announce` | peer-signed | Immediate-discovery push (issue #163). Body: `application/octet-stream` containing UTF-8 JSON `{ "peer": <GossipPeerEntry> }`. Fired by an inviter right after `POST /handshake` admits a new peer, so the rest of the cluster doesn't wait for the next gossip cycle. The announcer is just a transport; the embedded signed invitation is the only basis for accepting the new peer (same trust model as `GET /peers`). Responses: `200 {ok:true,added:true}` on insert, `200 {ok:true,added:false}` if already known, `400` on rejected entry. v5 peers return `404`; callers swallow that and fall back to gossip. |
-| `GET`  | `/federation/stream/:id`   | peer-signed   | Stream audio from the receiver's local Navidrome to a peer (`:id` is the receiver's Navidrome track ID). Forwards Subsonic transcode params (`format`, `maxBitRate`, `timeOffset`, `estimateContentLength`) and `Range`. The receiver records each successful stream in its own activity log as `kind='proxy'` (issue #121).      |
+| `GET`  | `/federation/stream/:id`   | peer-signed   | Stream audio from the receiver's local Navidrome to a peer (`:id` is the receiver's Navidrome track ID). Forwards Subsonic transcode params (`format`, `maxBitRate`, `timeOffset`, `estimateContentLength`) and `Range`. The receiver records each successful stream in its own activity log as `kind='proxy'` (issue #121). Since v8, a Subsonic error envelope from Navidrome (HTTP 200 + XML, e.g. stale `:id`) becomes `404 {error}` for code 70, `502 {error}` otherwise, with no `proxy` row (#285). |
 
 Library metadata and cover art travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
 
@@ -189,7 +189,12 @@ Both paths require a genuine `peer_tombstones` row to compare timestamps against
 
 ## Changelog
 
-### Version 7 (current)
+### Version 8 (current)
+
+- **Changed** `GET /federation/stream/:id` error semantics (#285): when the receiver's Navidrome answers with a Subsonic error envelope instead of audio, the receiver returns `404` (code 70, data not found) or `502` (any other code) with a JSON `{error}` body instead of relaying the envelope as a `200`, and records no `kind='proxy'` activity row.
+- **Backward-compatible both ways:** a v8 caller still detects a relayed envelope from a v5–v7 receiver by content-type; a pre-v8 caller gets a real HTTP error instead of XML bytes. **Floor unchanged:** `MIN_FEDERATION_API_VERSION = 5`.
+
+### Version 7
 
 - **Added** a `tombstones` sibling array to `GET /federation/peers` — gossiped peer evictions (issue #244 Phase 3). Each entry is a signed `peer_tombstones` row (`instance_id`, `removed_by`, `reason`, `created_at`, `signature`) relayed verbatim, never re-signed.
 - **Added** re-admission semantics: an invitation issued after a tombstone's `created_at` clears the tombstone and re-admits the instance as `active`, at both the handshake and gossip ingest paths.

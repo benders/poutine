@@ -23,6 +23,7 @@ import {
 } from "../federation/gossip.js";
 import { USER_AGENT, FEDERATION_API_VERSION } from "../version.js";
 import { buildStreamParams } from "./stream-params.js";
+import { readIncomingEnvelopeError } from "./upstream-envelope.js";
 
 // ── HTTP agents for upstream requests ────────────────────────────────────────
 
@@ -529,6 +530,20 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
         req.end();
       },
     );
+
+    // Navidrome reports a failed stream (stale track ID, file gone) as HTTP
+    // 200 + a Subsonic error envelope. Answer with a real HTTP error instead
+    // of relaying it as audio and logging a successful proxy stream (#285).
+    const envelopeError = await readIncomingEnvelopeError(upstreamResponse);
+    if (envelopeError) {
+      request.log.warn(
+        { trackId, peerId: request.peer.id, code: envelopeError.code },
+        "federation stream: Navidrome returned a Subsonic error envelope",
+      );
+      return reply
+        .code(envelopeError.httpStatus)
+        .send({ error: envelopeError.httpStatus === 404 ? "Track not found" : "Stream error" });
+    }
 
     // Forward response
     const responseHeaders: Record<string, string> = {};
