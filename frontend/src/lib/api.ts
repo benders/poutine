@@ -251,6 +251,13 @@ export function updateUserPassword(id: string, password: string) {
   });
 }
 
+export function setUserAdmin(id: string, isAdmin: boolean) {
+  return apiFetch(`/api/admin/hub/users/${id}/admin`, {
+    method: "PUT",
+    body: JSON.stringify({ isAdmin }),
+  });
+}
+
 // ── User invitations (#272) ───────────────────────────────────────────────────
 
 export interface UserInvite {

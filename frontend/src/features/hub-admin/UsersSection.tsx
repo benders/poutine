@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getUsers, createUser, deleteUser, updateUserPassword } from "@/lib/api";
+import { getUsers, createUser, deleteUser, updateUserPassword, setUserAdmin } from "@/lib/api";
 import type { User } from "@/lib/api";
 import { useAuth } from "@/stores/auth";
 import { formatTimeAgo } from "@/lib/format";
-import { KeyRound, Plus, Trash2, Users } from "lucide-react";
+import { KeyRound, Plus, ShieldMinus, ShieldPlus, Trash2, Users } from "lucide-react";
 
 function AddUserForm({ onSuccess }: { onSuccess: () => void }) {
   const [expanded, setExpanded] = useState(false);
@@ -195,12 +195,45 @@ function UserRow({ user, currentUserId }: { user: User; currentUserId: string })
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const isSelf = user.id === currentUserId;
 
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+
   const deleteMutation = useMutation({
     mutationFn: () => deleteUser(user.id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
-    },
+    onSuccess: invalidate,
   });
+
+  const adminMutation = useMutation({
+    mutationFn: () => setUserAdmin(user.id, !user.isAdmin),
+    onSuccess: invalidate,
+  });
+
+  // An admin can promote/demote and delete anyone but themselves (#274). The
+  // backend enforces the same rule; hiding the controls just avoids offering
+  // an action that is guaranteed to 400.
+  const adminActionTitle = user.isAdmin
+    ? `Revoke admin rights from ${user.username}`
+    : `Grant ${user.username} full admin rights over this hub`;
+
+  // The peer-reassignment warning is unconditional. `instances.owner_id` rows
+  // are held by an arbitrary user — non-admins included — and the SPA has no
+  // way to tell which, so gating the sentence on `isAdmin` would let guest
+  // deletions re-home peer records silently (#274). #275 drops the column and
+  // this sentence with it.
+  const deleteConfirmMessage =
+    `Remove ${user.isAdmin ? "admin user" : "user"} "${user.username}"? ` +
+    "They lose all access to this hub, their playlists, stars, and play " +
+    "history are deleted, and any peer records they own are reassigned to " +
+    "you. This cannot be undone.";
+
+  // Surface whichever action ran most recently. react-query keeps `error` set
+  // until that same mutation runs again, so `delete ?? admin` would pin a
+  // stale delete failure to the row and swallow every later toggle error.
+  const lastAction =
+    deleteMutation.submittedAt > adminMutation.submittedAt
+      ? deleteMutation
+      : adminMutation;
+  const actionError = lastAction.error;
 
   return (
     <div className="bg-surface border border-border rounded-lg">
@@ -217,28 +250,52 @@ function UserRow({ user, currentUserId }: { user: User; currentUserId: string })
           </div>
           <p className="text-xs text-text-muted">Joined {formatTimeAgo(user.createdAt)}</p>
         </div>
-        <button
-          onClick={() => setShowPasswordForm((v) => !v)}
-          title="Change password"
-          className="p-2 text-text-muted hover:text-text-primary hover:bg-surface-hover rounded-lg transition-colors"
-        >
-          <KeyRound className="w-4 h-4" />
-        </button>
-        {!user.isAdmin && !isSelf && (
+        <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={() => {
-              if (window.confirm(`Remove user "${user.username}"?`)) {
-                deleteMutation.mutate();
-              }
-            }}
-            disabled={deleteMutation.isPending}
-            title="Remove user"
-            className="p-2 text-text-muted hover:text-error hover:bg-error/10 rounded-lg transition-colors disabled:opacity-50"
+            onClick={() => setShowPasswordForm((v) => !v)}
+            title={`Set a new password for ${user.username}`}
+            className="flex items-center gap-1 px-2 py-1.5 bg-surface border border-border hover:bg-surface-hover rounded-lg text-xs text-text-primary transition-colors"
           >
-            <Trash2 className="w-4 h-4" />
+            <KeyRound className="w-3.5 h-3.5" />
+            Password
           </button>
-        )}
+          {!isSelf && (
+            <>
+              <button
+                onClick={() => adminMutation.mutate()}
+                disabled={adminMutation.isPending}
+                title={adminActionTitle}
+                className="flex items-center gap-1 px-2 py-1.5 bg-surface border border-border hover:bg-surface-hover rounded-lg text-xs text-text-primary transition-colors disabled:opacity-50"
+              >
+                {user.isAdmin ? (
+                  <ShieldMinus className="w-3.5 h-3.5" />
+                ) : (
+                  <ShieldPlus className="w-3.5 h-3.5" />
+                )}
+                {user.isAdmin ? "Revoke admin" : "Make admin"}
+              </button>
+              <button
+                onClick={() => {
+                  if (window.confirm(deleteConfirmMessage)) {
+                    deleteMutation.mutate();
+                  }
+                }}
+                disabled={deleteMutation.isPending}
+                title={`Delete ${user.username} and all their stars, playlists, and play history`}
+                className="flex items-center gap-1 px-2 py-1.5 bg-surface border border-error/40 hover:bg-error/10 rounded-lg text-xs text-error transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Remove
+              </button>
+            </>
+          )}
+        </div>
       </div>
+      {actionError && (
+        <p className="px-4 pb-3 text-sm text-error">
+          {actionError instanceof Error ? actionError.message : "Action failed"}
+        </p>
+      )}
       {showPasswordForm && (
         <ChangePasswordForm
           user={user}
