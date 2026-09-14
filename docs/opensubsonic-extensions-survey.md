@@ -179,7 +179,7 @@ out of `getIndexes` / `getArtists` (per `docs/opensubsonic.md` line 64). With
 error code 44 if the key is invalid.
 
 **Why it helps the boundary:** Player BE (post-#212) makes Subsonic calls back
-to Hub on behalf of cast targets (DLNA pseudo-user, Sonos device sessions). It
+to Hub on behalf of cast targets (DLNA browse, Sonos device sessions). It
 needs an auth credential it can hold without exposing the user's reversible
 AES-encrypted password. A signed long-lived API key is the OpenSubsonic-blessed
 mechanism, instead of inventing a private JWT shape.

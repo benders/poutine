@@ -189,7 +189,7 @@ That is a proxy-detection heuristic:
   local clients, breaking legitimate LAN use (the `DLNA_TRUSTED_PROXY_HEADERS`
   escape hatch, #189, addresses half of this).
 
-DLNA streams are attributed to the owner (or `DLNA_PSEUDO_USER`), so a bypass
+DLNA browses and streams as the owner, so a bypass
 leaks the **whole merged library** to strangers.
 
 **Fix:** for public exposure, DLNA must be off by default when a forwarding

@@ -96,8 +96,8 @@ export interface BrowseOptions {
    */
   castSecret: Buffer;
   /**
-   * Pseudo-user the DLNA stream activity is attributed to (typically the
-   * owner). Travels embedded in the cast token.
+   * User the DLNA stream activity is attributed to — the owner (#280).
+   * Travels embedded in the cast token.
    */
   username: string;
   /**
