@@ -19,7 +19,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 
 - **Work on a feature branch.** Branch before the first edit. Never commit to `main` unless the user explicitly asks for that in this session.
 - Direct-to-`main` work, when the user does ask for it: make the change and run the gate, then stop. Committing and pushing on `main` need their own explicit ask — never do either automatically.
-- Commit in phases, as each phase's tests pass — not one lump at the end.
+- **Commit to the feature branch as soon as tests pass.** Do not wait for human review or approval at commit time — review happens on the Draft PR, not before the commit. Commit in phases, as each phase's tests pass — not one lump at the end.
 - Push the branch to origin, then open a Pull Request in **Draft** state when the work is ready for the user to review.
 - **No stacked PRs.** Work identified during review lands on the same feature branch.
 
