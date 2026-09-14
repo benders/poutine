@@ -11,6 +11,7 @@ Poutine has three authentication mechanisms, each scoped to a different API surf
 | Subsonic (binary) | `/rest/stream`, `/rest/getCoverArt` | Same as Subsonic JSON, but errors use HTTP status codes, not Subsonic envelopes. `/rest/stream(.view)` also accepts a `castToken=` query param (#218) as an alternate auth for non-Subsonic clients (Sonos devices, DLNA renderers) — see "Cast tokens" below |
 | Proxy             | `/proxy/*`      | Unified: Ed25519 (peers) → JWT (SPA) → Subsonic `u+p` / `u+t+s`, tried in order     |
 | Federation        | `/federation/*` | Ed25519-signed HTTP (see [federation-api.md](federation-api.md))                      |
+| Invites           | `/api/invites/*`| None — the token in the POST body is the credential (see "User invitations")           |
 | Health            | `/api/health`   | None                                                                                  |
 
 ## Passwords
@@ -81,7 +82,55 @@ The self-check alone does **not** keep an admin alive. `requireOwner` reads `is_
 
 Neither operation revokes outstanding tokens. A demoted or deleted user's access JWT stays syntactically valid until it expires (≤15 min), but `requireOwner` and `requireAuth` both re-read the `users` row per request, so a demotion 403s on the next call and a deletion 401s ("User not found"). Refresh fails the same way.
 
-Deletion relies on `ON DELETE CASCADE` to drop `playlists`, `user_stars`, and `play_events`. `instances.owner_id` has **no** cascade, so owned instance rows are reassigned to the acting admin first — see [pitfalls.md](pitfalls.md#auth). That column is vestigial and read by nothing; #275 removes it.
+Deletion relies on `ON DELETE CASCADE` to drop `playlists`, `user_stars`, `play_events`, and the `user_invitations` the user issued (so their pending invites stop redeeming); `user_invitations.consumed_by_id` is `SET NULL`. `instances.owner_id` has **no** cascade, so owned instance rows are reassigned to the acting admin first — see [pitfalls.md](pitfalls.md#auth). That column is vestigial and read by nothing; #275 removes it.
+
+## User invitations (#272)
+
+Signed, expiring, single-use grants that let an invitee create their own account — the user-facing mirror of the federation invitation flow ([federation-api.md](federation-api.md#invitations--handshake-v5)). Code: `hub/src/services/user-invites.ts` (mint/verify/consume), `hub/src/routes/invites.ts` (public), the `/user-invites` handlers in `hub/src/routes/admin.ts`, and `frontend/src/pages/InvitePage.tsx`.
+
+**Signed with a dedicated key, not the federation key.** `settings.user_invite_key` — 32 random bytes, generated on first use, decorated as `app.userInviteKey`. A peer invitation is Ed25519-signed because a *different* hub verifies it with no prior trust; a user invite is issued and redeemed by the same hub, so HMAC-SHA-256 suffices. The Ed25519 key is cluster trust (admission and eviction) and must not be spent on account creation — the same blast-radius argument that keeps `castSecret` separate from `internalAuthSecret`. Deleting the settings row invalidates every outstanding invite; that is the rotation escape hatch.
+
+**Canonical signing payload** (newline-joined, order fixed — reordering requires bumping `USER_INVITE_VERSION`):
+
+```
+poutine-user-invite/v1
+<nonce>
+<issued_at>
+<expires_at>
+<suggested_username-or-empty>
+<is_admin: 0|1>
+```
+
+Wire format: `base64url(JSON({ payload, signature }))`. Default TTL 48 h (peers get 7 d; user invites travel over chat), capped at 30 d.
+
+**The DB row is authoritative.** The signature only proves the token was minted here and untampered, which lets the public route reject junk before a DB hit. Single-use, expiry, and revocation live in `user_invitations`, and admission happens only through the atomic consume:
+
+```sql
+UPDATE user_invitations SET consumed_at = …, consumed_by_id = ?
+ WHERE token_hash = ? AND consumed_at IS NULL AND revoked_at IS NULL
+       AND expires_at > … RETURNING *
+```
+
+Only `sha256(token)` is stored, never the token — a stolen DB copy yields no redeemable invites, which matters here precisely because `users.password_enc` is reversible.
+
+| Method   | Path                                    | Auth           | Notes                                                                               |
+|----------|-----------------------------------------|----------------|--------------------------------------------------------------------------------------|
+| `POST`   | `/api/admin/hub/user-invites`           | `requireOwner` | Returns `{ id, url, token, expiresAt, … }`. The URL is shown once — only its hash is kept |
+| `GET`    | `/api/admin/hub/user-invites`           | `requireOwner` | State per row: `pending` / `consumed` / `expired` / `revoked`. Never returns a token  |
+| `DELETE` | `/api/admin/hub/user-invites/:id`       | `requireOwner` | Sets `revoked_at`; `409` if already consumed or revoked                              |
+| `POST`   | `/api/invites/preview`                  | none           | `{ token }` → hub name, expiry, suggested username                                   |
+| `POST`   | `/api/invites/redeem`                   | none           | `{ token, username, password }` → the `POST /admin/login` body shape, cookies set     |
+
+Redeem creates the account and signs the invitee straight in, so the SPA reuses one code path. The admin grant comes from the consumed **row**, not the payload.
+
+**Order inside the redeem transaction:** insert the user, *then* claim the invite. `consumed_by_id` is a FK onto `users`, so claiming for an account that doesn't exist yet fails the constraint; an empty claim (someone else redeemed first) throws to roll back the account along with it. The username is checked *before* the claim so a typo doesn't burn the invite.
+
+**Hardening:**
+
+- Both public routes are POST, so the token never appears in a URL, an access log, or a Referer header. The SPA carries it in the URL **fragment** (`/invite#<token>`) and clears the hash after reading it.
+- One uniform `400 {error:"Invitation is not valid"}` for forged, expired, consumed, revoked, and unknown tokens alike — no enumeration, same posture as Subsonic error 40. Username-taken (`409`) is the one distinguishable case, and has to be.
+- Per-IP fixed-window rate limit (20 / 10 min) in the plugin closure. This is the only unauthenticated write surface on the hub.
+- `/invite` fires no authenticated fetch on mount — see the `/login` self-redirect trap in [pitfalls.md](pitfalls.md#auth).
 
 ## Subsonic auth flow
 

@@ -13,6 +13,7 @@ import {
   type PlayerSettings,
 } from "./services/player-settings.js";
 import { authRoutes, hubAdminRoutes, playerAdminRoutes } from "./routes/admin.js";
+import { inviteRoutes } from "./routes/invites.js";
 import { subsonicRoutes } from "./routes/subsonic/index.js";
 import { proxyRoutes } from "./routes/proxy.js";
 import { federationRoutes } from "./routes/federation.js";
@@ -23,6 +24,7 @@ import { createFederationFetcher } from "./federation/sign-request.js";
 import { seedSyntheticInstances } from "./library/seed-instances.js";
 import { setPassword } from "./auth/passwords.js";
 import { ensureJwtSecret } from "./auth/jwt-secret.js";
+import { ensureUserInviteKey } from "./services/user-invites.js";
 import { loadOrCreatePasswordKey } from "./auth/password-crypto.js";
 import { AutoSyncService } from "./services/auto-sync.js";
 import { ensureRealPathPlayers } from "./services/navidrome-native.js";
@@ -68,6 +70,11 @@ declare module "fastify" {
   privateKey: KeyObject;
   publicKeySpec: string;
   passwordKey: Buffer;
+  /**
+   * HMAC key for local user invitations (#272). Deliberately NOT the Ed25519
+   * federation key — that one is cluster trust. See services/user-invites.ts.
+   */
+  userInviteKey: Buffer;
   federatedFetch: ReturnType<typeof FetcherFactory>;
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
@@ -260,6 +267,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   const passwordKey = loadOrCreatePasswordKey(config.poutinePasswordKeyPath);
   app.decorate("passwordKey", passwordKey);
 
+  // User-invitation signing key (#272), generated on first use in `settings`.
+  app.decorate("userInviteKey", ensureUserInviteKey(db));
+
   // Federation keys and peer registry
   const { privateKey, publicKeyBase64 } = loadOrCreatePrivateKey(
     config.poutinePrivateKeyPath,
@@ -384,6 +394,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   await app.register(hubAdminRoutes, { prefix: "/api/admin/hub" });
   await app.register(authRoutes, { prefix: "/api/admin/player" });
   await app.register(playerAdminRoutes, { prefix: "/api/admin/player" });
+  // Public, unauthenticated invite redemption (#272). Deliberately outside
+  // both admin namespaces — see routes/invites.ts.
+  await app.register(inviteRoutes, { prefix: "/api/invites" });
   await app.register(subsonicRoutes, { prefix: "/rest" });
   await app.register(federationRoutes, { prefix: "/federation" });
 

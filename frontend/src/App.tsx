@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "@/stores/auth";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { LoginPage } from "@/pages/LoginPage";
+import { InvitePage } from "@/pages/InvitePage";
 import { AlbumsPage } from "@/pages/AlbumsPage";
 import { ArtistsPage } from "@/pages/ArtistsPage";
 import { ArtistDetailPage } from "@/pages/ArtistDetailPage";
@@ -40,7 +41,9 @@ export function App() {
   const { checkAuth } = useAuth();
 
   useEffect(() => {
-    if (window.location.pathname !== "/login") {
+    // Neither unauthenticated route may fire an authenticated fetch: a 401
+    // there redirects back to itself forever (docs/pitfalls.md, Auth).
+    if (!["/login", "/invite"].includes(window.location.pathname)) {
       checkAuth();
     }
   }, [checkAuth]);
@@ -48,6 +51,8 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* Unauthenticated, like /login — see InvitePage for why (#272). */}
+      <Route path="/invite" element={<InvitePage />} />
       <Route
         path="/*"
         element={
