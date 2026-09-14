@@ -12,7 +12,7 @@ Poutine has three authentication mechanisms, each scoped to a different API surf
 | Proxy             | `/proxy/*`      | Unified: Ed25519 (peers) → JWT (SPA) → Subsonic `u+p` / `u+t+s`, tried in order     |
 | Federation        | `/federation/*` | Ed25519-signed HTTP (see [federation-api.md](federation-api.md))                      |
 | Invites           | `/api/invites/*`| None — the token in the POST body is the credential (see "User invitations")           |
-| Health            | `/api/health`   | None                                                                                  |
+| Health            | `/api/health`, `/api/health/live`, `/api/health/ready` | None — orchestrators and Synthetic monitors carry no credentials. Keep internal identifiers and URLs out of these bodies (#277) |
 
 ## Passwords
 
