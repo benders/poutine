@@ -66,6 +66,8 @@ function buildFakeNavidromeHandler(opts: {
   bitrate?: number;
   audioPayload?: Buffer;
   audioContentType?: string;
+  /** When set, /rest/stream answers HTTP 200 with this Subsonic error envelope (#285). */
+  streamEnvelope?: { contentType: string; body: string };
 }): http.RequestListener {
   const {
     trackId = "trk-1",
@@ -75,6 +77,7 @@ function buildFakeNavidromeHandler(opts: {
     bitrate = 320,
     audioPayload = FAKE_AUDIO,
     audioContentType = "audio/mpeg",
+    streamEnvelope,
   } = opts;
 
   return (req, res) => {
@@ -138,6 +141,12 @@ function buildFakeNavidromeHandler(opts: {
       return;
     }
 
+    if (streamEnvelope && path.includes("/rest/stream")) {
+      res.writeHead(200, { "content-type": streamEnvelope.contentType });
+      res.end(streamEnvelope.body);
+      return;
+    }
+
     // All other requests (stream, getCoverArt, ping, etc.) → audio bytes
     const rangeHeader = req.headers.range;
     const total = audioPayload.length;
@@ -173,6 +182,7 @@ function startFakeNavidrome(opts: {
   bitrate?: number;
   audioPayload?: Buffer;
   audioContentType?: string;
+  streamEnvelope?: { contentType: string; body: string };
 } = {}): Promise<{ server: http.Server; port: number }> {
   return new Promise((resolve) => {
     const server = http.createServer(
@@ -181,6 +191,7 @@ function startFakeNavidrome(opts: {
         audioContentType: opts.audioContentType ?? "audio/mpeg",
         format: opts.format ?? "mp3",
         bitrate: opts.bitrate ?? 320,
+        streamEnvelope: opts.streamEnvelope,
       }),
     );
     server.listen(0, "127.0.0.1", () => {
@@ -188,6 +199,25 @@ function startFakeNavidrome(opts: {
     });
   });
 }
+
+/** What Navidrome sends for a stale track ID: HTTP 200 + XML error 70. */
+const NOT_FOUND_XML_ENVELOPE = {
+  contentType: "application/xml; charset=UTF-8",
+  body:
+    '<subsonic-response xmlns="http://subsonic.org/restapi" status="failed" version="1.16.1">' +
+    '<error code="70" message="data not found"></error></subsonic-response>',
+};
+
+const GENERIC_JSON_ENVELOPE = {
+  contentType: "application/json",
+  body: JSON.stringify({
+    "subsonic-response": {
+      status: "failed",
+      version: "1.16.1",
+      error: { code: 0, message: "boom" },
+    },
+  }),
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -373,6 +403,77 @@ describe("stream — local source", () => {
   });
 });
 
+// ── Local source: Subsonic error envelope instead of audio (#285) ─────────────
+
+describe("stream — local source answers with a Subsonic error envelope (#285)", () => {
+  let app: FastifyInstance;
+  let navidrome: http.Server;
+
+  async function setup(envelope: { contentType: string; body: string }) {
+    let port: number;
+    ({ server: navidrome, port } = await startFakeNavidrome({ streamEnvelope: envelope }));
+    app = await buildApp({
+      databasePath: ":memory:",
+      jwtSecret: "test-secret",
+      navidromeUrl: `http://127.0.0.1:${port}`,
+      navidromeUsername: "admin",
+      navidromePassword: "admin",
+    });
+    await app.ready();
+    seedUser(app);
+    seedLocalTrack(app);
+    return (app.db.prepare("SELECT id FROM unified_tracks LIMIT 1").get() as { id: string }).id;
+  }
+
+  afterEach(async () => {
+    await app.close();
+    await new Promise<void>((resolve) => navidrome.close(() => resolve()));
+  });
+
+  it("maps error 70 to 404 and records the failure, never relaying the XML", async () => {
+    const trackId = await setup(NOT_FOUND_XML_ENVELOPE);
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${trackId}`,
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["content-type"]).toMatch(/application\/json/);
+    expect(res.body).not.toContain("subsonic-response");
+
+    const [row] = app.streamTracking.getRecent(10);
+    expect(row).toBeDefined();
+    expect(row.bytesTransferred).toBe(0);
+    expect(row.finishedAt).toBeTruthy();
+    expect(row.error).toBe("Source returned Subsonic error 70");
+  });
+
+  it("maps any other error code to 502", async () => {
+    const trackId = await setup(GENERIC_JSON_ENVELOPE);
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${trackId}`,
+    });
+
+    expect(res.statusCode).toBe(502);
+    expect(app.streamTracking.getRecent(10)[0].error).toBe("Source returned Subsonic error 0");
+  });
+
+  it("/rest/download maps error 70 to 404 instead of an XML attachment", async () => {
+    const trackId = await setup(NOT_FOUND_XML_ENVELOPE);
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/rest/download?u=tester&p=secret&f=json&id=t${trackId}`,
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["content-disposition"]).toBeUndefined();
+  });
+});
+
 // ── Peer source ───────────────────────────────────────────────────────────────
 
 describe("stream — peer source", () => {
@@ -540,6 +641,32 @@ describe("stream — peer source", () => {
     expect(proxyRow!.bytesTransferred).toBe(FAKE_AUDIO.length);
     expect(proxyRow!.finishedAt).toBeTruthy();
     expect(proxyRow!.error).toBeNull();
+  });
+
+  it("stale remote_id on the peer: 404 on both hubs, no successful proxy row (#285)", async () => {
+    // Peer's Navidrome now answers /rest/stream with XML error 70 (e.g. the
+    // Navidrome 0.64 ID migration before the next sync).
+    navidrome.removeAllListeners("request");
+    navidrome.on(
+      "request",
+      buildFakeNavidromeHandler({ format: "flac", bitrate: 1000, streamEnvelope: NOT_FOUND_XML_ENVELOPE }),
+    );
+    const track = appA.db
+      .prepare("SELECT id FROM unified_tracks LIMIT 1")
+      .get() as { id: string };
+
+    const res = await appA.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${track.id}`,
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).not.toContain("subsonic-response");
+    const [rowA] = appA.streamTracking.getRecent(10);
+    expect(rowA.sourceKind).toBe("peer");
+    expect(rowA.error).toBe("Source returned HTTP 404");
+    expect(rowA.bytesTransferred).toBe(0);
+    expect(appB.streamTracking.getRecent(10).find((r) => r.kind === "proxy")).toBeUndefined();
   });
 });
 

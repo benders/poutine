@@ -7,6 +7,7 @@ import { decodeCoverArtId } from "../../library/cover-art.js";
 import { isAllowedExternalArtUrl } from "../external-art.js";
 import { SubsonicClient } from "../../adapters/subsonic.js";
 import { applyTranscodeRule, buildStreamParams } from "../stream-params.js";
+import { describeEnvelopeError, readEnvelopeError } from "../upstream-envelope.js";
 import { effectiveArtSize } from "./art-size.js";
 import { resizeImage } from "../../services/art-resize.js";
 import type { SubsonicRouteContext } from "./types.js";
@@ -311,6 +312,39 @@ try {
   if (!response.body) {
     if (streamOpId) app.streamTracking.finish(streamOpId, 0, "Empty response from upstream");
     sendBinaryError(reply, 502, "Empty response from upstream");
+    return;
+  }
+
+  // A peer's /federation/stream answers a stale remote_id with a real 404
+  // (#285). Only peer responses reach here non-2xx — SubsonicClient throws.
+  // 416 is a legitimate answer to the caller's Range and passes through.
+  if (!response.ok && response.status !== 416) {
+    await response.body.cancel().catch(() => {});
+    if (streamOpId) app.streamTracking.finish(streamOpId, 0, `Source returned HTTP ${response.status}`);
+    sendBinaryError(
+      reply,
+      response.status === 404 ? 404 : 502,
+      response.status === 404 ? "Track not found at source" : "Stream error",
+    );
+    return;
+  }
+
+  // Navidrome reports a failed stream (stale remote_id, file gone) as HTTP 200
+  // + a Subsonic error envelope. A peer's /federation/stream relays the same
+  // envelope when it predates #285. Never pipe that to the client as audio.
+  const envelopeError = await readEnvelopeError(response);
+  if (envelopeError) {
+    const reason = describeEnvelopeError(envelopeError);
+    request.log.warn(
+      { trackId, instanceId: best.instance_id, remoteId: best.remote_id, code: envelopeError.code },
+      "Stream source returned a Subsonic error envelope",
+    );
+    if (streamOpId) app.streamTracking.finish(streamOpId, 0, reason);
+    sendBinaryError(
+      reply,
+      envelopeError.httpStatus,
+      envelopeError.httpStatus === 404 ? "Track not found at source" : "Stream error",
+    );
     return;
   }
 

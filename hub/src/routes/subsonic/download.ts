@@ -4,6 +4,7 @@ import { ZipFile } from "yazl";
 import type { Peer } from "../../federation/peers.js";
 import { sendBinaryError, decodeId } from "../subsonic-response.js";
 import { SubsonicClient } from "../../adapters/subsonic.js";
+import { readEnvelopeError } from "../upstream-envelope.js";
 import type { SubsonicRouteContext, TrackRow } from "./types.js";
 
 // ── /rest/download (#35) ──────────────────────────────────────────────────────
@@ -113,6 +114,16 @@ export function registerDownload(ctx: SubsonicRouteContext): void {
       sendBinaryError(reply, 502, "Download source unavailable");
       return;
     }
+    // HTTP 200 + Subsonic error envelope = stale source ID (#285).
+    const envelopeError = await readEnvelopeError(response);
+    if (envelopeError) {
+      sendBinaryError(
+        reply,
+        envelopeError.httpStatus,
+        envelopeError.httpStatus === 404 ? "Track not found at source" : "Download source unavailable",
+      );
+      return;
+    }
 
     const contentType =
       response.headers.get("content-type") || "application/octet-stream";
@@ -192,6 +203,13 @@ export function registerDownload(ctx: SubsonicRouteContext): void {
       }
       if (!response.ok || !response.body) {
         request.log.warn(`Album download: upstream ${response.status} for track ${track.id}, skipping`);
+        continue;
+      }
+      const envelopeError = await readEnvelopeError(response);
+      if (envelopeError) {
+        request.log.warn(
+          `Album download: Subsonic error ${envelopeError.code ?? "?"} from source for track ${track.id}, skipping`,
+        );
         continue;
       }
 
