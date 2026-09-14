@@ -63,6 +63,19 @@ export interface Config {
   dlnaEnabled: boolean;
   dlnaFriendlyName: string;
   /**
+   * Navidrome health (#277). The readiness probe behind `/api/health/ready`
+   * pulls a byte range off a real local track to prove audio actually flows;
+   * set `NAVIDROME_STREAM_PROBE=false` to reduce readiness to ping + DB only
+   * (the stream leg then reports `skipped`).
+   */
+  navidromeStreamProbeEnabled: boolean;
+  /**
+   * Cadence of the background health watchdog — the probe that makes a
+   * degraded Navidrome visible in New Relic without a Synthetic monitor.
+   * Started only from the real entrypoint, never in tests.
+   */
+  navidromeHealthIntervalMs: number;
+  /**
    * Test-only escape hatch: when true, never bind the DLNA SSDP advertiser
    * to UDP 1900, even if `lan_url` is set. Lets the dlna-http integration
    * test exercise `/dlna/control/content-directory` (which needs a non-empty
@@ -141,6 +154,11 @@ export function loadConfig(): Config {
     initialLanUrl: undefined,
     sonosDiscoveryIntervalMs: parseInt(
       process.env.SONOS_DISCOVERY_INTERVAL_MS || "30000",
+      10,
+    ),
+    navidromeStreamProbeEnabled: process.env.NAVIDROME_STREAM_PROBE !== "false",
+    navidromeHealthIntervalMs: parseInt(
+      process.env.NAVIDROME_HEALTH_INTERVAL_MS || "60000",
       10,
     ),
     dlnaEnabled: process.env.DLNA_ENABLED === "true",

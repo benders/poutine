@@ -30,7 +30,7 @@ Commands:
   start     Start Navidrome container + hub native process
   stop      Stop hub native process (Navidrome stays running)
   restart   stop + start, rebuilding hub + frontend
-  status    Show PID, /api/health, and Navidrome reachability
+  status    Show PID, /api/health, /api/health/ready, and Navidrome reachability
   logs      Show last 200 lines of the hub log
   follow    tail -f the hub log
 EOF
@@ -149,6 +149,18 @@ status() {
     log_info "/api/health: $(curl -s http://127.0.0.1:3000/api/health)"
   else
     log_info "/api/health: unreachable"
+  fi
+  # Readiness (#277) reports whether audio actually streams, and is the only
+  # one of the two whose HTTP status means anything — hence --max-time 10 and
+  # -o /dev/null -w, not -sf.
+  ready_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    http://127.0.0.1:3000/api/health/ready 2>/dev/null || echo "000")
+  if [ "$ready_code" = "200" ]; then
+    log_info "/api/health/ready: 200 ok"
+  elif [ "$ready_code" = "000" ]; then
+    log_info "/api/health/ready: unreachable"
+  else
+    log_info "/api/health/ready: $ready_code — $(curl -s --max-time 10 http://127.0.0.1:3000/api/health/ready)"
   fi
   if curl -sf --max-time 2 http://127.0.0.1:4533/ping >/dev/null 2>&1; then
     log_info "Navidrome /ping: ok"

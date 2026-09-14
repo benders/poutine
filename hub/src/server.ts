@@ -3,8 +3,7 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import { loadConfig } from "./config.js";
-import { APP_VERSION, FEDERATION_API_VERSION } from "./version.js";
-import { resolveGitSha } from "./services/git-sha.js";
+import { APP_VERSION } from "./version.js";
 import { createDatabase } from "./db/client.js";
 import { SYSTEM_USERNAME } from "./db/system-user.js";
 import { shutdownMergeWorker } from "./library/merge-pipeline.js";
@@ -40,17 +39,25 @@ import { SonosControl } from "./services/sonos-control.js";
 import { createSonosSettings } from "./services/sonos-settings.js";
 import { deriveCastSecret } from "./services/cast-tokens.js";
 import { sonosRoutes } from "./routes/sonos.js";
-import { SubsonicClient } from "./adapters/subsonic.js";
+import {
+  SubsonicClient,
+  setSubsonicObserver,
+  clearSubsonicObserver,
+} from "./adapters/subsonic.js";
 import { SsdpAdvertiser } from "./services/ssdp-advertiser.js";
 import { DlnaObjectService } from "./services/dlna-objects.js";
 import { dlnaRoutes } from "./routes/dlna.js";
 import { createHubSubsonicCaller } from "./services/hub-subsonic-caller.js";
 import { createSpaBuildIdReader } from "./services/spa-build-id.js";
+import { initTelemetry, type Telemetry } from "./services/telemetry.js";
+import { NavidromeMonitor } from "./services/navidrome-monitor.js";
+import { healthRoutes } from "./routes/health.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { Config } from "./config.js";
 import type Database from "better-sqlite3";
 import type { KeyObject } from "node:crypto";
 import type { PeerRegistry } from "./federation/peers.js";
+import type { SubsonicCallEvent } from "./adapters/subsonic.js";
 import type { createFederationFetcher as FetcherFactory } from "./federation/sign-request.js";
 
 // Extend Fastify instance type
@@ -84,6 +91,17 @@ declare module "fastify" {
   lastFmClient: LastFmClient | null;
   fanartTvClient: FanartTvClient | null;
   navidromeClient: SubsonicClient;
+  /**
+   * App-level New Relic sink (#277). No-op unless NEW_RELIC_LICENSE_KEY is
+   * set — see services/telemetry.ts. Use it to report failures the hub
+   * HANDLES; the agent already sees unhandled ones.
+   */
+  telemetry: Telemetry;
+  /**
+   * Local Navidrome fault detection (#277): observes every SubsonicClient
+   * call and owns the deep probe behind `/api/health/ready`.
+   */
+  navidromeMonitor: NavidromeMonitor;
   /**
    * Random 32-byte secret minted at boot. Used only for in-process trusted
    * auth: requests carrying `x-poutine-internal: <secret>` + `x-poutine-as-
@@ -255,14 +273,42 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // Shared Subsonic client for the local Navidrome (admin creds). Used by
   // the `/api/health` probe; route handlers that need user-scoped Subsonic
   // calls construct their own per-request client.
-  app.decorate(
-    "navidromeClient",
-    new SubsonicClient({
-      url: config.navidromeUrl,
-      username: config.navidromeUsername,
-      password: config.navidromePassword,
-    }),
-  );
+  const navidromeClient = new SubsonicClient({
+    url: config.navidromeUrl,
+    username: config.navidromeUsername,
+    password: config.navidromePassword,
+  });
+  app.decorate("navidromeClient", navidromeClient);
+
+  // App-level telemetry (#277). Resolved once: no-op sink unless the New
+  // Relic agent is in play, so nothing downstream has to re-check.
+  const telemetry = await initTelemetry({
+    info: (msg) => app.log.info(msg),
+    warn: (msg) => app.log.warn(msg),
+    debug: (msg) => app.log.debug(msg),
+  });
+  app.decorate("telemetry", telemetry);
+
+  // Navidrome fault detection (#277). Observes every local Navidrome call via
+  // the adapter's process-wide observer hook, and owns the deep probe behind
+  // `/api/health/ready`. The observer is registered here and cleared on close
+  // so a test's closed app never keeps receiving another app's events.
+  const navidromeMonitor = new NavidromeMonitor({
+    db,
+    client: navidromeClient,
+    telemetry,
+    log: {
+      info: (obj, msg) => app.log.info(obj, msg),
+      warn: (obj, msg) => app.log.warn(obj, msg),
+      error: (obj, msg) => app.log.error(obj, msg),
+    },
+    streamProbeEnabled: config.navidromeStreamProbeEnabled,
+    watchdogIntervalMs: config.navidromeHealthIntervalMs,
+  });
+  app.decorate("navidromeMonitor", navidromeMonitor);
+  const navidromeObserver = (event: SubsonicCallEvent) =>
+    navidromeMonitor.record(event);
+  setSubsonicObserver(navidromeObserver);
 
   // Password encryption key (AES-256-GCM, on disk beside the federation key)
   const passwordKey = loadOrCreatePasswordKey(config.poutinePasswordKeyPath);
@@ -621,33 +667,9 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     appVersion: APP_VERSION,
   }));
 
-  // Resolved once at startup: the build-time env var, else `git describe`
-  // (issue #287). Doesn't change while the process runs.
-  const gitSha = resolveGitSha();
-
-  // Health check (issue #178). Always HTTP 200 so the federation handshake
-  // can read peer versions even when Navidrome is briefly down; consumers
-  // key on `body.status`. See docs/hub-internals.md route table.
-  app.get("/api/health", async () => {
-    let navidrome: "ok" | "unreachable" = "unreachable";
-    try {
-      // ~1s budget: Navidrome on the internal Docker network normally
-      // responds in tens of ms. AbortSignal.timeout cancels the underlying
-      // fetch so the request doesn't dangle past the response.
-      await app.navidromeClient.ping({ signal: AbortSignal.timeout(1000) });
-      navidrome = "ok";
-    } catch (err) {
-      app.log.warn({ err }, "Local Navidrome ping failed");
-    }
-
-    return {
-      status: navidrome === "ok" ? "ok" : "degraded",
-      appVersion: APP_VERSION,
-      apiVersion: FEDERATION_API_VERSION,
-      gitSha,
-      navidrome,
-    };
-  });
+  // Health + readiness (#178, #277): `/api/health`, `/api/health/live`,
+  // `/api/health/ready`. Deep probing lives in services/navidrome-monitor.ts.
+  await app.register(healthRoutes);
 
   // Static file serving + SPA fallback (production only; skipped in dev)
   if (config.staticDir) {
@@ -689,6 +711,10 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // Cleanup on close
   app.addHook("onClose", async () => {
     autoSync.stop();
+    navidromeMonitor.stop();
+    // Drop the process-wide adapter observer if it is still ours, so a closed
+    // app stops receiving (and logging against) another app's Navidrome calls.
+    clearSubsonicObserver(navidromeObserver);
     sonosDiscovery.stop();
     // Await so byebye packets actually leave the socket before close().
     if (ssdpAdvertiser) await ssdpAdvertiser.stop();
@@ -715,6 +741,15 @@ if (isMain) {
   try {
     await app.listen({ port: config.port, host: config.host });
     app.log.info(`Poutine Hub listening on ${config.host}:${config.port}`);
+
+    // Navidrome health watchdog (#277). Probes on a timer so a degraded
+    // Navidrome reaches New Relic (error + `PoutineNavidromeHealth` event)
+    // even with no Synthetic monitor configured, and so the first
+    // `/api/health/ready` call is answered from a warm cache. Lives here, not
+    // in buildApp, for the same reason ensureRealPathPlayers does: the test
+    // harness builds apps against no live Navidrome and must make no network
+    // calls on a timer.
+    app.navidromeMonitor.start();
 
     // Best-effort: provision reportRealPath on the poutine-proxy player record
     // at boot so peers' first sync against us gets real paths without waiting
