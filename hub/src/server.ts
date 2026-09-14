@@ -540,6 +540,13 @@ export async function buildApp(configOverrides?: Partial<Config>) {
         "DLNA_ENABLED=true but the LAN URL setting is empty — clients cannot fetch the device description or streams. Set it from Admin → Sonos.",
       );
     }
+    // #188/#280: DLNA browses and streams as the owner. Prod refuses to boot
+    // without one (`requireInProd`); in dev, say why the library is empty.
+    if (!config.poutineOwnerUsername) {
+      app.log.error(
+        "DLNA_ENABLED=true but POUTINE_OWNER_USERNAME is not set — DLNA browses and streams as the owner, so clients will see an empty library and cannot play.",
+      );
+    }
     // Stable per-instance UUID for the DLNA UDN. Phase 1 of #212 persists
     // this in player.db so it survives across restarts AND across changes
     // to POUTINE_INSTANCE_ID (#215). The fallback preserves the historical

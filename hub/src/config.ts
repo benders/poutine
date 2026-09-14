@@ -62,8 +62,6 @@ export interface Config {
   // network reachability, not by user identity (DLNA has no notion of one).
   dlnaEnabled: boolean;
   dlnaFriendlyName: string;
-  /** Username streams get attributed to. Defaults to the owner. */
-  dlnaPseudoUser: string | undefined;
   /**
    * Test-only escape hatch: when true, never bind the DLNA SSDP advertiser
    * to UDP 1900, even if `lan_url` is set. Lets the dlna-http integration
@@ -147,6 +145,5 @@ export function loadConfig(): Config {
     ),
     dlnaEnabled: process.env.DLNA_ENABLED === "true",
     dlnaFriendlyName: process.env.DLNA_FRIENDLY_NAME || "Poutine",
-    dlnaPseudoUser: process.env.DLNA_PSEUDO_USER || undefined,
   };
 }

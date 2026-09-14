@@ -11,7 +11,7 @@
  * SOAP handlers expose, not about XML byte equality. Raw `fetch` is fine
  * for the stream endpoint where we only care about response headers.
  */
-import { describe, it, expect, afterAll, beforeAll } from "vitest";
+import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,6 +114,26 @@ describe("DLNA HTTP surface (integration)", () => {
         .replace(/&amp;/g, "&");
       expect(result).toContain('id="0/music"');
       expect(result).toContain("<dc:title>Music</dc:title>");
+    });
+
+    // #280: stream cast tokens are signed for the owner — the identity
+    // Browse runs as — never a separately configured (and deletable) user.
+    it("Browse signs stream URLs for the owner", async () => {
+      const spy = vi.spyOn(app.dlnaObjects, "browse");
+      try {
+        await client.call("ContentDirectory", "Browse", {
+          ObjectID: "0",
+          BrowseFlag: "BrowseDirectChildren",
+          Filter: "*",
+          StartingIndex: 0,
+          RequestedCount: 0,
+          SortCriteria: "",
+        });
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][2].username).toBe("alice");
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 

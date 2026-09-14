@@ -147,9 +147,13 @@ the DLNA-specific response headers strict renderers require:
 - `transferMode.dlna.org: Streaming` (echoes the request header if set).
 - `contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000…` — required by strict clients (WMP).
 
-Stream activity is attributed to `DLNA_PSEUDO_USER` (defaults to the
-owner — embedded in the cast token at Browse time) in `stream_operations`
-with `kind='dlna'` (the handler distinguishes by the `dlna=1` flag).
+Stream activity is attributed to the owner — embedded in the cast token at
+Browse time — in `stream_operations` with `kind='dlna'` (the handler
+distinguishes by the `dlna=1` flag). Browse and stream share that one
+identity (#280): the cast-token auth path looks the username up in `users`
+on every fetch, so a second, deletable account would break playback
+silently. The former `DLNA_PSEUDO_USER` override is gone; filter Activity on
+`kind='dlna'` instead.
 
 ## LAN gate (tunnel hardening)
 

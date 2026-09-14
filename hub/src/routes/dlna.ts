@@ -14,8 +14,8 @@
  * applies DLNA-specific response headers when the URL carries `dlna=1`.
  *
  * Auth model: DLNA has no user identity. DIDL responses are open on the
- * LAN; stream URLs embed a short-lived cast token bound to a pseudo-user
- * (defaults to the owner). Treat exposing the hub on the LAN as an
+ * LAN; stream URLs embed a short-lived cast token bound to the owner — the
+ * same identity Browse runs as. Treat exposing the hub on the LAN as an
  * all-or-nothing decision — anyone on the LAN can browse and stream.
  */
 import type { FastifyPluginAsync } from "fastify";
@@ -143,10 +143,10 @@ export const dlnaRoutes: FastifyPluginAsync = async (app) => {
             // an embedded cast token. Devices fetch bytes directly — no
             // Player-side relay.
             castSecret: app.castSecret,
-            username:
-              app.config.dlnaPseudoUser ||
-              app.config.poutineOwnerUsername ||
-              "dlna",
+            // #280: streams run as the owner — the same identity Browse
+            // uses — so DLNA depends on exactly one account, and that
+            // account is undeletable.
+            username: app.config.poutineOwnerUsername,
           });
         } catch (err) {
           req.log.warn(
