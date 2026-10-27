@@ -40,6 +40,8 @@ describe("GET /api/health (issue #178)", () => {
     expect(body.status).toBe("degraded");
     expect(body).toHaveProperty("appVersion");
     expect(body).toHaveProperty("apiVersion");
+    // Issue #287: the test process runs inside the git checkout.
+    expect(body.gitSha).toMatch(/^[0-9a-f]{40}(-dirty)?$/);
   });
 
   it("reports navidrome=ok / status=ok when local Navidrome ping succeeds", async () => {

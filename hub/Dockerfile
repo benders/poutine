@@ -41,6 +41,10 @@ COPY hub/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /app/data
 ENV NODE_ENV=production
 ENV PUBLIC_DIR=/app/hub/public
+# Commit the image was built from, reported as `gitSha` by /api/health
+# (issue #287). Declared last so a new SHA doesn't bust earlier layers.
+ARG GIT_SHA=
+ENV POUTINE_GIT_SHA=$GIT_SHA
 EXPOSE 3000
 # Entrypoint enables the New Relic agent when NEW_RELIC_LICENSE_KEY is set;
 # otherwise it execs plain `node hub/dist/server.js`.

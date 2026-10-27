@@ -4,6 +4,9 @@ services:
     build:
       context: .
       dockerfile: hub/Dockerfile
+      args:
+        # Set by `pnpm hub:up`; empty → /api/health reports gitSha: null.
+        GIT_SHA: ${GIT_SHA:-}
     ports:
       - "${POUTINE_HOST_PORT:-3000}:3000"
     environment:
