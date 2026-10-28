@@ -22,7 +22,7 @@ Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-intern
 
 ## Local development (without Docker)
 
-Requires **Node 22** (what CI and the Docker image run). Newer majors ship before `better-sqlite3` publishes a prebuild — tests then fail with a `NODE_MODULE_VERSION` mismatch or fall back to a source build.
+Requires the exact Node release in **`.node-version`** (what CI and the Docker image run; `pnpm install` refuses anything outside `package.json` `engines`). Any version manager that reads `.node-version` works (`fnm`, `nodenv`, `mise`, `volta`). Homebrew's `node` tracks the newest major and won't match. When `node scripts/check-node-version.mjs` (also run daily in CI) reports a Node CVE, bump the pin per [docs/hub-internals.md](docs/hub-internals.md#nodejs-version-policy-290) and rebuild the hub (`pnpm hub:up`).
 
 ```bash
 pnpm install
