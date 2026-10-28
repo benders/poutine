@@ -1,7 +1,7 @@
 {
   "name": "poutine",
   "private": true,
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Federated music player - merges personal music collections into a unified library",
   "engines": {
     "node": ">=22.23.4 <23"

@@ -15,7 +15,7 @@
  *   3. Update contract tests in hub/test/federation-routes.test.ts
  */
 
-export const APP_VERSION = "0.5.6";
+export const APP_VERSION = "0.5.7";
 export const FEDERATION_API_VERSION = 8;
 
 /** User-Agent header value sent on all outgoing federation requests. */
