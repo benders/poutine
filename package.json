@@ -32,8 +32,9 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "@newrelic/fn-inspect",
-      "@newrelic/native-metrics",
-      "argon2",
+      "@newrelic/native-metrics"
+    ],
+    "ignoredBuiltDependencies": [
       "better-sqlite3"
     ]
   }
