@@ -167,6 +167,21 @@ describe("health endpoints (#178, #277)", () => {
     expect(body).toHaveProperty("apiVersion");
   });
 
+  it("reports library=held and status=degraded while the shrink guard holds a sync (#297)", async () => {
+    navidrome = await startFakeNavidrome();
+    app = await buildHub(navidrome.url, "held");
+
+    let body = (await app.inject({ method: "GET", url: "/api/health" })).json();
+    expect(body.library).toBe("ok");
+
+    app.db.prepare("UPDATE instances SET shrink_held_at = datetime('now') WHERE id = 'local'").run();
+    const res = await app.inject({ method: "GET", url: "/api/health" });
+    expect(res.statusCode).toBe(200);
+    body = res.json();
+    expect(body.library).toBe("held");
+    expect(body.status).toBe("degraded");
+  });
+
   it("never probes the stream path itself — one ping, as before (#277)", async () => {
     navidrome = await startFakeNavidrome();
     app = await buildHub(navidrome.url, "cheap");

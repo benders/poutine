@@ -52,6 +52,7 @@ export async function syncLocal(
     concurrency: config.instanceConcurrency,
     lastFmClient: lastFmClient ?? null,
     fanartTvClient: fanartTvClient ?? null,
+    shrinkGuardPercent: config.shrinkGuardPercent,
     log: {
       info: (msg) => console.log(msg),
       error: (msg) => console.error(msg),

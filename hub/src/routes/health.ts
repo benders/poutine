@@ -97,11 +97,21 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       ? lastReport.checks.navidromeStream.status
       : "unknown";
 
-    // `status` rolls up the ping AND whatever the deep probe last saw, so an
-    // operator keying on `body.status` (per #178) now also catches the
-    // ping-ok-but-no-audio state. HTTP status stays 200 regardless.
+    // Library-shrink guard (#297): the local catalog is being kept because
+    // Navidrome's library shrank too far — usually an unmounted share.
+    const held = app.db
+      .prepare("SELECT 1 FROM instances WHERE id = 'local' AND shrink_held_at IS NOT NULL")
+      .get();
+    const library: "ok" | "held" = held ? "held" : "ok";
+
+    // `status` rolls up the ping, whatever the deep probe last saw and the
+    // shrink guard, so an operator keying on `body.status` (per #178) catches
+    // each of them. HTTP status stays 200 regardless.
     const degraded =
-      navidrome !== "ok" || navidromeStream === "failed" || lastReport?.status === "degraded";
+      navidrome !== "ok" ||
+      navidromeStream === "failed" ||
+      lastReport?.status === "degraded" ||
+      library === "held";
 
     return {
       status: degraded ? "degraded" : "ok",
@@ -111,6 +121,7 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       navidrome,
       navidromeStream,
       recentNavidromeFailures: observed.recentFailures,
+      library,
     };
   });
 }

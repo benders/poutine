@@ -8,6 +8,7 @@ import { formatTimeAgo } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { Server, Wifi, WifiOff, RefreshCw, Activity } from "lucide-react";
 import { CopyButton } from "@/features/shared/CopyButton";
+import { ShrinkHeldBanner } from "./ShrinkHeldBanner";
 
 export function InstanceSection() {
   const queryClient = useQueryClient();
@@ -119,6 +120,10 @@ export function InstanceSection() {
           </div>
         </div>
       </div>
+
+      {nd.shrinkHeldAt && (
+        <ShrinkHeldBanner instanceId="local" heldSince={nd.shrinkHeldAt} message={nd.lastSyncMessage} />
+      )}
 
       {scanMutation.isSuccess && (
         <div className="p-3 bg-success/10 border border-success/20 rounded-lg text-sm text-success">

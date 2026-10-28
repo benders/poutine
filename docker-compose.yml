@@ -39,6 +39,9 @@ services:
       # nothing is caught. Set to "false" to reduce it to ping + DB only.
       - NAVIDROME_STREAM_PROBE=${NAVIDROME_STREAM_PROBE:-}
       - NAVIDROME_HEALTH_INTERVAL_MS=${NAVIDROME_HEALTH_INTERVAL_MS:-}
+      # Library-shrink guard (#297): a sync that drops more than this % of an
+      # instance's tracks (or to 0) is held, not applied. 0 disables; default 20.
+      - POUTINE_SHRINK_GUARD_PERCENT=${POUTINE_SHRINK_GUARD_PERCENT:-}
       # Sonos casting (issue #108) + DLNA MediaServer (#175). Off by default.
       # To enable Sonos:
       #   1. Switch the hub to host networking (see compose override below)
@@ -88,14 +91,13 @@ services:
       - ND_SESSIONTIMEOUT=24h
       - ND_BASEURL=
       - ND_ENABLEEXTERNALSERVICES=false
-      # Purge missing rows at the end of each scan so transient FS unmounts
-      # (SMB/NFS/sshfs/Tailscale, sleeping USB volumes) don't permanently
-      # quarantine folders via Navidrome's folder.missing=1 flag. See #159
-      # and docs/hub-internals.md (Navidrome integration). Trade-off:
-      # Navidrome-side annotations on a row that briefly disappears are
-      # discarded rather than reattached. Poutine tracks plays via its own
-      # activity service, so this is acceptable.
-      - ND_SCANNER_PURGEMISSING=always
+      # Keep missing rows (#297). A folder that vanishes mid-scan (SMB/NFS
+      # outage, sleeping USB volume) is hidden, then restored with the SAME
+      # track ids when it returns. `always` re-IDs every purged track on
+      # recovery, and one unreadable top-level folder purges the whole
+      # library. The hub's shrink guard covers the hidden-tracks window.
+      # See docs/hub-internals.md (Navidrome integration).
+      - ND_SCANNER_PURGEMISSING=never
       # Auto-create the "admin" user on first boot using the same credential
       # the hub uses to connect. Username is always "admin" with this method.
       # In Navidrome 0.52+, the internal config key is DevAutoCreateAdminPassword

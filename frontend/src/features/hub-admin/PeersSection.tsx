@@ -4,6 +4,7 @@ import type { Peer } from "@/lib/api";
 import { formatTimeAgo } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { Server, Wifi, WifiOff, RefreshCw, Trash2, Ban, Play, XCircle } from "lucide-react";
+import { ShrinkHeldBanner } from "./ShrinkHeldBanner";
 
 function LifecycleBadge({ peer }: { peer: Peer }) {
   if (peer.lifecycle === "disabled") {
@@ -137,6 +138,11 @@ function PeerRow({
         )}>
           {peer.lastSyncMessage}
         </p>
+      )}
+      {peer.shrinkHeldAt && (
+        <div className="mt-2 ml-9">
+          <ShrinkHeldBanner instanceId={peer.id} heldSince={peer.shrinkHeldAt} />
+        </div>
       )}
     </div>
   );

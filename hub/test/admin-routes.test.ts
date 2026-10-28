@@ -1358,3 +1358,59 @@ describe("admin — cache", () => {
     expect(res.statusCode).toBe(204);
   });
 });
+
+describe("admin — accept a held library shrink (#297)", () => {
+  let app: FastifyInstance;
+  let token: string;
+
+  beforeEach(async () => {
+    app = await buildApp(testConfig);
+    await app.ready();
+    token = await loginAs(app, "owner", seedAdmin(app));
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  const accept = (id: string, auth = authHeader(token)) =>
+    app.inject({ method: "POST", url: `/api/admin/hub/instances/${id}/accept-shrink`, headers: auth });
+  const flag = () =>
+    (app.db.prepare("SELECT accept_shrink_once FROM instances WHERE id = 'local'").get() as {
+      accept_shrink_once: number;
+    }).accept_shrink_once;
+
+  it("arms the one-shot override when a shrink is held, and reports the hold", async () => {
+    app.db.prepare("UPDATE instances SET shrink_held_at = datetime('now') WHERE id = 'local'").run();
+
+    const info = await app.inject({ method: "GET", url: "/api/admin/hub/instance", headers: authHeader(token) });
+    expect(info.json().navidrome.shrinkHeldAt).toMatch(/Z$/);
+
+    const res = await accept("local");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ id: "local", acceptShrinkOnce: true });
+    expect(flag()).toBe(1);
+  });
+
+  it("refuses to pre-arm the override when nothing is held", async () => {
+    const res = await accept("local");
+    expect(res.statusCode).toBe(409);
+    expect(flag()).toBe(0);
+  });
+
+  it("404s an unknown instance", async () => {
+    expect((await accept("no-such-instance")).statusCode).toBe(404);
+  });
+
+  it("is owner-only", async () => {
+    app.db.prepare("UPDATE instances SET shrink_held_at = datetime('now') WHERE id = 'local'").run();
+    app.db
+      .prepare("INSERT INTO users (id, username, password_enc, is_admin) VALUES ('u-2', 'listener', ?, 0)")
+      .run(setPassword("listenerpass", app.passwordKey));
+    const listener = await loginAs(app, "listener", "listenerpass");
+
+    expect((await accept("local", authHeader(listener))).statusCode).toBe(403);
+    expect((await accept("local", {} as { authorization: string })).statusCode).toBe(401);
+    expect(flag()).toBe(0);
+  });
+});

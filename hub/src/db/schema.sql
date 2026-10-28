@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS instances (
   -- `status`, which liveness/health-checks churn constantly.
   lifecycle TEXT NOT NULL DEFAULT 'active', -- active | disabled | tombstoned
   lifecycle_changed_at TEXT,
+  -- Library-shrink guard (#297): set while a sync's deletions are being held
+  -- back because the library shrank too far (NULL otherwise). The owner
+  -- accepts a genuine removal by setting accept_shrink_once, consumed by the
+  -- next completed sync.
+  shrink_held_at TEXT,
+  accept_shrink_once INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

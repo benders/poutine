@@ -12,6 +12,7 @@
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import { USER_AGENT } from "../version.js";
+import { DEFAULT_SHRINK_GUARD_PERCENT, evaluateShrink } from "./shrink-guard.js";
 import type { SyncResult } from "./sync.js";
 import type { LastFmClient } from "../services/lastfm.js";
 import { FanartTvClient } from "../services/fanarttv.js";
@@ -203,6 +204,8 @@ export async function readNavidromeViaProxy(
     log?: SyncLogger;
     lastFmClient?: LastFmClient | null;
     fanartTvClient?: FanartTvClientType | null;
+    /** Library-shrink guard threshold (#297); 0 disables. */
+    shrinkGuardPercent?: number;
   } = {},
 ): Promise<SyncResult> {
   const concurrency = config.concurrency ?? 3;
@@ -308,6 +311,15 @@ export async function readNavidromeViaProxy(
     artistIndexes = artistsObj?.index ?? [];
   } catch (err) {
     result.errors.push(`Failed to fetch artists for ${instanceId}: ${String(err)}`);
+    if (instanceId === "local") {
+      // The bundled Navidrome restarting mid-sync is not a reason to drop
+      // this hub's own catalog (#297) — keep it and let the next sync decide.
+      db.prepare(
+        "UPDATE instances SET status = 'offline', last_sync_ok = 0, last_sync_message = ?, updated_at = datetime('now') WHERE id = ?",
+      ).run(result.errors.join("; "), instanceId);
+      log.error(`[${instanceId}] Navidrome unreachable — kept cached library`);
+      return result;
+    }
     // Peer unreachable at probe time → wipe its cached library so stale data
     // does not leak into the merged unified_* tables. A later successful sync
     // will re-populate.
@@ -493,20 +505,49 @@ export async function readNavidromeViaProxy(
 
   // ── Update instance row ────────────────────────────────────────────────────
 
-  if (result.errors.length === 0) {
-    _deleteStale(db, instanceId, seenTrackRemoteIds, seenAlbumRemoteIds, seenArtistRemoteIds);
+  // #157: result.trackCount was incremented once per upsertTrack() call,
+  // which overshoots when the same song is revisited across overlapping
+  // album listings (multi-disc, compilations). seenTrackRemoteIds is the
+  // de-duplicated count and matches instance_tracks after _deleteStale.
+  const seenTracks = seenTrackRemoteIds.size;
 
-    // #157: result.trackCount was incremented once per upsertTrack() call,
-    // which overshoots when the same song is revisited across overlapping
-    // album listings (multi-disc, compilations). seenTrackRemoteIds is the
-    // de-duplicated count and matches instance_tracks after _deleteStale.
-    result.trackCount = seenTrackRemoteIds.size;
+  // Library-shrink guard (#297). Judged before any deletion; the owner's
+  // one-shot override (accept_shrink_once) lets a genuine removal through.
+  const guardRow = db
+    .prepare("SELECT track_count, accept_shrink_once FROM instances WHERE id = ?")
+    .get(instanceId) as { track_count: number; accept_shrink_once: number } | undefined;
+  const shrink =
+    result.errors.length === 0 && guardRow && !guardRow.accept_shrink_once
+      ? evaluateShrink(
+          guardRow.track_count,
+          seenTracks,
+          config.shrinkGuardPercent ?? DEFAULT_SHRINK_GUARD_PERCENT,
+        )
+      : { hold: false };
+
+  if (shrink.hold) {
+    // Keep every row (the upserts above only refreshed what was seen) and
+    // track_count, so the next sync is judged against the last good library.
+    // last_synced_at still advances: AutoSync re-syncs whenever Navidrome's
+    // lastScan is newer, and recovery needs a fresh scan anyway — without
+    // this it would re-sync every 30 s for the whole outage.
+    result.trackCount = seenTracks;
+    result.shrinkHeld = shrink.reason;
+    const syncMessage = `Shrink guard: ${shrink.reason}. Catalog kept; accept the removal in Hub admin if it was intended.`;
+    result.errors.push(syncMessage);
+    db.prepare(
+      "UPDATE instances SET status = 'online', last_seen = datetime('now'), last_synced_at = datetime('now'), last_sync_ok = 0, last_sync_message = ?, shrink_held_at = COALESCE(shrink_held_at, datetime('now')), updated_at = datetime('now') WHERE id = ?",
+    ).run(syncMessage, instanceId);
+    log.error(`[${instanceId}] ${syncMessage}`);
+  } else if (result.errors.length === 0) {
+    _deleteStale(db, instanceId, seenTrackRemoteIds, seenAlbumRemoteIds, seenArtistRemoteIds);
+    result.trackCount = seenTracks;
 
     const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(1);
     const syncMessage = `Synced ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks in ${elapsedSec} seconds`;
 
     db.prepare(
-      "UPDATE instances SET status = 'online', last_seen = datetime('now'), last_synced_at = datetime('now'), last_sync_ok = 1, last_sync_message = ?, track_count = ?, updated_at = datetime('now') WHERE id = ?",
+      "UPDATE instances SET status = 'online', last_seen = datetime('now'), last_synced_at = datetime('now'), last_sync_ok = 1, last_sync_message = ?, track_count = ?, shrink_held_at = NULL, accept_shrink_once = 0, updated_at = datetime('now') WHERE id = ?",
     ).run(syncMessage, result.trackCount, instanceId);
 
     log.info(`[${instanceId}] sync complete: ${result.artistCount} artists, ${result.albumCount} albums, ${result.trackCount} tracks`);

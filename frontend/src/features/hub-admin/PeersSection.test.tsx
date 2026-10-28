@@ -14,10 +14,11 @@ vi.mock("@/lib/api", async () => {
     disablePeer: vi.fn(),
     enablePeer: vi.fn(),
     removePeer: vi.fn(),
+    acceptShrink: vi.fn(),
   };
 });
 
-import { getPeers, disablePeer, enablePeer, removePeer } from "@/lib/api";
+import { getPeers, disablePeer, enablePeer, removePeer, acceptShrink, triggerSync } from "@/lib/api";
 
 function basePeer(overrides: Partial<Peer> = {}): Peer {
   return {
@@ -29,6 +30,7 @@ function basePeer(overrides: Partial<Peer> = {}): Peer {
     lastSeen: null,
     lastSyncOk: null,
     lastSyncMessage: null,
+    shrinkHeldAt: null,
     trackCount: 0,
     artistCount: 0,
     albumCount: 0,
@@ -52,6 +54,8 @@ beforeEach(() => {
   vi.mocked(disablePeer).mockReset();
   vi.mocked(enablePeer).mockReset();
   vi.mocked(removePeer).mockReset();
+  vi.mocked(acceptShrink).mockReset();
+  vi.mocked(triggerSync).mockReset();
 });
 
 describe("PeersSection lifecycle UI (#244 Phase 2)", () => {
@@ -136,6 +140,53 @@ describe("PeersSection lifecycle UI (#244 Phase 2)", () => {
 
     expect(confirmSpy).toHaveBeenCalled();
     expect(removePeer).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+});
+
+describe("PeersSection library-shrink guard (#297)", () => {
+  it("shows no banner while nothing is held", async () => {
+    vi.mocked(getPeers).mockResolvedValue([basePeer()]);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByText("peer-a")).toBeInTheDocument());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("accepting a held shrink confirms, arms the override, then syncs", async () => {
+    vi.mocked(getPeers).mockResolvedValue([
+      basePeer({
+        shrinkHeldAt: "2026-10-28T20:00:00Z",
+        lastSyncOk: false,
+        lastSyncMessage: "Shrink guard: library went from 500 tracks to 0",
+      }),
+    ]);
+    vi.mocked(acceptShrink).mockResolvedValue({ id: "peer-a", acceptShrinkOnce: true });
+    vi.mocked(triggerSync).mockResolvedValue({
+      local: { instanceId: "local", artistCount: 0, albumCount: 0, trackCount: 0, errors: [] },
+      peers: [],
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /accept removal/i }));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() => expect(acceptShrink).toHaveBeenCalledWith("peer-a"));
+    await waitFor(() => expect(triggerSync).toHaveBeenCalled());
+    confirmSpy.mockRestore();
+  });
+
+  it("declining the confirm leaves the hold in place", async () => {
+    vi.mocked(getPeers).mockResolvedValue([basePeer({ shrinkHeldAt: "2026-10-28T20:00:00Z" })]);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /accept removal/i }));
+
+    expect(acceptShrink).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
 });
