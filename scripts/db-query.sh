@@ -16,8 +16,18 @@
 #   echo "SELECT id, title FROM instance_albums WHERE title LIKE '%jazz%'" | ./db-query.sh
 
 set -euo pipefail
+CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# The cd above moves relative paths: `--env-file the-scene.env` given from the
+# repo root would otherwise resolve to scripts/the-scene.env (#299).
+abs_path() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$CALLER_DIR" "$1" ;;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 # Parse: split on "--" into COMPOSE_OPTS and SQL
@@ -30,8 +40,18 @@ for arg in "$@"; do
     SQL_ARGS+=("$arg")
   elif [[ "$arg" == "--" ]]; then
     found_sep=1
+  elif [[ "${expect_path:-0}" -eq 1 ]]; then
+    COMPOSE_OPTS+=("$(abs_path "$arg")")
+    expect_path=0
   else
-    COMPOSE_OPTS+=("$arg")
+    case "$arg" in
+      --env-file|-f|--file|--project-directory)
+        COMPOSE_OPTS+=("$arg"); expect_path=1 ;;
+      --env-file=*|--file=*|--project-directory=*)
+        COMPOSE_OPTS+=("${arg%%=*}=$(abs_path "${arg#*=}")") ;;
+      *)
+        COMPOSE_OPTS+=("$arg") ;;
+    esac
   fi
 done
 
@@ -60,7 +80,14 @@ fi
 # ---------------------------------------------------------------------------
 # Verify hub container is running
 # ---------------------------------------------------------------------------
-if ! docker compose ${COMPOSE_OPTS[@]+"${COMPOSE_OPTS[@]}"} ps --format '{{.Service}}' 2>/dev/null | grep -q '^hub$'; then
+# Capture first, then match (no `ps | grep -q` under pipefail), and keep
+# compose's own error: a bad --env-file used to surface as "not running" (#299).
+if ! running_services="$(docker compose ${COMPOSE_OPTS[@]+"${COMPOSE_OPTS[@]}"} ps --status running --services 2>&1)"; then
+  echo "ERROR: docker compose ps failed:" >&2
+  echo "$running_services" >&2
+  exit 1
+fi
+if ! grep -qx 'hub' <<<"$running_services"; then
   echo "ERROR: hub container is not running." >&2
   echo "       Start it with: docker compose ${COMPOSE_OPTS[*]+"${COMPOSE_OPTS[*]}"} up -d hub" >&2
   exit 1
