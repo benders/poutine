@@ -87,7 +87,13 @@ services:
     image: ${NAVIDROME_IMAGE:-deluan/navidrome:0.64.2}
     environment:
       - ND_LOGLEVEL=info
-      - ND_SCANSCHEDULE=1h
+      # Periodic quick scan (#296) — the only automatic change detection on
+      # SMB/NFS, where the filesystem watcher sees nothing. Robfig cron syntax
+      # (`@every 1h`, `0 * * * *`); a bare `1h` fails validation. The key is
+      # Scanner.Schedule: the old `ND_SCANSCHEDULE` was silently ignored, so
+      # no periodic scan ever ran. Unknown ND_* vars are never reported —
+      # the hub checks the effective value at boot.
+      - ND_SCANNER_SCHEDULE=${NAVIDROME_SCAN_SCHEDULE:-@every 1h}
       - ND_SESSIONTIMEOUT=24h
       - ND_BASEURL=
       - ND_ENABLEEXTERNALSERVICES=false

@@ -167,3 +167,98 @@ export async function ensureRealPathPlayers(opts: {
     warnDegraded(log, String(err));
   }
 }
+
+// ── Scanner config drift check (#296, #297) ─────────────────────────────────
+//
+// Navidrome silently ignores unknown or renamed ND_* env vars: compose set
+// `ND_SCANSCHEDULE` for months while no periodic scan ever ran. So the hub
+// reads the *effective* config back (`GET /api/config/`, admin-only, same
+// unversioned native API — the trailing slash is required) and warns when the
+// scanner settings Poutine depends on aren't in force.
+
+export interface ScannerConfig {
+  /** Robfig cron expression; "" or "0" means periodic scanning is off. */
+  schedule: string;
+  purgeMissing: string;
+}
+
+/** Last successful read, for the admin UI. Null until one succeeds. */
+let lastScannerConfig: ScannerConfig | null = null;
+/** Warnings already logged this process — one line per distinct problem. */
+const scannerWarnings = new Set<string>();
+
+export function getLastScannerConfig(): ScannerConfig | null {
+  return lastScannerConfig;
+}
+
+// Reset module state. Test-only.
+export function _resetScannerConfigState(): void {
+  lastScannerConfig = null;
+  scannerWarnings.clear();
+}
+
+/** Problems with an effective scanner config; empty when it is as intended. */
+export function scannerConfigProblems(cfg: ScannerConfig): string[] {
+  const problems: string[] = [];
+  if (cfg.schedule === "" || cfg.schedule === "0") {
+    problems.push(
+      "periodic scan is DISABLED (Scanner.Schedule unset) — new music is only " +
+        "picked up by the filesystem watcher, which sees nothing on SMB/NFS. " +
+        "Set ND_SCANNER_SCHEDULE (docker-compose.yml, #296)",
+    );
+  }
+  if (cfg.purgeMissing !== "never") {
+    problems.push(
+      `Scanner.PurgeMissing is "${cfg.purgeMissing}" — an unmounted share or one ` +
+        "unreadable top-level folder purges the whole library and re-IDs tracks " +
+        "on recovery. Set ND_SCANNER_PURGEMISSING=never (#297)",
+    );
+  }
+  return problems;
+}
+
+/**
+ * Read Navidrome's effective scanner config and warn (once per process per
+ * problem) when it drifts from what Poutine expects. Best-effort like the
+ * rest of this file: never throws, returns null when the API is unavailable.
+ */
+export async function checkScannerConfig(opts: {
+  navidromeUrl: string;
+  navidromeUsername: string;
+  navidromePassword: string;
+  log: NativeLogger;
+}): Promise<ScannerConfig | null> {
+  const { navidromeUrl, navidromeUsername, navidromePassword, log } = opts;
+  try {
+    const token = await login(navidromeUrl, navidromeUsername, navidromePassword);
+    if (!token) return null;
+    const res = await fetch(`${navidromeUrl.replace(/\/+$/, "")}/api/config/`, {
+      headers: {
+        "x-nd-authorization": `Bearer ${token}`,
+        "user-agent": USER_AGENT,
+      },
+      signal: AbortSignal.timeout(NATIVE_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    // The body carries Navidrome's whole config (some secrets masked, some
+    // not) — read the two scanner fields and drop the rest; never log it.
+    const body = (await res.json()) as {
+      config?: { Scanner?: { Schedule?: unknown; PurgeMissing?: unknown } };
+    };
+    const scanner = body.config?.Scanner;
+    if (!scanner || typeof scanner.PurgeMissing !== "string") return null;
+    const cfg: ScannerConfig = {
+      schedule: typeof scanner.Schedule === "string" ? scanner.Schedule : "",
+      purgeMissing: scanner.PurgeMissing,
+    };
+    lastScannerConfig = cfg;
+    for (const problem of scannerConfigProblems(cfg)) {
+      if (scannerWarnings.has(problem)) continue;
+      scannerWarnings.add(problem);
+      log.warn(`navidrome-native: ${problem}`);
+    }
+    return cfg;
+  } catch {
+    return null;
+  }
+}

@@ -270,3 +270,115 @@ describe("ensureRealPathPlayers", () => {
     expect(log.warns).toHaveLength(1);
   });
 });
+
+// ── Scanner config drift check (#296) ───────────────────────────────────────
+
+import {
+  checkScannerConfig,
+  getLastScannerConfig,
+  scannerConfigProblems,
+  _resetScannerConfigState,
+} from "../src/services/navidrome-native.js";
+
+function startConfigFake(opts: { configStatus?: number; scanner?: unknown; extra?: Record<string, unknown> }): Promise<{
+  server: http.Server;
+  url: string;
+  paths: string[];
+}> {
+  const paths: string[] = [];
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      paths.push(`${req.method} ${req.url}`);
+      if (req.method === "POST" && req.url === "/auth/login") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ token: "tok" }));
+        return;
+      }
+      if (req.method === "GET" && req.url === "/api/config/") {
+        if (req.headers["x-nd-authorization"] !== "Bearer tok") {
+          res.writeHead(401);
+          res.end();
+          return;
+        }
+        res.writeHead(opts.configStatus ?? 200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "config", config: { Scanner: opts.scanner, ...opts.extra } }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    server.listen(0, "127.0.0.1", () => {
+      resolve({ server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, paths });
+    });
+  });
+}
+
+describe("checkScannerConfig (#296)", () => {
+  let fake: Awaited<ReturnType<typeof startConfigFake>> | undefined;
+  let warnings: string[];
+  const log = { info: () => {}, warn: (m: string) => warnings.push(m) };
+  const run = () =>
+    checkScannerConfig({ navidromeUrl: fake!.url, navidromeUsername: "admin", navidromePassword: "pw", log });
+
+  beforeEach(() => {
+    _resetScannerConfigState();
+    warnings = [];
+  });
+
+  afterEach(async () => {
+    if (fake) await new Promise<void>((r) => fake!.server.close(() => r()));
+    fake = undefined;
+  });
+
+  it("reads the effective schedule and purge mode; no warning when as intended", async () => {
+    fake = await startConfigFake({ scanner: { Schedule: "@every 1h", PurgeMissing: "never", WatcherWait: 5e9 } });
+
+    expect(await run()).toEqual({ schedule: "@every 1h", purgeMissing: "never" });
+    expect(getLastScannerConfig()).toEqual({ schedule: "@every 1h", purgeMissing: "never" });
+    expect(warnings).toEqual([]);
+    // Trailing slash matters: /api/config 404s on Navidrome 0.64.
+    expect(fake.paths).toContain("GET /api/config/");
+  });
+
+  it("warns once per process when periodic scanning is off or purge mode drifted", async () => {
+    fake = await startConfigFake({ scanner: { Schedule: "", PurgeMissing: "always" } });
+
+    await run();
+    await run();
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/periodic scan is DISABLED/);
+    expect(warnings[1]).toMatch(/PurgeMissing is "always"/);
+  });
+
+  it("never logs the rest of the config, which can carry secrets", async () => {
+    fake = await startConfigFake({
+      scanner: { Schedule: "0", PurgeMissing: "never" },
+      extra: { LastFM: { Secret: "sekrit-value" } },
+    });
+
+    await run();
+
+    expect(warnings.join("\n")).not.toMatch(/sekrit-value/);
+  });
+
+  it("returns null without throwing when the API is unavailable or reshaped", async () => {
+    fake = await startConfigFake({ configStatus: 500, scanner: {} });
+    expect(await run()).toBeNull();
+    await new Promise<void>((r) => fake!.server.close(() => r()));
+
+    fake = await startConfigFake({ scanner: { Schedule: 5 } });
+    expect(await run()).toBeNull();
+
+    expect(
+      await checkScannerConfig({ navidromeUrl: "http://127.0.0.1:1", navidromeUsername: "a", navidromePassword: "b", log }),
+    ).toBeNull();
+    expect(getLastScannerConfig()).toBeNull();
+    expect(warnings).toEqual([]);
+  });
+
+  it("treats \"0\" as disabled, like Navidrome's own default", () => {
+    expect(scannerConfigProblems({ schedule: "0", purgeMissing: "never" })).toHaveLength(1);
+    expect(scannerConfigProblems({ schedule: "0 * * * *", purgeMissing: "never" })).toEqual([]);
+  });
+});

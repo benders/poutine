@@ -69,6 +69,7 @@ describe("Last.fm integration during sync", () => {
       if (urlString?.includes("/rest/ping")) return jsonResponse(subsonicResponse({}));
       if (urlString?.includes("/auth/login")) return jsonResponse({ token: "t" });
       if (urlString?.includes("/api/player")) return jsonResponse([]);
+      if (urlString?.includes("/api/config/")) return jsonResponse({ config: {} });
       // Subsonic API call - use fetchMock
       return fetchMock(input);
     });
