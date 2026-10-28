@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.5.6",
   "description": "Federated music player - merges personal music collections into a unified library",
+  "engines": {
+    "node": ">=22.23.4 <23"
+  },
   "scripts": {
     "dev": "pnpm --filter hub dev",
     "build": "pnpm --filter hub build && pnpm --filter frontend build",
