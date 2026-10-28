@@ -1,6 +1,7 @@
 # Exact Node release, bumped by Dependabot (.github/dependabot.yml, #290). Keep both FROM lines identical.
-FROM node:22.23.4-slim AS base
-RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
+FROM node:26.12.1-slim AS base
+# Node 25+ no longer bundles corepack (#292). Keep in step with package.json packageManager.
+RUN npm install -g pnpm@10.32.1
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
@@ -30,7 +31,7 @@ RUN pnpm --filter hub build && cp -r hub/src/db/*.sql hub/dist/db/
 RUN pnpm --filter frontend build
 
 # Slim runtime — no build tools, copies pre-built native addons from prod-deps
-FROM node:22.23.4-slim AS runtime
+FROM node:26.12.1-slim AS runtime
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/hub/node_modules ./hub/node_modules

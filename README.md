@@ -22,7 +22,7 @@ Full env var list: [docs/hub-internals.md#environment-variables](docs/hub-intern
 
 ## Local development (without Docker)
 
-Requires **Node 22**, at or above the `engines` floor in `package.json`. `pnpm install` refuses anything else. Homebrew's `node` tracks the newest major and won't work; use `node@22` or a version manager. Dependabot keeps the Docker image's Node current ([policy](docs/hub-internals.md#nodejs-version-policy-290)); after merging one of its PRs, rebuild the hub (`pnpm hub:up`).
+Requires **Node 26**, at or above the `engines` floor in `package.json`. `pnpm install` refuses anything else. Homebrew's `node` tracks the newest major, so it stops working once that moves past 26; then use `node@26` or a version manager. Dependabot keeps the Docker image's Node current ([policy](docs/hub-internals.md#nodejs-version-policy-290)); after merging one of its PRs, rebuild the hub (`pnpm hub:up`).
 
 ```bash
 pnpm install
