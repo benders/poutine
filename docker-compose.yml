@@ -54,8 +54,9 @@ services:
     restart: unless-stopped
 
   navidrome:
-    # Override to test or pin a specific release, e.g. NAVIDROME_IMAGE=deluan/navidrome:0.64.0 (#283).
-    image: ${NAVIDROME_IMAGE:-deluan/navidrome:latest}
+    # Exact release, bumped by Dependabot (.github/dependabot.yml, #293) — it rewrites the
+    # default inside ${...:-}. NAVIDROME_IMAGE overrides it to trial another release (#283).
+    image: ${NAVIDROME_IMAGE:-deluan/navidrome:0.64.2}
     environment:
       - ND_LOGLEVEL=info
       - ND_SCANSCHEDULE=1h

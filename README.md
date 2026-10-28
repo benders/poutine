@@ -74,6 +74,18 @@ pnpm hub:up
 
 Running containers use the compiled image, not live source — rebuild is required after any code change. `pnpm hub:up` passes `GIT_SHA` so `/api/health` reports the commit as `gitSha`; a bare `docker compose build` reports `gitSha: null`. Check what's deployed with `curl -s <hub-url>/api/health`.
 
+#### Updating Navidrome
+
+The Navidrome release is pinned in `docker-compose.yml` and bumped by Dependabot PRs. `pnpm hub:up` does not pull it. After pulling a bump:
+
+```bash
+docker run --rm -v <project>_navidrome-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/navidrome-data-$(date +%F).tgz -C /data .   # migrations are one-way
+docker compose pull navidrome && docker compose up -d --no-deps navidrome
+```
+
+The hub re-syncs after Navidrome's post-upgrade scan; streams can fail until it does. Details: [docs/hub-internals.md#navidrome-integration](docs/hub-internals.md#navidrome-integration).
+
 #### Upgrading to 0.4.0 — password reset required
 
 0.4.0 changes how user passwords are stored (Argon2id → AES-256-GCM, reversible storage so Subsonic `u+t+s` works). All existing passwords are wiped on the upgrade — every user must have their password re-set.
