@@ -55,7 +55,7 @@ services:
     # container is visible in `docker compose ps` and to any orchestrator, but
     # nothing restarts it (a Navidrome fault must not bounce the hub and kill
     # every in-flight stream).
-    # node, not curl/wget: neither is installed in the node:22-slim runtime.
+    # node, not curl/wget: neither is installed in the node:26-slim runtime.
     healthcheck:
       test:
         - CMD

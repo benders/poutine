@@ -158,6 +158,56 @@ describe("NavidromeMonitor (#277)", () => {
       expect(telemetry.noticeError).not.toHaveBeenCalled();
     });
 
+    it("ignores the probe's own calls, so a probe success can't reset the counter", () => {
+      const monitor = new NavidromeMonitor({ db, client: fakeClient(), log: testLogger() });
+
+      monitor.record(event());
+      monitor.record(event({ ok: true, status: 206, error: undefined, tag: "health-probe" }));
+      monitor.record(event({ tag: "health-probe" }));
+
+      const observed = monitor.observed();
+      expect(observed.consecutiveStreamFailures).toBe(1);
+      expect(observed.recentFailures).toBe(1);
+    });
+
+    it("treats a stream error envelope as neither a fault nor a success (#285)", () => {
+      const log = testLogger();
+      const telemetry = testTelemetry();
+      const monitor = new NavidromeMonitor({ db, client: fakeClient(), log, telemetry });
+
+      monitor.record(event());
+      monitor.record(event({ status: 200, envelope: true }));
+
+      const observed = monitor.observed();
+      expect(observed.consecutiveStreamFailures).toBe(1);
+      expect(observed.recentFailures).toBe(1);
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.stringMatching(/error envelope/),
+      );
+      expect(telemetry.noticeError).toHaveBeenCalledOnce();
+    });
+
+    it("stays quiet about cover-art error envelopes", () => {
+      const log = testLogger();
+      const monitor = new NavidromeMonitor({ db, client: fakeClient(), log });
+
+      monitor.record(event({ path: "/rest/getCoverArt", status: 200, envelope: true }));
+
+      expect(log.warn).not.toHaveBeenCalled();
+      expect(monitor.observed().lastFailure).toBeNull();
+    });
+
+    it("redacts URLs in lastFailure — it is served unauthenticated", () => {
+      const monitor = new NavidromeMonitor({ db, client: fakeClient(), log: testLogger() });
+
+      monitor.record(
+        event({ status: null, error: new Error("request to http://navidrome:4533/rest/stream failed") }),
+      );
+
+      expect(monitor.observed().lastFailure?.message).toBe("request to <url> failed");
+    });
+
     it("resets the consecutive stream counter on the next success", () => {
       const monitor = new NavidromeMonitor({
         db,
@@ -374,6 +424,65 @@ describe("NavidromeMonitor (#277)", () => {
       // The synthetic probe itself is fine — the signal is real traffic.
       expect(report.checks.navidromeStream.status).toBe("ok");
       expect(report.observed.consecutiveStreamFailures).toBe(3);
+    });
+
+    it("re-evaluates status on a cached report from the live counters", async () => {
+      seedLocalTracks(db, ["nd-track-1"]);
+      const monitor = new NavidromeMonitor({
+        db,
+        client: fakeClient(),
+        log: testLogger(),
+        probeTtlMs: 60_000,
+        streamFailureThreshold: 2,
+      });
+
+      expect((await monitor.probe()).status).toBe("ok");
+      monitor.record(event());
+      monitor.record(event());
+      const cached = await monitor.probe();
+
+      expect(cached.cached).toBe(true);
+      expect(cached.status).toBe("degraded");
+    });
+
+    it("degrades when every candidate answers with a Subsonic error envelope (#285)", async () => {
+      // Navidrome's 200 + `error code 70` for stale ids — e.g. every id after
+      // a migration re-encodes them, before the hub re-syncs.
+      seedLocalTracks(db, ["nd-track-1", "nd-track-2", "nd-track-3"]);
+      const stream = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ "subsonic-response": { status: "failed", error: { code: 70 } } }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      );
+      const monitor = new NavidromeMonitor({ db, client: fakeClient({ stream }), log: testLogger() });
+
+      const report = await monitor.probe();
+
+      expect(report.status).toBe("degraded");
+      expect(report.checks.navidromeStream.detail).toMatch(/Subsonic error 70/);
+      expect(stream).toHaveBeenCalledTimes(3);
+    });
+
+    it("asks for raw bytes and tags its stream calls for the observer", async () => {
+      seedLocalTracks(db, ["nd-track-1"]);
+      const stream = vi.fn(
+        async (_id: string, _opts?: unknown) =>
+          new Response(new Uint8Array([1, 2, 3]), { status: 206 }),
+      );
+      const monitor = new NavidromeMonitor({
+        db,
+        client: { ping: async () => ({}), stream } as unknown as SubsonicClient,
+        log: testLogger(),
+      });
+
+      await monitor.probe();
+
+      expect(stream).toHaveBeenCalledWith(
+        "nd-track-1",
+        expect.objectContaining({ format: "raw", observerTag: "health-probe" }),
+      );
     });
 
     it("skips the stream leg when the probe is disabled by config", async () => {

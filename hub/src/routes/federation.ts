@@ -23,7 +23,7 @@ import {
 } from "../federation/gossip.js";
 import { USER_AGENT, FEDERATION_API_VERSION } from "../version.js";
 import { buildStreamParams } from "./stream-params.js";
-import { readIncomingEnvelopeError } from "./upstream-envelope.js";
+import { readIncomingEnvelopeError } from "../adapters/upstream-envelope.js";
 
 // ── HTTP agents for upstream requests ────────────────────────────────────────
 

@@ -1,6 +1,10 @@
-import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import crypto from "node:crypto";
-import { SubsonicClient } from "../src/adapters/subsonic.js";
+import {
+  SubsonicClient,
+  setSubsonicObserver,
+  type SubsonicCallEvent,
+} from "../src/adapters/subsonic.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -672,5 +676,55 @@ describe("error handling", () => {
     await expect(client.stream("tr-1")).rejects.toThrow(
       "Subsonic HTTP error: 500 Internal Server Error",
     );
+  });
+});
+
+describe("call observer (#277)", () => {
+  let events: SubsonicCallEvent[];
+
+  beforeEach(() => {
+    events = [];
+    setSubsonicObserver((e) => events.push(e));
+  });
+
+  afterEach(() => {
+    setSubsonicObserver(null);
+  });
+
+  it("reports a 200 error envelope on a binary call as not ok, but still returns it", async () => {
+    // Navidrome's answer to /rest/stream for a stale id (#285).
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(subsonicResponse({ error: { code: 70, message: "not found" } }, "failed")),
+    );
+
+    const res = await client.stream("stale-id");
+
+    // The caller still gets the envelope to map (404 for code 70).
+    expect(res.status).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      path: "/rest/stream",
+      kind: "binary",
+      ok: false,
+      status: 200,
+      envelope: true,
+    });
+  });
+
+  it("reports audio bytes as ok and carries the caller's tag", async () => {
+    fetchMock.mockResolvedValueOnce(binaryResponse("ID3", "audio/mpeg"));
+
+    await client.stream("tr-1", { observerTag: "health-probe" });
+
+    expect(events[0]).toMatchObject({ ok: true, tag: "health-probe" });
+    expect(events[0].envelope).toBeUndefined();
+  });
+
+  it("tags a failed binary call too", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
+
+    await expect(client.stream("tr-1", { observerTag: "health-probe" })).rejects.toThrow();
+
+    expect(events[0]).toMatchObject({ ok: false, status: null, tag: "health-probe" });
   });
 });

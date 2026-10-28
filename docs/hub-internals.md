@@ -75,13 +75,13 @@ Three routes, three jobs — all unauthenticated, all in `hub/src/routes/health.
 
 `/api/health/ready` is the probe URL for Synthetic monitoring and orchestrators — the one whose **HTTP status** means something. It returns 503 + `Retry-After: 30` when the hub cannot serve audio. Checks:
 
-| Check            | How | `skipped` when |
-|------------------|-----|----------------|
-| `hubDb`          | `SELECT 1` on `hub.db` | never |
-| `navidromePing`  | Subsonic `/rest/ping`, 2 s budget | never |
-| `navidromeStream`| `Range: bytes=0-65535` pull off `/rest/stream` for a real local preferred track, asserting ≥ 1 byte arrives; up to 3 candidate tracks are tried | ping already failed · catalog has no local tracks · `NAVIDROME_STREAM_PROBE=false` |
+| Check             | How                                                                                                                                                               | `skipped` when                                                         |
+|-------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------|
+| `hubDb`           | `SELECT 1` on `hub.db`                                                                                                                                            | never                                                                  |
+| `navidromePing`   | Subsonic `/rest/ping`, 2 s budget                                                                                                                                 | never                                                                  |
+| `navidromeStream` | `format=raw`, `Range: bytes=0-65535` pull off `/rest/stream` for a real local preferred track; ≥ 1 byte, not a Subsonic error envelope (#285); up to 3 candidates | ping already failed · no local tracks · `NAVIDROME_STREAM_PROBE=false` |
 
-Plus a passive signal: `observed.consecutiveStreamFailures ≥ 5` (real-traffic upstream faults, see Observability below) degrades readiness even when the synthetic probe passes. Probe results are TTL-cached 30 s and concurrent callers share one run, so a tight poll cadence costs Navidrome nothing extra — `cached: true` says the result was reused, while the `observed` counters are always live.
+Plus a passive signal: `observed.consecutiveStreamFailures ≥ 5` (real-traffic upstream faults, see Observability below) degrades readiness even when the synthetic probe passes. Probe results are TTL-cached 30 s and concurrent callers share one run, so a tight poll cadence costs Navidrome nothing extra — `cached: true` says the checks were reused; `observed` and the `status` it feeds are always live. A stale-id envelope on every candidate (e.g. after a Navidrome migration re-encodes ids, until the hub re-syncs) is a real outage and degrades readiness.
 
 Why the stream leg exists: the #277 outage had a perfectly healthy `/rest/ping` and a completely broken `/rest/stream`. A ping-only check is blind to it, and so is APM. An empty library is **not** a fault — `skipped` keeps a fresh instance ready.
 
@@ -338,10 +338,12 @@ Optional and key-gated. #3 attaches the agent at the process level; #277 adds a 
 |-------------------------------|---------------------------------------|-----|---------------------------|
 | success                       | —                                     | —   | resets the stream streak  |
 | 4xx                           | `warn` "client-level"                 | —   | no                        |
+| 200 + Subsonic error envelope | `warn` (stream paths only)            | —   | no, and no streak reset   |
+| the probe's own stream calls  | — (reported via `checks`)             | —   | ignored (`tag`)           |
 | 5xx or transport failure      | `error` "upstream fault"              | `noticeError` + `PoutineNavidromeError` event, **max 5/min per path** | yes |
 | mid-transfer stream abort     | `error` in `routes/subsonic/stream.ts`| `noticeError` | no (headers already succeeded) |
 
-A 4xx is a request-level problem (stale id, bad params), not a sick server — counting it would let one third-party client take the hub out of service. `ERR_STREAM_PREMATURE_CLOSE` is normal listener behavior (skip, seek, tab close) and is never reported (#263).
+A 4xx is a request-level problem (stale id, bad params), not a sick server — counting it would let one third-party client take the hub out of service. An envelope's code is read by the caller, not the observer, so it is treated like a 4xx; the library-wide case is the stream probe's to catch. Probe traffic carries `observerTag` and is skipped, or a probe success on the smallest file would reset the streak while real traffic kept failing. `ERR_STREAM_PREMATURE_CLOSE` is normal listener behavior (skip, seek, tab close) and is never reported (#263).
 
 State changes go out as the `PoutineNavidromeHealth` custom event on each `ok` ↔ `degraded` **edge** (roughly one per incident, not per sample), alongside a `Custom/Poutine/Navidrome/Degraded` gauge recorded on every probe. A background watchdog probes every `NAVIDROME_HEALTH_INTERVAL_MS` (60 s default, unref'd) so an outage reaches New Relic with no Synthetic monitor configured, and the first `/api/health/ready` call is answered warm. It starts in the `isMain` entrypoint, never in `buildApp` — the test harness builds apps against no live Navidrome and must make no network calls on a timer.
 

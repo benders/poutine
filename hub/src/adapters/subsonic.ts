@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { USER_AGENT } from "../version.js";
+import { isSubsonicEnvelopeType } from "./upstream-envelope.js";
 
 const FETCH_HEADERS = { "user-agent": USER_AGENT };
 
@@ -169,6 +170,14 @@ export interface SubsonicCallEvent {
   durationMs: number;
   /** Present when `ok` is false. */
   error?: Error;
+  /**
+   * Binary call answered 200/206 with a Subsonic error envelope instead of
+   * bytes (#285 — stale id, unreadable file). `ok` is false, but the response
+   * is still returned so the caller can map the error code itself.
+   */
+  envelope?: boolean;
+  /** Caller-supplied label, e.g. the health probe marking its own traffic. */
+  tag?: string;
 }
 
 export type SubsonicObserver = (event: SubsonicCallEvent) => void;
@@ -326,7 +335,7 @@ export class SubsonicClient {
     path: string,
     extraParams?: Record<string, string>,
     extraHeaders?: Record<string, string>,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; observerTag?: string },
   ): Promise<Response> {
     const started = Date.now();
     let status: number | null = null;
@@ -343,14 +352,22 @@ export class SubsonicClient {
         );
       }
 
+      // Navidrome reports a failed stream as 200 + an error envelope (#285).
+      // Not a success — but the body is left unread for the caller to parse.
+      const envelope = isSubsonicEnvelopeType(response.headers.get("content-type"));
+
       // Headers-only success: a mid-stream failure is the caller's to observe
       // (`routes/subsonic/stream.ts` reports what its pipeline() sees).
       emit({
         path,
         kind: "binary",
-        ok: true,
+        ok: !envelope,
         status,
         durationMs: Date.now() - started,
+        ...(envelope
+          ? { envelope: true, error: new Error("Subsonic error envelope instead of bytes") }
+          : {}),
+        ...(options?.observerTag ? { tag: options.observerTag } : {}),
       });
       return response;
     } catch (err) {
@@ -361,6 +378,7 @@ export class SubsonicClient {
         status,
         durationMs: Date.now() - started,
         error: err instanceof Error ? err : new Error(String(err)),
+        ...(options?.observerTag ? { tag: options.observerTag } : {}),
       });
       throw err;
     }
@@ -444,6 +462,8 @@ export class SubsonicClient {
       range?: string;
       /** Time-boxes the request — used by the health probe (#277). */
       signal?: AbortSignal;
+      /** Copied onto the observer event (`SubsonicCallEvent.tag`). */
+      observerTag?: string;
     },
   ): Promise<Response> {
     const extra: Record<string, string> = { id };
@@ -462,7 +482,7 @@ export class SubsonicClient {
       "/rest/stream",
       extra,
       headers,
-      params?.signal ? { signal: params.signal } : undefined,
+      { signal: params?.signal, observerTag: params?.observerTag },
     );
   }
 

@@ -38,6 +38,7 @@ import {
   noopTelemetry,
   type Telemetry,
 } from "./telemetry.js";
+import { readEnvelopeError } from "../adapters/upstream-envelope.js";
 
 // ── Tunables ────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,8 @@ const NOTICE_BUDGET_PER_MIN = 5;
 const PROBE_CANDIDATES = 3;
 /** Byte range requested from Navidrome. Small: we only need proof of bytes. */
 const PROBE_RANGE = "bytes=0-65535";
+/** `SubsonicCallEvent.tag` on the probe's own stream calls — see `record()`. */
+const PROBE_TAG = "health-probe";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -195,6 +198,27 @@ export class NavidromeMonitor {
    * Navidrome call, so it stays allocation-light on success.
    */
   record(event: SubsonicCallEvent): void {
+    // The probe reports its own verdict through `checks`. Counting its calls
+    // here too would let a probe success on the smallest file reset the
+    // consecutive counter every interval while real traffic keeps failing.
+    if (event.tag === PROBE_TAG) return;
+
+    if (event.envelope) {
+      // 200 + Subsonic error envelope (#285). The code isn't known here (the
+      // caller reads the body), and the usual cause is one stale id, so it
+      // neither counts as an upstream fault nor resets the stream counter.
+      // A library-wide failure (every id stale, files unreadable) is the
+      // stream probe's job — it does check the code. Cover art misses take
+      // this path all the time: log streams only.
+      if (this.isStreamPath(event.path)) {
+        this.log.warn(
+          { navidromePath: event.path, durationMs: event.durationMs },
+          "Navidrome answered a stream with a Subsonic error envelope",
+        );
+      }
+      return;
+    }
+
     if (event.ok) {
       this.lastSuccessAt = Date.now();
       if (this.isStreamPath(event.path)) this.consecutiveStreamFailures = 0;
@@ -206,7 +230,9 @@ export class NavidromeMonitor {
     this.lastFailure = {
       path: event.path,
       status: event.status,
-      message,
+      // Served by the unauthenticated /api/health/ready — same redaction as
+      // the check details. Logs and APM below keep the full text.
+      message: describeError(message),
       at: new Date().toISOString(),
     };
 
@@ -312,9 +338,16 @@ export class NavidromeMonitor {
    */
   async probe(options?: { force?: boolean }): Promise<HealthReport> {
     if (!options?.force && this.cached && Date.now() - this.cachedAt < this.probeTtlMs) {
-      // Counters are live even on a cached probe — a fault that started after
-      // the probe ran still shows up immediately.
-      return { ...this.cached, observed: this.observed(), cached: true };
+      // Counters are live even on a cached probe, and so is the status they
+      // feed: real-traffic faults that started after the probe ran degrade
+      // readiness now, not at the next probe.
+      const observed = this.observed();
+      return {
+        ...this.cached,
+        status: this.rollup(this.cached.checks, observed),
+        observed,
+        cached: true,
+      };
     }
     if (this.inFlight) return this.inFlight;
 
@@ -341,23 +374,28 @@ export class NavidromeMonitor {
         ? await this.checkStream()
         : { status: "skipped" as CheckStatus, detail: "navidrome ping failed" };
 
+    const checks = { hubDb, navidromePing, navidromeStream };
     const observed = this.observed();
-    const passiveFault =
-      observed.consecutiveStreamFailures >= this.streamFailureThreshold;
-
-    const degraded =
-      hubDb.status === "failed" ||
-      navidromePing.status === "failed" ||
-      navidromeStream.status === "failed" ||
-      passiveFault;
-
     return {
-      status: degraded ? "degraded" : "ok",
-      checks: { hubDb, navidromePing, navidromeStream },
+      status: this.rollup(checks, observed),
+      checks,
       observed,
       probedAt: new Date().toISOString(),
       cached: false,
     };
+  }
+
+  /** Any failed check, or enough consecutive real-traffic stream faults. */
+  private rollup(
+    checks: HealthReport["checks"],
+    observed: ObservedFailures,
+  ): HealthReport["status"] {
+    const failed =
+      checks.hubDb.status === "failed" ||
+      checks.navidromePing.status === "failed" ||
+      checks.navidromeStream.status === "failed" ||
+      observed.consecutiveStreamFailures >= this.streamFailureThreshold;
+    return failed ? "degraded" : "ok";
   }
 
   private checkHubDb(): CheckResult {
@@ -455,13 +493,23 @@ export class NavidromeMonitor {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.streamTimeoutMs);
     try {
-      // No `format` / `maxBitRate`: raw passthrough, so a broken transcoder
-      // isn't mistaken for a broken library and vice versa. Range keeps the
-      // transfer to the head of the file whatever its size.
+      // `format=raw`: passthrough even when the player record has a
+      // transcoding default, so a broken transcoder isn't mistaken for a
+      // broken library and vice versa. Range keeps the transfer to the head
+      // of the file whatever its size.
       const res = await this.client.stream(candidate.remoteId, {
+        format: "raw",
         range: PROBE_RANGE,
         signal: controller.signal,
+        observerTag: PROBE_TAG,
       });
+
+      // Navidrome reports a failed stream (stale id, unreadable file) as 200 +
+      // a Subsonic error envelope — bytes, but not audio (#285).
+      const envelopeError = await readEnvelopeError(res);
+      if (envelopeError) {
+        return `HTTP ${res.status} with Subsonic error ${envelopeError.code ?? "unknown"}`;
+      }
       if (!res.body) return `HTTP ${res.status} with no body`;
 
       const reader = res.body.getReader();

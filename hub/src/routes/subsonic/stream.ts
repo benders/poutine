@@ -7,7 +7,7 @@ import { decodeCoverArtId } from "../../library/cover-art.js";
 import { isAllowedExternalArtUrl } from "../external-art.js";
 import { SubsonicClient } from "../../adapters/subsonic.js";
 import { applyTranscodeRule, buildStreamParams } from "../stream-params.js";
-import { describeEnvelopeError, readEnvelopeError } from "../upstream-envelope.js";
+import { describeEnvelopeError, readEnvelopeError } from "../../adapters/upstream-envelope.js";
 import { effectiveArtSize } from "./art-size.js";
 import { resizeImage } from "../../services/art-resize.js";
 import type { SubsonicRouteContext } from "./types.js";
