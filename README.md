@@ -34,22 +34,22 @@ Leave `PUBLIC_DIR` unset in dev so the hub does not attempt to serve static file
 
 ## Commands
 
-| Command                     | Effect                                          |
-|-----------------------------|-------------------------------------------------|
-| `pnpm dev`                  | Start hub in watch mode                         |
-| `pnpm build`                | Build hub + frontend                            |
-| `pnpm test`                 | Run hub + frontend unit tests (vitest)          |
-| `pnpm test:integration`     | Hub integration tests (merge-worker, DLNA/SSDP) |
-| `pnpm test:federation`      | Three-hub federation integration test           |
-| `pnpm lint`                 | Lint both packages (must report zero output)    |
-| `pnpm lint:boundary`        | Boundary-only lint subset (isolated CI signal)  |
-| `pnpm typecheck`            | Typecheck both packages                         |
+| Command                     | Effect                                                                                     |
+|-----------------------------|--------------------------------------------------------------------------------------------|
+| `pnpm dev`                  | Start hub in watch mode                                                                    |
+| `pnpm build`                | Build hub + frontend                                                                       |
+| `pnpm test`                 | Run hub + frontend unit tests (vitest)                                                     |
+| `pnpm test:integration`     | Hub integration tests (merge-worker, DLNA/SSDP)                                            |
+| `pnpm test:federation`      | Three-hub federation integration test                                                      |
+| `pnpm lint`                 | Lint both packages (must report zero output)                                               |
+| `pnpm lint:boundary`        | Boundary-only lint subset (isolated CI signal)                                             |
+| `pnpm typecheck`            | Typecheck both packages                                                                    |
 | `pnpm verify`               | Typecheck + lint + unit + integration tests — the pre-commit gate; matches CI's `unit` job |
-| `pnpm verify:full`          | `verify` + `test:federation` (for Subsonic/federation changes) |
-| `pnpm hub:up`               | `docker compose up -d --build`                  |
-| `pnpm hub:up:fresh`         | Same, with `--force-recreate`                   |
-| `pnpm hub:logs`             | Follow hub container logs                       |
-| `docker compose up --build` | Full stack via Docker                           |
+| `pnpm verify:full`          | `verify` + `test:federation` (for Subsonic/federation changes)                             |
+| `pnpm hub:up`               | `docker compose up -d --build`, stamping the git SHA into the image                        |
+| `pnpm hub:up:fresh`         | Same, with `--force-recreate`                                                              |
+| `pnpm hub:logs`             | Follow hub container logs                                                                  |
+| `docker compose up --build` | Full stack via Docker                                                                      |
 
 ## Testing
 
@@ -69,11 +69,10 @@ Each Album and Artist detail page has a **Share** button that copies a Poutine s
 
 ```bash
 git pull
-docker compose build hub
-docker compose up -d hub
+pnpm hub:up
 ```
 
-Running containers use the compiled image, not live source — rebuild is required after any code change.
+Running containers use the compiled image, not live source — rebuild is required after any code change. `pnpm hub:up` passes `GIT_SHA` so `/api/health` reports the commit as `gitSha`; a bare `docker compose build` reports `gitSha: null`. Check what's deployed with `curl -s <hub-url>/api/health`.
 
 #### Upgrading to 0.4.0 — password reset required
 

@@ -4,6 +4,7 @@ import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import { loadConfig } from "./config.js";
 import { APP_VERSION, FEDERATION_API_VERSION } from "./version.js";
+import { resolveGitSha } from "./services/git-sha.js";
 import { createDatabase } from "./db/client.js";
 import { SYSTEM_USERNAME } from "./db/system-user.js";
 import { shutdownMergeWorker } from "./library/merge-pipeline.js";
@@ -620,6 +621,10 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     appVersion: APP_VERSION,
   }));
 
+  // Resolved once at startup: the build-time env var, else `git describe`
+  // (issue #287). Doesn't change while the process runs.
+  const gitSha = resolveGitSha();
+
   // Health check (issue #178). Always HTTP 200 so the federation handshake
   // can read peer versions even when Navidrome is briefly down; consumers
   // key on `body.status`. See docs/hub-internals.md route table.
@@ -639,6 +644,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
       status: navidrome === "ok" ? "ok" : "degraded",
       appVersion: APP_VERSION,
       apiVersion: FEDERATION_API_VERSION,
+      gitSha,
       navidrome,
     };
   });
