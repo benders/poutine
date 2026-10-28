@@ -1,3 +1,5 @@
+import { DEFAULT_SHRINK_GUARD_PERCENT } from "./library/shrink-guard.js";
+
 export interface Config {
   port: number;
   host: string;
@@ -13,6 +15,11 @@ export interface Config {
   jwtAccessExpiresIn: string;
   jwtRefreshExpiresIn: string;
   syncIntervalMs: number;
+  /**
+   * Library-shrink guard (#297): a sync that would drop more than this
+   * percentage of an instance's tracks is held instead of applied. 0 disables.
+   */
+  shrinkGuardPercent: number;
   instanceTimeoutMs: number;
   instanceConcurrency: number;
   // Phase 1: bundled Navidrome + peer federation config.
@@ -92,6 +99,12 @@ function requireInProd(name: string, value: string | undefined): string {
   return value || "";
 }
 
+/** 0–100, default 20; anything unparseable falls back to the default. */
+function parseShrinkGuardPercent(raw: string | undefined): number {
+  const n = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : DEFAULT_SHRINK_GUARD_PERCENT;
+}
+
 export function loadConfig(): Config {
   return {
     port: parseInt(process.env.PORT || "3000", 10),
@@ -104,6 +117,9 @@ export function loadConfig(): Config {
     syncIntervalMs: parseInt(
       process.env.SYNC_INTERVAL_MS || String(6 * 60 * 60 * 1000),
       10
+    ),
+    shrinkGuardPercent: parseShrinkGuardPercent(
+      process.env.POUTINE_SHRINK_GUARD_PERCENT,
     ),
     instanceTimeoutMs: parseInt(
       process.env.INSTANCE_TIMEOUT_MS || "10000",

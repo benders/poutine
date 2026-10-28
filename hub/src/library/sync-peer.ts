@@ -27,7 +27,7 @@ export async function syncPeer(
   asUser: string,
   lastFmClient: LastFmClient | null,
   fanartTvClient: FanartTvClient | null,
-  opts: { concurrency?: number; log?: SyncLogger } = {},
+  opts: { concurrency?: number; log?: SyncLogger; shrinkGuardPercent?: number } = {},
 ): Promise<SyncResult> {
   // Build a ProxyFetch for this peer's /proxy/* endpoint.
   //
@@ -53,5 +53,6 @@ export async function syncPeer(
     log,
     lastFmClient,
     fanartTvClient,
+    shrinkGuardPercent: opts.shrinkGuardPercent,
   });
 }

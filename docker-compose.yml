@@ -39,6 +39,9 @@ services:
       # nothing is caught. Set to "false" to reduce it to ping + DB only.
       - NAVIDROME_STREAM_PROBE=${NAVIDROME_STREAM_PROBE:-}
       - NAVIDROME_HEALTH_INTERVAL_MS=${NAVIDROME_HEALTH_INTERVAL_MS:-}
+      # Library-shrink guard (#297): a sync that drops more than this % of an
+      # instance's tracks (or to 0) is held, not applied. 0 disables; default 20.
+      - POUTINE_SHRINK_GUARD_PERCENT=${POUTINE_SHRINK_GUARD_PERCENT:-}
       # Sonos casting (issue #108) + DLNA MediaServer (#175). Off by default.
       # To enable Sonos:
       #   1. Switch the hub to host networking (see compose override below)

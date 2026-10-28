@@ -33,6 +33,8 @@ export interface SyncResult {
   albumCount: number;
   trackCount: number;
   errors: string[];
+  /** Set when the library-shrink guard held this sync's deletions (#297). */
+  shrinkHeld?: string;
 }
 
 /**
@@ -84,7 +86,9 @@ export async function syncAll(
       }
 
       try {
-      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername, lastFmClient ?? null, fanartTvClient ?? null);
+      const peerResult = await syncPeer(db, peer, federatedFetch, ownerUsername, lastFmClient ?? null, fanartTvClient ?? null, {
+        shrinkGuardPercent: config.shrinkGuardPercent,
+      });
       peers.push(peerResult);
       if (peerOperationId && syncOpService) {
         syncOpService.complete(peerOperationId, 0, 0, peerResult.trackCount, peerResult.errors);

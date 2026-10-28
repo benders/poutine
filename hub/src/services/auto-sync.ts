@@ -172,6 +172,7 @@ export class AutoSyncService {
               this.peerDeps.asUser,
               this.lastFmClient ?? null,
               this.fanartTvClient ?? null,
+              { shrinkGuardPercent: this.config.shrinkGuardPercent },
             );
             if (op && this.syncOpService) {
               this.syncOpService.complete(op, 0, 0, result.trackCount, result.errors);

@@ -41,6 +41,7 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `SONOS_DISCOVERY_INTERVAL_MS` | no       | `30000`                             | How often to re-issue SSDP M-SEARCH |
 | `NAVIDROME_STREAM_PROBE`      | no       | `true`                              | Set to `false` to drop the byte-range stream leg from `/api/health/ready` (#277) — readiness then covers hub DB + Navidrome ping only |
 | `NAVIDROME_HEALTH_INTERVAL_MS`| no       | `60000`                             | Cadence of the background health watchdog (#277). Started only from the real entrypoint, never in tests |
+| `POUTINE_SHRINK_GUARD_PERCENT`| no       | `20`                                | Library-shrink guard (#297): hold a sync that drops more than this % of an instance's tracks. `0` disables. See "Library-shrink guard" |
 | `NEW_RELIC_LICENSE_KEY`       | no       | —                                   | Enables the New Relic APM agent (#3) **and** the app-level telemetry bridge (#277). Secret — `.env` only, never committed. Consumed by the agent, `hub/docker-entrypoint.sh` and `services/telemetry.ts` |
 | `NEW_RELIC_APP_NAME`          | no       | `poutine-hub-<instance id>`         | APM entity name; default set in `hub/docker-entrypoint.sh` |
 
@@ -284,6 +285,23 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 - **`ND_SCANNER_PURGEMISSING=never` (set in `docker-compose.yml`, #297; was `always` per #159).** On 0.64.2 a folder unreachable during a scan is marked missing and hidden from the Subsonic API; when it comes back the next scan (quick or full) restores the rows with the **same ids** and Navidrome-side annotations. Verified on 360 tracks / 60 artists over 3 cycles of 20 artists removed, 10 album folders unreadable, and an empty root — every recovery identical ([#296 spike](https://github.com/benders/poutine/issues/296#issuecomment-6479434267), #297). #159's reason for `always` — 0.61.2 never re-walked a missing folder — no longer reproduces. `always` was actively harmful: an empty mount point or **one unreadable top-level folder** (the scanner skips its parent) purged the whole library, `scanStatus.error` stayed empty, and recovered tracks came back with new ids, stranding peers' cached remote ids. **Trade-offs:** files deleted on purpose stay as hidden `missing` rows in Navidrome's DB (Navidrome UI → Missing Files purges them); the hub still sees an outage as a shrinking library — that is the shrink guard's job (below). Switching an existing instance needs no migration.
 - **Version pinned in `docker-compose.yml`** (`${NAVIDROME_IMAGE:-deluan/navidrome:x.y.z}`, #293). Dependabot (`docker-compose` ecosystem, daily, `deluan/navidrome` only) rewrites the default; CI's `federation` job tests the bump. Upstream releases can change Subsonic output under us — 0.64.0 made `coverArt` conditional and re-encoded every Navidrome id; see [pitfalls.md](pitfalls.md#navidrome-ops). Trial another release with `NAVIDROME_IMAGE=deluan/navidrome:<ver> pnpm test:federation`. **Rolling a merged bump out:** back up `navidrome-data`, then `docker compose [-p <proj> --env-file <f>] pull navidrome && … up -d --no-deps navidrome`, then confirm the hub re-syncs and local streams play. A merged bump protects nothing until the container is recreated. **0.63 → 0.64 upgrade:** Navidrome's one-way migration re-encodes most track ids (verified: unified ids, stars, play counts and album Share IDs survive, since they key on metadata hashes / unchanged album ids). Until the hub re-syncs, `track_sources` points at dead remote ids and streams fail — locally until auto-sync sees the post-upgrade scan (one full sync), on peers until their next poll (≤ 6 min). Back up `navidrome-data` first; the migration has no down path. Details: #283, error relay: #285.
 - **No credentials in the DB.** Navidrome creds live in env vars only. Navidrome runs on an internal Docker network; only the hub can reach it.
+
+## Library-shrink guard (#297)
+
+A sync deletes every `instance_*` row it didn't see (`_deleteStale`), so a library that reads as empty — share unmounted, one unreadable top-level folder on Navidrome 0.64, a peer's NAS down — would delete the catalog. `library/shrink-guard.ts` judges each error-free sync **before** deleting, for local and peers alike (`readNavidromeViaProxy`):
+
+| Previous → seen                                      | Result                          |
+|------------------------------------------------------|---------------------------------|
+| first sync, growth, same size                        | applied                         |
+| any size → 0                                         | **held**                        |
+| ≥ 100 tracks, drop > `POUTINE_SHRINK_GUARD_PERCENT`  | **held**                        |
+| < 100 tracks, partial drop                           | applied (normal edit)           |
+
+- **Counts, never ids.** Navidrome re-encodes ids (0.64 migration; `PURGEMISSING=always` recovery), so an id diff would flag a same-size library as a total loss. Previous = `instances.track_count`, which only an applied sync updates.
+- **Held** = no deletions; `last_sync_ok = 0`, `last_sync_message` explains, `shrink_held_at` set, the sync result's `errors` carry it (Activity). `last_synced_at` still advances — AutoSync re-syncs whenever Navidrome's `lastScan` is newer, and would otherwise full-sync every 30 s for the whole outage. Recovery needs a fresh Navidrome scan anyway; the next sync at full size applies and clears the flag.
+- **Override:** `instances.accept_shrink_once` lets the next sync through regardless. Any applied sync clears it, so a stale acceptance can't wave a later outage through.
+- **Local Navidrome unreachable** (`getArtists` fails): the local catalog is kept, instance marked offline. Peers are still wiped on unreachable — deliberate, "prefer empty over stale".
+- Stars and plays survive even an accepted wipe: they key on metadata-derived unified ids, which re-attach when the tracks return (`test/shrink-guard.test.ts`).
 
 ## SQLite notes
 

@@ -319,6 +319,24 @@ function migratePlaylistTracks(db: Database.Database): void {
   `);
 }
 
+/** Issue #297: library-shrink guard state on `instances`. */
+function migrateInstancesShrinkGuard(db: Database.Database): void {
+  const cols = db
+    .prepare("PRAGMA table_info(instances)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("shrink_held_at")) {
+    logMigration("Adding shrink_held_at column to instances table");
+    db.exec("ALTER TABLE instances ADD COLUMN shrink_held_at TEXT");
+  }
+  if (!names.has("accept_shrink_once")) {
+    logMigration("Adding accept_shrink_once column to instances table");
+    db.exec(
+      "ALTER TABLE instances ADD COLUMN accept_shrink_once INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+}
+
 /**
  * Issue #244: peer lifecycle state (active/disabled/tombstoned), orthogonal
  * to the pre-existing liveness `status` column. Additive columns on
@@ -392,6 +410,7 @@ export function createDatabase(dbPath: string): Database.Database {
 
   // Issue #244: add instances.lifecycle/lifecycle_changed_at + peer_tombstones
   migrateInstancesLifecycle(db);
+  migrateInstancesShrinkGuard(db);
 
   return db;
 }
