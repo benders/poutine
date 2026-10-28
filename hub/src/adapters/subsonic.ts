@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { USER_AGENT } from "../version.js";
+import { isSubsonicEnvelopeType } from "./upstream-envelope.js";
 
 const FETCH_HEADERS = { "user-agent": USER_AGENT };
 
@@ -149,6 +150,69 @@ interface SubsonicResponseEnvelope {
   };
 }
 
+// ── Call observer (issue #277) ───────────────────────────────────────────────
+
+/**
+ * One completed call to the local Navidrome, success or failure.
+ *
+ * `SubsonicClient` is Hub → Navidrome only (the Hub/Player boundary forbids
+ * Player code from importing it, and peer traffic goes through
+ * `federatedFetch`), so every event here describes the *local* Navidrome.
+ */
+export interface SubsonicCallEvent {
+  /** Subsonic path, e.g. `/rest/stream`. Never carries auth params. */
+  path: string;
+  /** `json` for envelope calls, `binary` for raw byte calls (stream, art). */
+  kind: "json" | "binary";
+  ok: boolean;
+  /** HTTP status when a response arrived; null on a transport-level failure. */
+  status: number | null;
+  durationMs: number;
+  /** Present when `ok` is false. */
+  error?: Error;
+  /**
+   * Binary call answered 200/206 with a Subsonic error envelope instead of
+   * bytes (#285 — stale id, unreadable file). `ok` is false, but the response
+   * is still returned so the caller can map the error code itself.
+   */
+  envelope?: boolean;
+  /** Caller-supplied label, e.g. the health probe marking its own traffic. */
+  tag?: string;
+}
+
+export type SubsonicObserver = (event: SubsonicCallEvent) => void;
+
+// Process-wide, because a hub has exactly one local Navidrome while
+// `SubsonicClient` is constructed per-request in several routes. Set once at
+// boot (`server.ts` → NavidromeMonitor) and cleared on app close so tests
+// don't leak an observer bound to a closed app.
+let callObserver: SubsonicObserver | null = null;
+
+/** Install (or with `null`, remove) the process-wide call observer. */
+export function setSubsonicObserver(observer: SubsonicObserver | null): void {
+  callObserver = observer;
+}
+
+/**
+ * Remove `observer` only if it is the one currently installed.
+ *
+ * Tests build and close several apps in one process; an unconditional clear on
+ * close would silently unhook the observer a *later* app had installed. Pass
+ * the exact function the owning app registered.
+ */
+export function clearSubsonicObserver(observer: SubsonicObserver): void {
+  if (callObserver === observer) callObserver = null;
+}
+
+function emit(event: SubsonicCallEvent): void {
+  if (!callObserver) return;
+  try {
+    callObserver(event);
+  } catch {
+    // An observer must never be able to fail a Navidrome call.
+  }
+}
+
 // ── Client ──────────────────────────────────────────────────────────────────
 
 export interface SubsonicClientConfig {
@@ -212,33 +276,55 @@ export class SubsonicClient {
     extraParams?: Record<string, string>,
     options?: { signal?: AbortSignal },
   ): Promise<Record<string, unknown>> {
-    const url = this.buildUrl(path, extraParams);
-    const response = await fetch(url, {
-      headers: FETCH_HEADERS,
-      signal: options?.signal,
-    });
+    const started = Date.now();
+    let status: number | null = null;
+    try {
+      const url = this.buildUrl(path, extraParams);
+      const response = await fetch(url, {
+        headers: FETCH_HEADERS,
+        signal: options?.signal,
+      });
+      status = response.status;
 
-    if (!response.ok) {
-      throw new Error(
-        `Subsonic HTTP error: ${response.status} ${response.statusText}`,
-      );
+      if (!response.ok) {
+        throw new Error(
+          `Subsonic HTTP error: ${response.status} ${response.statusText}`,
+        );
+      }
+
+      const body = (await response.json()) as SubsonicResponseEnvelope;
+      const envelope = body["subsonic-response"];
+
+      if (!envelope) {
+        throw new Error("Invalid Subsonic response: missing subsonic-response envelope");
+      }
+
+      if (envelope.status === "failed") {
+        const err = envelope.error;
+        throw new Error(
+          `Subsonic error ${err?.code ?? "unknown"}: ${err?.message ?? "Unknown error"}`,
+        );
+      }
+
+      emit({
+        path,
+        kind: "json",
+        ok: true,
+        status,
+        durationMs: Date.now() - started,
+      });
+      return envelope as unknown as Record<string, unknown>;
+    } catch (err) {
+      emit({
+        path,
+        kind: "json",
+        ok: false,
+        status,
+        durationMs: Date.now() - started,
+        error: err instanceof Error ? err : new Error(String(err)),
+      });
+      throw err;
     }
-
-    const body = (await response.json()) as SubsonicResponseEnvelope;
-    const envelope = body["subsonic-response"];
-
-    if (!envelope) {
-      throw new Error("Invalid Subsonic response: missing subsonic-response envelope");
-    }
-
-    if (envelope.status === "failed") {
-      const err = envelope.error;
-      throw new Error(
-        `Subsonic error ${err?.code ?? "unknown"}: ${err?.message ?? "Unknown error"}`,
-      );
-    }
-
-    return envelope as unknown as Record<string, unknown>;
   }
 
   /**
@@ -249,19 +335,53 @@ export class SubsonicClient {
     path: string,
     extraParams?: Record<string, string>,
     extraHeaders?: Record<string, string>,
+    options?: { signal?: AbortSignal; observerTag?: string },
   ): Promise<Response> {
-    const url = this.buildUrl(path, extraParams);
-    const headers: Record<string, string> = { ...FETCH_HEADERS, ...extraHeaders };
-    const response = await fetch(url, { headers });
+    const started = Date.now();
+    let status: number | null = null;
+    try {
+      const url = this.buildUrl(path, extraParams);
+      const headers: Record<string, string> = { ...FETCH_HEADERS, ...extraHeaders };
+      const response = await fetch(url, { headers, signal: options?.signal });
+      status = response.status;
 
-    // 200 OK and 206 Partial Content are both success for byte-range streams.
-    if (!response.ok && response.status !== 206) {
-      throw new Error(
-        `Subsonic HTTP error: ${response.status} ${response.statusText}`,
-      );
+      // 200 OK and 206 Partial Content are both success for byte-range streams.
+      if (!response.ok && response.status !== 206) {
+        throw new Error(
+          `Subsonic HTTP error: ${response.status} ${response.statusText}`,
+        );
+      }
+
+      // Navidrome reports a failed stream as 200 + an error envelope (#285).
+      // Not a success — but the body is left unread for the caller to parse.
+      const envelope = isSubsonicEnvelopeType(response.headers.get("content-type"));
+
+      // Headers-only success: a mid-stream failure is the caller's to observe
+      // (`routes/subsonic/stream.ts` reports what its pipeline() sees).
+      emit({
+        path,
+        kind: "binary",
+        ok: !envelope,
+        status,
+        durationMs: Date.now() - started,
+        ...(envelope
+          ? { envelope: true, error: new Error("Subsonic error envelope instead of bytes") }
+          : {}),
+        ...(options?.observerTag ? { tag: options.observerTag } : {}),
+      });
+      return response;
+    } catch (err) {
+      emit({
+        path,
+        kind: "binary",
+        ok: false,
+        status,
+        durationMs: Date.now() - started,
+        error: err instanceof Error ? err : new Error(String(err)),
+        ...(options?.observerTag ? { tag: options.observerTag } : {}),
+      });
+      throw err;
     }
-
-    return response;
   }
 
   // ── API methods ─────────────────────────────────────────────────────────
@@ -340,6 +460,10 @@ export class SubsonicClient {
       timeOffset?: number;
       estimateContentLength?: boolean;
       range?: string;
+      /** Time-boxes the request — used by the health probe (#277). */
+      signal?: AbortSignal;
+      /** Copied onto the observer event (`SubsonicCallEvent.tag`). */
+      observerTag?: string;
     },
   ): Promise<Response> {
     const extra: Record<string, string> = { id };
@@ -354,7 +478,12 @@ export class SubsonicClient {
     const headers: Record<string, string> | undefined = params?.range
       ? { range: params.range }
       : undefined;
-    return this.rawRequest("/rest/stream", extra, headers);
+    return this.rawRequest(
+      "/rest/stream",
+      extra,
+      headers,
+      { signal: params?.signal, observerTag: params?.observerTag },
+    );
   }
 
   async getCoverArt(id: string, size?: number): Promise<Response> {

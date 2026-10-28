@@ -7,7 +7,7 @@ import { decodeCoverArtId } from "../../library/cover-art.js";
 import { isAllowedExternalArtUrl } from "../external-art.js";
 import { SubsonicClient } from "../../adapters/subsonic.js";
 import { applyTranscodeRule, buildStreamParams } from "../stream-params.js";
-import { describeEnvelopeError, readEnvelopeError } from "../upstream-envelope.js";
+import { describeEnvelopeError, readEnvelopeError } from "../../adapters/upstream-envelope.js";
 import { effectiveArtSize } from "./art-size.js";
 import { resizeImage } from "../../services/art-resize.js";
 import type { SubsonicRouteContext } from "./types.js";
@@ -279,7 +279,16 @@ try {
       if (ecl === "true") opts.estimateContentLength = true;
       if (rangeHeader) opts.range = rangeHeader;
       response = await client.stream(best.remote_id, opts);
-    } catch {
+    } catch (err) {
+      // Log the upstream detail. Swallowing it here is what made the #277
+      // outage invisible: Navidrome 500s on every stream while /rest/ping
+      // stays green, and the hub reported only a generic 502. The adapter's
+      // observer (NavidromeMonitor) has already counted the fault and
+      // reported it to APM — this line is the local breadcrumb.
+      request.log.error(
+        { err, navidromeTrackId: best.remote_id, trackId },
+        "Navidrome stream request failed",
+      );
       if (streamOpId) app.streamTracking.finish(streamOpId, 0, "Stream error");
       sendBinaryError(reply, 502, "Stream error");
       return;
@@ -302,7 +311,14 @@ try {
           headers: rangeHeader ? { range: rangeHeader } : undefined,
         },
       );
-    } catch {
+    } catch (err) {
+      // Peer-side detail stays local (never echoed to the caller, #156), but
+      // it must be logged — a peer that stops serving bytes is as silent a
+      // failure as a sick local Navidrome was in #277.
+      request.log.error(
+        { err, peerId: best.instance_id, trackId },
+        "Peer stream request failed",
+      );
       if (streamOpId) app.streamTracking.finish(streamOpId, 0, "Peer stream error");
       sendBinaryError(reply, 502, "Peer stream error");
       return;
@@ -310,6 +326,10 @@ try {
   }
 
   if (!response.body) {
+    request.log.error(
+      { trackId, sourceInstance: best.instance_id, upstreamStatus: response.status },
+      "Upstream stream response had no body",
+    );
     if (streamOpId) app.streamTracking.finish(streamOpId, 0, "Empty response from upstream");
     sendBinaryError(reply, 502, "Empty response from upstream");
     return;
@@ -394,13 +414,34 @@ try {
     if (streamOpId) app.streamTracking.finish(streamOpId, bytesTransferred, null);
   } catch (err: unknown) {
     const nodeErr = err as NodeJS.ErrnoException;
+    const premature = nodeErr.code === "ERR_STREAM_PREMATURE_CLOSE";
     if (streamOpId) {
       app.streamTracking.finish(
         streamOpId,
         bytesTransferred,
-        nodeErr.code === "ERR_STREAM_PREMATURE_CLOSE"
-          ? null
-          : (nodeErr.message ?? "stream error"),
+        premature ? null : (nodeErr.message ?? "stream error"),
+      );
+    }
+    if (!premature) {
+      // A genuine mid-transfer failure: bytes started flowing and then
+      // stopped. The adapter observer can't see this (it only watches the
+      // response headers), so report it here (#277).
+      request.log.error(
+        {
+          err,
+          trackId,
+          sourceInstance: best.instance_id,
+          bytesTransferred,
+        },
+        "Stream aborted mid-transfer",
+      );
+      app.telemetry.noticeError(
+        nodeErr instanceof Error ? nodeErr : new Error(String(err)),
+        {
+          streamSource: best.instance_id,
+          bytesTransferred,
+          errCode: nodeErr.code ?? "unknown",
+        },
       );
     }
   }

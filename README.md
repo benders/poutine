@@ -141,6 +141,68 @@ The hub can report to [New Relic APM](https://newrelic.com) — transactions, di
 
 The APM entity is named `poutine-hub-<POUTINE_INSTANCE_ID>` (override with `NEW_RELIC_APP_NAME`). Remove the key and restart to disable — without it, no agent code loads at all.
 
+With the key set, the hub also reports Navidrome faults it handles (issue #277) — things APM cannot see on its own because the hub catches them:
+
+- **Errors:** every failed local Navidrome call that is a server fault (5xx or a transport error) arrives as an APM error with the Subsonic path, HTTP status and duration attached (capped at 5/min per path so one outage doesn't flood the error channel). 4xx responses are logged but not reported — they are request-level, not a sick server.
+- **Health transitions:** a `PoutineNavidromeHealth` custom event on each `ok` ↔ `degraded` edge, plus a `Custom/Poutine/Navidrome/Degraded` gauge. A background watchdog probes every 60 s, so an outage shows up in New Relic even with no Synthetic monitor configured.
+
+Useful alert conditions:
+
+```sql
+SELECT count(*) FROM PoutineNavidromeHealth WHERE status = 'degraded' FACET appName
+```
+
+### Health checks and Synthetic monitoring (issue #277)
+
+Three unauthenticated URLs, for three different consumers:
+
+| URL                 | Status code        | Use it for                                                                        |
+|---------------------|--------------------|-----------------------------------------------------------------------------------|
+| `/api/health/ready` | **200 ok / 503 bad** | Synthetic monitors, Kubernetes `readinessProbe`, load-balancer health, the Compose healthcheck |
+| `/api/health/live`  | always 200         | Kubernetes `livenessProbe` — process liveness only                                |
+| `/api/health`       | always 200         | Peer hubs (federation handshake reads the versions) and humans; key on `body.status` |
+
+`/api/health/ready` is the one that tells you whether **audio actually works**: it reads the hub DB, pings Navidrome, and pulls a 64 KB byte range off a real track from Navidrome's stream endpoint, asserting bytes come back. That last check exists because the failure this was built for pinged perfectly healthy while streaming nothing. Results are cached for 30 s, so polling it every 10 s is fine.
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' http://localhost:3000/api/health/ready   # 200 or 503
+curl -sS http://localhost:3000/api/health/ready | jq
+```
+
+```json
+{
+  "status": "degraded",
+  "checks": {
+    "hubDb": { "status": "ok", "durationMs": 0 },
+    "navidromePing": { "status": "ok", "durationMs": 11 },
+    "navidromeStream": { "status": "failed", "detail": "3 candidate track(s) failed — Subsonic HTTP error: 500 Internal Server Error; ...", "durationMs": 42 }
+  },
+  "observed": { "recentFailures": 18, "consecutiveStreamFailures": 7, "lastFailure": { "path": "/rest/stream", "status": 500, "message": "...", "at": "2026-09-12T04:15:00.000Z" }, "lastSuccessAt": "2026-09-12T04:02:11.000Z" },
+  "probedAt": "2026-09-12T04:15:01.000Z",
+  "cached": false
+}
+```
+
+A `navidromeStream` of `skipped` is not a fault — it means the ping already failed, the library has no local tracks yet, or the probe is switched off with `NAVIDROME_STREAM_PROBE=false`. An empty library is legitimately ready.
+
+Docker Compose keys the hub container's healthcheck to this URL, so `docker compose ps` shows `unhealthy` when audio is broken. Nothing restarts automatically — a Navidrome fault should not bounce the hub and kill in-flight streams. To restart by hand:
+
+```bash
+docker compose restart navidrome   # most Navidrome faults clear here
+docker compose logs --tail 200 navidrome
+```
+
+Kubernetes:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /api/health/live, port: 3000 }
+readinessProbe:
+  httpGet: { path: /api/health/ready, port: 3000 }
+  periodSeconds: 30
+  failureThreshold: 2
+```
+
 ### Casting to Sonos (optional, issue #108)
 
 Lets the bottom-of-screen player stream to Sonos devices on the LAN. Requires host networking for SSDP multicast.
@@ -169,7 +231,7 @@ docker cp poutine-hub-1:/app/data/poutine_password_key data-native/
 
 # Then:
 pnpm hub:start         # start Navidrome container + hub native process
-pnpm hub:status        # PID, /api/health, Navidrome reachability
+pnpm hub:status        # PID, /api/health, /api/health/ready, Navidrome reachability
 pnpm hub:restart       # rebuild hub+frontend and bounce
 pnpm hub:logs          # last 200 lines of the hub log
 pnpm hub:stop          # stop hub (Navidrome stays up)

@@ -39,7 +39,9 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `FANARTTV_API_URL`            | no       | `https://webservice.fanart.tv/v3.2` | Override fanart.tv base URL (tests, mirrors) |
 | `ART_CACHE_MAX_BYTES`         | no       | `1 GB` (1073741824)                 | Hard cap for the on-disk image cache. Applied on every boot, overrides the persisted `art_cache_max_bytes` setting. Test clusters use `10485760` (10 MB) |
 | `SONOS_DISCOVERY_INTERVAL_MS` | no       | `30000`                             | How often to re-issue SSDP M-SEARCH |
-| `NEW_RELIC_LICENSE_KEY`       | no       | —                                   | Enables the New Relic APM agent (#3). Secret — `.env` only, never committed. Consumed by the agent + `hub/docker-entrypoint.sh`, not `config.ts` |
+| `NAVIDROME_STREAM_PROBE`      | no       | `true`                              | Set to `false` to drop the byte-range stream leg from `/api/health/ready` (#277) — readiness then covers hub DB + Navidrome ping only |
+| `NAVIDROME_HEALTH_INTERVAL_MS`| no       | `60000`                             | Cadence of the background health watchdog (#277). Started only from the real entrypoint, never in tests |
+| `NEW_RELIC_LICENSE_KEY`       | no       | —                                   | Enables the New Relic APM agent (#3) **and** the app-level telemetry bridge (#277). Secret — `.env` only, never committed. Consumed by the agent, `hub/docker-entrypoint.sh` and `services/telemetry.ts` |
 | `NEW_RELIC_APP_NAME`          | no       | `poutine-hub-<instance id>`         | APM entity name; default set in `hub/docker-entrypoint.sh` |
 
 Sonos and DLNA are not env-gated — toggles, volume cap, `lan_url`, friendly name all live in `player.db.player_settings` and are runtime-mutable from the Admin page. Details: [sonos.md#runtime-toggle-184](sonos.md#runtime-toggle-184). `hub/src/config.ts` is the authoritative env-var list.
@@ -52,10 +54,36 @@ Sonos and DLNA are not env-gated — toggles, volume cap, `lan_url`, friendly na
 | Proxy      | `/proxy/*`                                            | Ed25519, JWT, or Subsonic `u+p`/`u+t+s` (unified — see below)          | Authenticated transparent proxy to Navidrome |
 | Federation | `/federation/*`                                       | Ed25519-signed (see [federation-api.md](federation-api.md))            | Peer-to-peer only |
 | Admin      | `/admin/*`, `/api/admin/hub/*`, `/api/admin/player/*` | JWT (see [authentication.md](authentication.md))                       | Three partitioned mounts (#226). `/admin/*` is auth-only (refresh cookie path). Hub/Player admin handlers live only at their matching namespace — cross-namespace requests 404. See [system-architecture.md](system-architecture.md#admin-namespaces). |
-| Health     | `/api/health`                                         | None                                                                   | `{ status, appVersion, apiVersion, gitSha, navidrome }` — see note below |
+| Health     | `/api/health`                                         | None                                                                   | `{ status, appVersion, apiVersion, gitSha, navidrome, navidromeStream, recentNavidromeFailures }` — always HTTP 200, see note below |
+| Liveness   | `/api/health/live`                                     | None                                                                   | `{ status, appVersion, uptimeSeconds }` — process liveness only, always HTTP 200 (#277) |
+| Readiness  | `/api/health/ready`                                    | None                                                                   | `{ status, checks, observed, probedAt, cached }` — **HTTP 503 when degraded** (#277) |
 | Version    | `/api/version`                                        | None                                                                   | `{ appVersion, buildId }` — SPA auto-update poll target (#196), see note below |
 
-`/api/health` probes the local Navidrome via Subsonic `/rest/ping` (~1 s budget, `AbortSignal.timeout`) and reports `navidrome: "ok" | "unreachable"` plus a rolled-up `status: "ok" | "degraded"`. Always returns HTTP 200 so the federation handshake (which only reads `apiVersion` / `appVersion` from a peer's `/api/health`) keeps working when a peer's Navidrome is briefly down. Operators and LB / k8s probes must key on `body.status`, not the HTTP status (issue #178).
+### Health, liveness, readiness (#178, #277)
+
+Three routes, three jobs — all unauthenticated, all in `hub/src/routes/health.ts`. Don't collapse them.
+
+| Route               | HTTP status       | Cost per call                                   | Wire it to                               |
+|---------------------|-------------------|-------------------------------------------------|------------------------------------------|
+| `/api/health`       | always 200        | one Navidrome `/rest/ping` (~1 s budget)        | peers (handshake), humans, SPA-free polls |
+| `/api/health/live`  | always 200        | nothing                                         | k8s `livenessProbe`                      |
+| `/api/health/ready` | 200 / **503**     | TTL-cached deep probe (see below)               | Synthetics, k8s `readinessProbe`, LB     |
+
+`/api/health` probes the local Navidrome via Subsonic `/rest/ping` (~1 s budget, `AbortSignal.timeout`) and reports `navidrome: "ok" | "unreachable"`, plus (since #277) `navidromeStream` — the stream verdict from the last deep probe, `"unknown"` until one runs — and `recentNavidromeFailures`. `status` rolls all of that up. It always returns HTTP 200 so the federation handshake (which only reads `apiVersion` / `appVersion` from a peer's `/api/health`) keeps working when a peer's Navidrome is briefly down; consumers key on `body.status`, never the HTTP status (issue #178). It never probes the stream path itself — cost is unchanged from #178.
+
+`/api/health/live` answers from the event loop and touches no dependency. A sick Navidrome must NOT fail it: under k8s that would restart the hub over a dependency fault and kill every in-flight stream.
+
+`/api/health/ready` is the probe URL for Synthetic monitoring and orchestrators — the one whose **HTTP status** means something. It returns 503 + `Retry-After: 30` when the hub cannot serve audio. Checks:
+
+| Check             | How                                                                                                                                                               | `skipped` when                                                         |
+|-------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------|
+| `hubDb`           | `SELECT 1` on `hub.db`                                                                                                                                            | never                                                                  |
+| `navidromePing`   | Subsonic `/rest/ping`, 2 s budget                                                                                                                                 | never                                                                  |
+| `navidromeStream` | `format=raw`, `Range: bytes=0-65535` pull off `/rest/stream` for a real local preferred track; ≥ 1 byte, not a Subsonic error envelope (#285); up to 3 candidates | ping already failed · no local tracks · `NAVIDROME_STREAM_PROBE=false` |
+
+Plus a passive signal: `observed.consecutiveStreamFailures ≥ 5` (real-traffic upstream faults, see Observability below) degrades readiness even when the synthetic probe passes. Probe results are TTL-cached 30 s and concurrent callers share one run, so a tight poll cadence costs Navidrome nothing extra — `cached: true` says the checks were reused; `observed` and the `status` it feeds are always live. A stale-id envelope on every candidate (e.g. after a Navidrome migration re-encodes ids, until the hub re-syncs) is a real outage and degrades readiness.
+
+Why the stream leg exists: the #277 outage had a perfectly healthy `/rest/ping` and a completely broken `/rest/stream`. A ping-only check is blind to it, and so is APM. An empty library is **not** a fault — `skipped` keeps a fresh instance ready.
 
 `gitSha` (#287) is the commit the hub was built from — full SHA, `-dirty` suffix if tracked files were modified, `null` if unknown. Resolved once at startup (`hub/src/services/git-sha.ts`): `POUTINE_GIT_SHA` env, else `git describe` on the checkout (dev / native hub). Docker can't run git (`.git` dockerignored, no git in the slim image), so the image bakes it in via the `GIT_SHA` build arg — `pnpm hub:up` and `release.yml` pass it; a bare `docker compose build` doesn't, and reports `null`. Informational only: peers don't read it.
 
@@ -281,9 +309,9 @@ Run the latest patch release of a supported Node LTS line. GitHub security alert
 - **CI / release:** `setup-node` `node-version: "26"` + `check-latest: true` — always the newest 26.x, no second pin to drift.
 - **Local:** `package.json` `engines.node` (`>=26.12.1 <27`) + `.npmrc` `engine-strict=true` — `pnpm install` refuses other majors and anything below the floor. Dependabot does not bump the floor; raise it by hand after a security release worth enforcing locally.
 
-## Observability (New Relic APM, #3)
+## Observability (New Relic APM, #3 + #277)
 
-Optional, key-gated, zero app-code integration — the agent attaches at the process level, not from `server.ts`.
+Optional and key-gated. #3 attaches the agent at the process level; #277 adds a narrow app-level seam for failures the hub *handles* (which the agent cannot see on its own).
 
 - **Wiring:** `hub/docker-entrypoint.sh` (container CMD). If `NEW_RELIC_LICENSE_KEY` is set it execs `node --import newrelic/esm-loader.mjs -r newrelic hub/dist/server.js`; otherwise plain `node hub/dist/server.js` (no agent loaded at all). The hub is ESM, so both the loader hook and the CJS preload are required (`newrelic` README, "ES Modules").
 - **Config is env-only** (`NEW_RELIC_NO_CONFIG_FILE=true` set by the entrypoint) — no `newrelic.cjs` in the repo or image. App name defaults to `poutine-hub-<POUTINE_INSTANCE_ID>` so each federated hub is its own APM entity. Agent log goes to stdout (`NEW_RELIC_LOG=stdout`).
@@ -292,6 +320,34 @@ Optional, key-gated, zero app-code integration — the agent attaches at the pro
 - **Native addons:** `@newrelic/native-metrics` and `@newrelic/fn-inspect` are in root `pnpm.onlyBuiltDependencies` (see Docker → Native deps). They compile in the `prod-deps` Docker stage; if compilation ever fails the agent still runs, just without VM metrics.
 - **Merge worker:** workers inherit `execArgv`, so the loader also loads in `merge-worker.ts`. The agent detects non-main threads and stubs itself — harmless, but don't "fix" the worker by stripping `execArgv` without checking #3.
 - **Dev / native runs:** agent is Docker-entrypoint-gated, so `pnpm dev` and `scripts/hub-native-macos.sh` never load it. To profile locally, replicate the entrypoint's env + flags by hand.
+
+### App-level telemetry (#277)
+
+`services/telemetry.ts` is the only place that touches the agent API. It resolves once at boot and is exposed as `app.telemetry`:
+
+- **Same gate as the entrypoint** — no `NEW_RELIC_LICENSE_KEY`, no `import("newrelic")`, every call a no-op. Nothing downstream re-checks.
+- **Never throws** — a broken agent must not fail a request; each call is wrapped.
+- Three calls only (`noticeError`, `recordCustomEvent`, `recordMetric`), typed by the local ambient declaration in `src/types/newrelic.d.ts` (the package ships none and `@types/newrelic` lags). Widen both together.
+- The import stays a **bare specifier**: it resolves from `hub/dist/services/` → `hub/node_modules/newrelic`, unlike the entrypoint's `-r` flag which resolves from the cwd (`/app`) and therefore needs a path specifier. Don't make one match the other.
+
+### Navidrome fault reporting (#277)
+
+`services/navidrome-monitor.ts` is registered as the process-wide `SubsonicClient` observer (`adapters/subsonic.ts#setSubsonicObserver`), so every local Navidrome call — from any of the per-request clients — is seen in one place:
+
+| Outcome                       | Log                                   | APM | Counts toward degradation |
+|-------------------------------|---------------------------------------|-----|---------------------------|
+| success                       | —                                     | —   | resets the stream streak  |
+| 4xx                           | `warn` "client-level"                 | —   | no                        |
+| 200 + Subsonic error envelope | `warn` (stream paths only)            | —   | no, and no streak reset   |
+| the probe's own stream calls  | — (reported via `checks`)             | —   | ignored (`tag`)           |
+| 5xx or transport failure      | `error` "upstream fault"              | `noticeError` + `PoutineNavidromeError` event, **max 5/min per path** | yes |
+| mid-transfer stream abort     | `error` in `routes/subsonic/stream.ts`| `noticeError` | no (headers already succeeded) |
+
+A 4xx is a request-level problem (stale id, bad params), not a sick server — counting it would let one third-party client take the hub out of service. An envelope's code is read by the caller, not the observer, so it is treated like a 4xx; the library-wide case is the stream probe's to catch. Probe traffic carries `observerTag` and is skipped, or a probe success on the smallest file would reset the streak while real traffic kept failing. `ERR_STREAM_PREMATURE_CLOSE` is normal listener behavior (skip, seek, tab close) and is never reported (#263).
+
+State changes go out as the `PoutineNavidromeHealth` custom event on each `ok` ↔ `degraded` **edge** (roughly one per incident, not per sample), alongside a `Custom/Poutine/Navidrome/Degraded` gauge recorded on every probe. A background watchdog probes every `NAVIDROME_HEALTH_INTERVAL_MS` (60 s default, unref'd) so an outage reaches New Relic with no Synthetic monitor configured, and the first `/api/health/ready` call is answered warm. It starts in the `isMain` entrypoint, never in `buildApp` — the test harness builds apps against no live Navidrome and must make no network calls on a timer.
+
+Alerting suggestions: NRQL on `PoutineNavidromeHealth WHERE status = 'degraded'`, or a Synthetic monitor on `/api/health/ready` (non-2xx = alert).
 
 ## Release process
 

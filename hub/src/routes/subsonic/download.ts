@@ -4,7 +4,7 @@ import { ZipFile } from "yazl";
 import type { Peer } from "../../federation/peers.js";
 import { sendBinaryError, decodeId } from "../subsonic-response.js";
 import { SubsonicClient } from "../../adapters/subsonic.js";
-import { readEnvelopeError } from "../upstream-envelope.js";
+import { readEnvelopeError } from "../../adapters/upstream-envelope.js";
 import type { SubsonicRouteContext, TrackRow } from "./types.js";
 
 // ── /rest/download (#35) ──────────────────────────────────────────────────────

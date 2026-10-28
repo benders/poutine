@@ -3,7 +3,7 @@ import {
   isSubsonicEnvelopeType,
   parseSubsonicEnvelopeError,
   readEnvelopeError,
-} from "../src/routes/upstream-envelope.js";
+} from "../src/adapters/upstream-envelope.js";
 
 describe("isSubsonicEnvelopeType", () => {
   it.each([
