@@ -4,13 +4,12 @@
   "version": "0.5.6",
   "description": "Federated music player - merges personal music collections into a unified library",
   "engines": {
-    "node": "^22.23.4"
+    "node": ">=22.23.4 <23"
   },
   "scripts": {
     "dev": "pnpm --filter hub dev",
     "build": "pnpm --filter hub build && pnpm --filter frontend build",
-    "test": "pnpm test:scripts && pnpm --filter hub test && pnpm --filter frontend test",
-    "test:scripts": "node --test scripts/*.test.mjs",
+    "test": "pnpm --filter hub test && pnpm --filter frontend test",
     "lint": "pnpm --filter hub lint && pnpm --filter frontend lint",
     "lint:boundary": "pnpm --filter hub lint:boundary && pnpm --filter frontend lint:boundary",
     "typecheck": "pnpm --filter hub typecheck && pnpm --filter frontend typecheck",

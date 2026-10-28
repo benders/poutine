@@ -23,11 +23,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version: "22"
+          check-latest: true
           cache: "pnpm"
-
-      - name: Node.js CVE gate (#290)
-        run: node scripts/check-node-version.mjs
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -58,7 +56,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version: "22"
+          check-latest: true
           cache: "pnpm"
 
       - name: Install dependencies

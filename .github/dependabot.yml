@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Node base image (hub/Dockerfile). Every Node patch release becomes a PR —
+  # the only signal we get for runtime CVEs, which GitHub security alerts don't cover (#290).
+  # Majors are manual: native addons need a matching ABI (#292).
+  - package-ecosystem: docker
+    directory: /hub
+    schedule:
+      interval: daily
+    ignore:
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps)"

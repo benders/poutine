@@ -264,20 +264,19 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 
 ## Docker
 
-- **`hub/Dockerfile`** — multi-stage: `deps` (all deps) → `prod-deps` (prod-only deps, compiles native addons) → `build` (`tsc` + `vite build` + copy sql) → `runtime` (`node:<.node-version>-slim`, no build tools — copies pre-built node_modules from `prod-deps`). Frontend `dist/` copied into `hub/public/`. `PUBLIC_DIR=/app/hub/public` baked in. `deps` and `prod-deps` run independently and can be parallelized by BuildKit.
+- **`hub/Dockerfile`** — multi-stage: `deps` (all deps) → `prod-deps` (prod-only deps, compiles native addons) → `build` (`tsc` + `vite build` + copy sql) → `runtime` (exact `node:22.x.y-slim` tag, same as `base`, no build tools — copies pre-built node_modules from `prod-deps`). Frontend `dist/` copied into `hub/public/`. `PUBLIC_DIR=/app/hub/public` baked in. `deps` and `prod-deps` run independently and can be parallelized by BuildKit.
 - **`docker-compose.yml`** — hub (port `${POUTINE_HOST_PORT:-3000}`) + navidrome (internal-only, no published ports). Single service for both API and SPA. (`PEERS_CONFIG_HOST_PATH` is no longer read since v0.5.0.)
 - **Native deps:** `better-sqlite3` needs `python3 make g++`. Root `package.json` has `pnpm.onlyBuiltDependencies` to allow its postinstall scripts. pnpm v10+ ignores build scripts by default — any new native dep must be added there.
 - **Rebuild after source changes.** Running containers use the compiled image, not live source. `docker compose build <service> && docker compose up -d <service>` or stale routes/assets will be served.
 
 ## Node.js version policy (#290)
 
-Never run a Node release that a newer security release on its line has fixed, or a line past end-of-life.
+Run the latest patch release of a supported Node LTS line. GitHub security alerts cover lockfile packages only, never the Node runtime — so currency is the control.
 
-- **Source of truth:** `.node-version` — one exact release (e.g. `22.23.4`), never a bare major. Followed by `hub/Dockerfile` (both `FROM node:<ver>-slim` stages), `package.json` `engines.node` (`^<ver>`), and `actions/setup-node` (`node-version-file`) in `ci.yml` / `release.yml` / `node-cve.yml`. `.npmrc` `engine-strict=true` makes `pnpm install` refuse any other Node.
-- **Gate:** `scripts/check-node-version.mjs`. Fails (exit 1) when `nodejs.org/dist/index.json` lists a release with `security: true` newer than the pin on the same major, when the major is past `end` in `nodejs/Release` `schedule.json`, or when the pins above drift. Warns from 180 days before EOL. Exit 2 when release data can't be fetched — never a silent pass. Severity is not consulted: any later security release means the pin carries a disclosed CVE.
-- **Where it runs:** CI `unit` job (every PR), `release.yml` (before the image is built), and `node-cve.yml` daily (06:17 UTC) so a new CVE surfaces without a PR. A red PR caused only by the gate is unrelated to the PR: bump the pin first.
-- **Check a running hub:** `node scripts/check-node-version.mjs --version "$(docker compose exec -T hub node -v)"`. The image only changes on rebuild — a patched pin protects nothing until `pnpm hub:up` (or a pulled release) replaces the container.
-- **Bump procedure:** latest release on the line from `index.json` → edit `.node-version`, both Dockerfile `FROM` lines, `engines.node` → `node scripts/check-node-version.mjs` → `pnpm install` (re-resolves native addons for the new ABI on a major bump) → `pnpm verify` + `pnpm test:federation` → rebuild live hubs. Major bumps also need a `better-sqlite3` release with a prebuild for that ABI (see `docs/pitfalls.md`, "Process").
+- **Pin:** `hub/Dockerfile`, exact tag, both stages (`FROM node:22.x.y-slim`). The only exact pin.
+- **Updates:** `.github/dependabot.yml` (`docker` ecosystem, `/hub`, daily) opens a PR for every Node 22 release — roughly monthly, about half of them security releases. Merge promptly, then rebuild the live hubs (`pnpm hub:up`): a merged bump protects nothing until the container is replaced. Majors are ignored (native-addon ABI); done by hand — Node 24 is #292, due before Node 22 EOL 2027-04-30.
+- **CI / release:** `setup-node` `node-version: "22"` + `check-latest: true` — always the newest 22.x, no second pin to drift.
+- **Local:** `package.json` `engines.node` (`>=22.23.4 <23`) + `.npmrc` `engine-strict=true` — `pnpm install` refuses other majors and anything below the floor. Dependabot does not bump the floor; raise it by hand after a security release worth enforcing locally.
 
 ## Observability (New Relic APM, #3)
 

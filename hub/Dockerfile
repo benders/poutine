@@ -1,4 +1,4 @@
-# Node pinned to .node-version — bump both FROM lines together (scripts/check-node-version.mjs, #290)
+# Exact Node release, bumped by Dependabot (.github/dependabot.yml, #290). Keep both FROM lines identical.
 FROM node:22.23.4-slim AS base
 RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
