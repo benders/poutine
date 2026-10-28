@@ -288,6 +288,26 @@ Codes: `400` bad input, `401` auth, `404` not found, `502` upstream failure.
 - **Scanner config drift check (#296).** Navidrome silently ignores unknown/renamed `ND_*` vars, so the hub reads the effective config back — `GET /api/config/` (native API, admin, **trailing slash required**; `services/navidrome-native.ts#checkScannerConfig`) at boot and before every local sync. Warns once per process per problem when `Scanner.Schedule` is unset/`0` or `Scanner.PurgeMissing` isn't `never`; Hub admin → Instance shows the schedule and any problems (`navidrome.scanner`, `navidrome.scannerProblems` on `GET /api/admin/hub/instance`). The body holds Navidrome's whole config, some secrets unmasked — read the two fields, never log the rest. Best-effort like the player provisioning: failure = no check, never an error.
 - **No credentials in the DB.** Navidrome creds live in env vars only. Navidrome runs on an internal Docker network; only the hub can reach it.
 
+### Change detection (#296)
+
+Navidrome has two paths: the filesystem **watcher** (inotify, `Scanner.WatcherWait` 5 s, then a targeted scan) and the **periodic quick scan** (`ND_SCANNER_SCHEDULE`). The watcher is a latency optimisation; the periodic scan is the correctness guarantee. Measured on Navidrome 0.64.2 in Linux containers (Docker Desktop VM), 363 tracks, `@every 1m`, `PURGEMISSING=never`, changes made **server-side** (not through the mount), as a NAS or another machine would:
+
+| Case                             | Local volume        | SMB (CIFS 3.0, `soft`)                       | NFS v4 (`soft,timeo=50`)                                                 |
+|----------------------------------|---------------------|----------------------------------------------|--------------------------------------------------------------------------|
+| Album added                      | watcher, < 15 s     | next scheduled scan                          | next scheduled scan                                                      |
+| Re-tag in place (dir mtime same) | next quick scan     | next quick scan                              | next quick scan                                                          |
+| File deleted                     | hidden at next scan | hidden at next scan                          | hidden at next scan                                                      |
+| Server stopped between scans     | n/a                 | scan aborts ("host is down"), catalog intact | scan aborts (EIO), catalog intact                                        |
+| Server stopped **during** a scan | n/a                 | —                                            | root read fails mid-scan → **all tracks hidden**; hub shrink guard holds |
+| Server back                      | n/a                 | restored, same ids                           | restored, same ids (~2 min)                                              |
+| Quick scan, steady state         | ~15 ms              | ~150 ms                                      | ~60–90 ms                                                                |
+| Scan during outage               | n/a                 | 5–21 s (mount timeouts)                      | 30–48 s                                                                  |
+
+- Network mounts produce **no** inotify events for server-side changes — new music arrives at the next scheduled scan. Hourly is cheap (a 7.5k-track local library quick-scans in ~2 s); lengthen `NAVIDROME_SCAN_SCHEDULE` only for very large libraries on slow NASes.
+- The quick scan caught in-place re-tags on all three, so no periodic full scan is needed.
+- `hard` NFS mounts (the default) block a scan until the server returns instead of erroring — no hidden window, but no scans either. Only `soft` was measured.
+- Large local libraries: the watcher needs one inotify watch per directory; raise `fs.inotify.max_user_watches` on the host if Navidrome logs watch errors.
+
 ## Library-shrink guard (#297)
 
 A sync deletes every `instance_*` row it didn't see (`_deleteStale`), so a library that reads as empty — share unmounted, one unreadable top-level folder on Navidrome 0.64, a peer's NAS down — would delete the catalog. `library/shrink-guard.ts` judges each error-free sync **before** deleting, for local and peers alike (`readNavidromeViaProxy`):
