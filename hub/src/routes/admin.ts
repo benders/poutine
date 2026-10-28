@@ -574,10 +574,11 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
   app.get("/instance", { preHandler: requireOwner }, async () => {
     const local = app.db
       .prepare(`SELECT status, track_count, last_sync_ok, last_sync_message,
+          strftime('%Y-%m-%dT%H:%M:%SZ', shrink_held_at) as shrink_held_at,
           strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_at) as last_synced_at,
           strftime('%Y-%m-%dT%H:%M:%SZ', last_seen) as last_seen
         FROM instances WHERE id = 'local'`)
-      .get() as { status: string; track_count: number; last_synced_at: string | null; last_seen: string | null; last_sync_ok: number | null; last_sync_message: string | null } | undefined;
+      .get() as { status: string; track_count: number; last_synced_at: string | null; last_seen: string | null; last_sync_ok: number | null; last_sync_message: string | null; shrink_held_at: string | null } | undefined;
 
     const naviClient = new SubsonicClient({
       url: app.config.navidromeUrl,
@@ -623,9 +624,34 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
         lastSeen: local?.last_seen ?? null,
         lastSyncOk: local?.last_sync_ok != null ? local.last_sync_ok === 1 : null,
         lastSyncMessage: local?.last_sync_message ?? null,
+        shrinkHeldAt: local?.shrink_held_at ?? null,
       },
     };
   });
+
+  // POST /admin/instances/:id/accept-shrink — the owner confirms a held
+  // library shrink was a genuine removal (#297). Arms a one-shot override the
+  // next sync consumes; the caller triggers that sync. `local` or a peer id.
+  app.post<{ Params: { id: string } }>(
+    "/instances/:id/accept-shrink",
+    { preHandler: requireOwner },
+    async (request, reply) => {
+      const row = app.db
+        .prepare("SELECT shrink_held_at FROM instances WHERE id = ?")
+        .get(request.params.id) as { shrink_held_at: string | null } | undefined;
+      if (!row) return reply.code(404).send({ error: "Instance not found" });
+      // Only a held sync can be accepted — arming the override pre-emptively
+      // would wave through the next outage.
+      if (row.shrink_held_at === null) {
+        return reply.code(409).send({ error: "No library shrink is being held" });
+      }
+      app.db
+        .prepare("UPDATE instances SET accept_shrink_once = 1, updated_at = datetime('now') WHERE id = ?")
+        .run(request.params.id);
+      request.log.warn({ instanceId: request.params.id }, "Owner accepted a held library shrink");
+      return { id: request.params.id, acceptShrinkOnce: true };
+    },
+  );
 
   // POST /admin/instance/scan — trigger a Navidrome library scan
   app.post("/instance/scan", { preHandler: requireOwner }, async (request, reply) => {
@@ -704,8 +730,8 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
 
     return peers.map((peer, i) => {
       const row = app.db
-        .prepare("SELECT last_seen, last_synced_at, last_sync_ok, last_sync_message FROM instances WHERE id = ?")
-        .get(peer.id) as { last_seen: string | null; last_synced_at: string | null; last_sync_ok: number | null; last_sync_message: string | null } | undefined;
+        .prepare("SELECT last_seen, last_synced_at, last_sync_ok, last_sync_message, strftime('%Y-%m-%dT%H:%M:%SZ', shrink_held_at) AS shrink_held_at FROM instances WHERE id = ?")
+        .get(peer.id) as { last_seen: string | null; last_synced_at: string | null; last_sync_ok: number | null; last_sync_message: string | null; shrink_held_at: string | null } | undefined;
       const health = healthChecks[i].status === "fulfilled" ? healthChecks[i].value : null;
       const alive = health !== null;
       const stats = peerStatsStmt.get(peer.id) ?? { track_count: 0, artist_count: 0, album_count: 0 };
@@ -718,6 +744,7 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
         lastSeen: row?.last_seen ?? null,
         lastSyncOk: row?.last_sync_ok != null ? row.last_sync_ok === 1 : null,
         lastSyncMessage: row?.last_sync_message ?? null,
+        shrinkHeldAt: row?.shrink_held_at ?? null,
         appVersion: health?.appVersion ?? null,
         apiVersion: health?.apiVersion ?? null,
         trackCount: stats.track_count,

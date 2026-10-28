@@ -170,6 +170,8 @@ export interface Peer {
   lastSeen: string | null;
   lastSyncOk: boolean | null;
   lastSyncMessage: string | null;
+  /** Set while the library-shrink guard holds this peer's sync (#297). */
+  shrinkHeldAt: string | null;
   trackCount: number;
   artistCount: number;
   albumCount: number;
@@ -196,6 +198,8 @@ export interface InstanceInfo {
     lastSeen: string | null;
     lastSyncOk: boolean | null;
     lastSyncMessage: string | null;
+    /** Set while the library-shrink guard holds the local sync (#297). */
+    shrinkHeldAt: string | null;
   };
 }
 
@@ -369,6 +373,14 @@ export function getPeersSummary() {
 export function peerDisplayName(name: string): string {
   const dot = name.indexOf(".");
   return dot === -1 ? name : name.slice(0, dot);
+}
+
+/** Confirm a held library shrink was a real removal (#297); `local` or a peer id. */
+export function acceptShrink(instanceId: string) {
+  return apiFetch<{ id: string; acceptShrinkOnce: boolean }>(
+    `/api/admin/hub/instances/${encodeURIComponent(instanceId)}/accept-shrink`,
+    { method: "POST" },
+  );
 }
 
 export function triggerSync() {

@@ -203,6 +203,13 @@ readinessProbe:
   failureThreshold: 2
 ```
 
+### When the library suddenly shrinks (issue #297)
+
+If the music share behind Navidrome drops (NAS reboot, SMB/NFS outage, USB drive asleep), Navidrome sees an empty or partial library. The hub refuses to apply a sync that drops a library to zero or by more than `POUTINE_SHRINK_GUARD_PERCENT` (default 20%, libraries of 100+ tracks): it keeps the catalog, shows the instance's sync as failed with a "Shrink guard" message, and reports `library: "held"` in `/api/health`.
+
+- **Outage:** fix the mount. Navidrome's next scan restores the tracks (same ids, `ND_SCANNER_PURGEMISSING=never`) and the next sync clears the hold. Nothing else to do.
+- **You really deleted that much music:** Hub admin → accept the removal (or `POST /api/admin/hub/instances/<id>/accept-shrink`). The next sync applies it.
+
 ### Casting to Sonos (optional, issue #108)
 
 Lets the bottom-of-screen player stream to Sonos devices on the LAN. Requires host networking for SSDP multicast.
