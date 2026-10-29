@@ -6,6 +6,7 @@ import { SyncOperationService } from "../services/sync-operations.js";
 import { StreamTrackingService } from "../services/stream-tracking.js";
 import { runMergePipelineAsync } from "../library/merge-pipeline.js";
 import { runFolderAudit } from "../library/folder-audit.js";
+import { getLastScannerConfig, scannerConfigProblems } from "../services/navidrome-native.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { APP_VERSION, FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
 import {
@@ -625,6 +626,13 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
         lastSyncOk: local?.last_sync_ok != null ? local.last_sync_ok === 1 : null,
         lastSyncMessage: local?.last_sync_message ?? null,
         shrinkHeldAt: local?.shrink_held_at ?? null,
+        // Effective Navidrome scanner config as last read (#296); null until
+        // the first successful read.
+        scanner: getLastScannerConfig(),
+        scannerProblems: (() => {
+          const cfg = getLastScannerConfig();
+          return cfg ? scannerConfigProblems(cfg) : [];
+        })(),
       },
     };
   });

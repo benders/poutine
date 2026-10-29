@@ -200,6 +200,10 @@ export interface InstanceInfo {
     lastSyncMessage: string | null;
     /** Set while the library-shrink guard holds the local sync (#297). */
     shrinkHeldAt: string | null;
+    /** Navidrome's effective scanner config as last read (#296). */
+    scanner: { schedule: string; purgeMissing: string } | null;
+    /** Drift from what Poutine expects; empty when as intended. */
+    scannerProblems: string[];
   };
 }
 

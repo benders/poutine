@@ -118,8 +118,27 @@ export function InstanceSection() {
             <p className="text-xs text-text-muted mb-0.5">Last synced</p>
             <p className="text-text-primary">{formatTimeAgo(nd.lastSynced)}</p>
           </div>
+          <div>
+            <p className="text-xs text-text-muted mb-0.5">Periodic scan</p>
+            <p className="text-text-primary">
+              {nd.scanner === null
+                ? "—"
+                : nd.scanner.schedule === "" || nd.scanner.schedule === "0"
+                ? "Disabled"
+                : nd.scanner.schedule}
+            </p>
+          </div>
         </div>
       </div>
+
+      {nd.scannerProblems.length > 0 && (
+        <div role="alert" className="p-3 bg-warning/10 border border-warning/20 rounded-lg text-xs text-warning space-y-1">
+          <p className="font-medium">Navidrome scanner configuration</p>
+          {nd.scannerProblems.map((problem) => (
+            <p key={problem}>{problem}</p>
+          ))}
+        </div>
+      )}
 
       {nd.shrinkHeldAt && (
         <ShrinkHeldBanner instanceId="local" heldSince={nd.shrinkHeldAt} message={nd.lastSyncMessage} />

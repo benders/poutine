@@ -10,7 +10,7 @@ import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import { readNavidromeViaProxy, createLocalProxyFetch } from "./sync-instance.js";
 import type { SyncResult } from "./sync.js";
-import { ensureRealPathPlayers } from "../services/navidrome-native.js";
+import { checkScannerConfig, ensureRealPathPlayers } from "../services/navidrome-native.js";
 import type { LastFmClient } from "../services/lastfm.js";
 import type { FanartTvClient } from "../services/fanarttv.js";
 
@@ -38,15 +38,19 @@ export async function syncLocal(
   } catch {
     // Navidrome unreachable — readNavidromeViaProxy below reports the failure.
   }
-  await ensureRealPathPlayers({
+  const nativeOpts = {
     navidromeUrl: config.navidromeUrl,
     navidromeUsername: config.navidromeUsername,
     navidromePassword: config.navidromePassword,
     log: {
-      info: (msg) => console.log(msg),
-      warn: (msg) => console.warn(msg),
+      info: (msg: string) => console.log(msg),
+      warn: (msg: string) => console.warn(msg),
     },
-  });
+  };
+  await ensureRealPathPlayers(nativeOpts);
+  // Scanner config drift (#296): re-read on every local sync so a Navidrome
+  // recreated with different env is noticed without a hub restart.
+  await checkScannerConfig(nativeOpts);
 
   return readNavidromeViaProxy(db, "local", proxyFetch, {
     concurrency: config.instanceConcurrency,

@@ -203,6 +203,10 @@ readinessProbe:
   failureThreshold: 2
 ```
 
+### How new music gets picked up (issue #296)
+
+Navidrome quick-scans the library every hour (`NAVIDROME_SCAN_SCHEDULE`, default `@every 1h`; robfig cron, e.g. `@every 6h` for a big library on a slow NAS). On a local disk its filesystem watcher usually catches changes within seconds; on SMB/NFS shares it can't, so the hourly scan is what finds them. The hub syncs automatically after each scan. In a hurry: Hub admin → Instance → **Scan Library**. Hub admin also shows the schedule Navidrome is actually using and warns if it is off.
+
 ### When the library suddenly shrinks (issue #297)
 
 If the music share behind Navidrome drops (NAS reboot, SMB/NFS outage, USB drive asleep), Navidrome sees an empty or partial library. The hub refuses to apply a sync that drops a library to zero or by more than `POUTINE_SHRINK_GUARD_PERCENT` (default 20%, libraries of 100+ tracks): it keeps the catalog, shows the instance's sync as failed with a "Shrink guard" message, and reports `library: "held"` in `/api/health`.

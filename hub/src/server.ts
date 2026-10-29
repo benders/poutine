@@ -27,7 +27,7 @@ import { ensureJwtSecret } from "./auth/jwt-secret.js";
 import { ensureUserInviteKey } from "./services/user-invites.js";
 import { loadOrCreatePasswordKey } from "./auth/password-crypto.js";
 import { AutoSyncService } from "./services/auto-sync.js";
-import { ensureRealPathPlayers } from "./services/navidrome-native.js";
+import { checkScannerConfig, ensureRealPathPlayers } from "./services/navidrome-native.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
 import { PlayEventService } from "./services/play-events.js";
@@ -762,15 +762,20 @@ if (isMain) {
     // Navidrome can create poutine-proxy with reportRealPath=false and receive
     // virtual paths once, before this boot pass (or the next local sync's
     // provisioning pass) flips it. The next sync run self-corrects.
-    void ensureRealPathPlayers({
+    const nativeOpts = {
       navidromeUrl: config.navidromeUrl,
       navidromeUsername: config.navidromeUsername,
       navidromePassword: config.navidromePassword,
       log: {
-        info: (msg) => app.log.info(msg),
-        warn: (msg) => app.log.warn(msg),
+        info: (msg: string) => app.log.info(msg),
+        warn: (msg: string) => app.log.warn(msg),
       },
-    });
+    };
+    void ensureRealPathPlayers(nativeOpts);
+    // Same entrypoint-only rule: warn early if Navidrome's effective scanner
+    // config drifted (#296). Re-checked before every local sync too, which
+    // covers a Navidrome that isn't up yet at hub boot.
+    void checkScannerConfig(nativeOpts);
   } catch (err) {
     app.log.error(err);
     process.exit(1);
