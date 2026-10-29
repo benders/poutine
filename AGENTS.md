@@ -20,7 +20,8 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
 - **Work on a feature branch.** Branch before the first edit. Never commit to `main` unless the user explicitly asks for that in this session.
 - Direct-to-`main` work, when the user does ask for it: make the change and run the gate, then stop. Committing and pushing on `main` need their own explicit ask — never do either automatically.
 - **Commit to the feature branch as soon as tests pass.** Do not wait for human review or approval at commit time — review happens on the Draft PR, not before the commit. Commit in phases, as each phase's tests pass — not one lump at the end.
-- Push the branch to origin, then open a Pull Request in **Draft** state when the work is ready for the user to review.
+- Push the branch to origin and open a Pull Request in **Draft** state as soon as there is a first commit, so the user can follow the work.
+- **Mark the PR Ready for Review (`gh pr ready`) once you judge all the work is done.** Before you do, check that the local gate is green (`pnpm verify`, plus `pnpm test:federation` when required), that CI is green on the pushed head, that the docs are updated, and that no review feedback is left unaddressed. If work is still outstanding or blocked, leave the PR in Draft and say why in a PR comment. Merging is the user's call; never merge it yourself.
 - **No stacked PRs.** Work identified during review lands on the same feature branch.
 
 ## Per-task checklist
@@ -37,7 +38,7 @@ Poutine: federated music player. Hub (Fastify + SQLite) bundles an internal Navi
    - **Touching the Subsonic API (`/rest/*`, `getAlbumList2`, scrobble/play-counts, search, stream), `/federation/*`, auth, or the merged-catalog shape? `pnpm verify` is NOT enough** — it does not run the Python `subsonic-compat` suite. Run `pnpm test:federation` (Docker; spins up hub-a/b/c) and get a green run before declaring done. `pnpm verify:full` runs both. CI gates every PR on the `federation` job regardless, so a skip here only delays the failure to post-push.
    - When querying the live database: check `hub/src/db/schema.sql` for the schema, then use `scripts/db-query.sh "SQL"`. Never exec into the container and try to import `better-sqlite3` manually.
 5. Update documentation and check for any outdated or inconsistent information.
-6. Commit, push, and open a Draft PR — see **Branching and commits** above.
+6. Commit, push, and open a Draft PR. When everything is done and CI is green, mark it Ready for Review. See **Branching and commits** above.
 
 ## Hub/Player boundary
 
