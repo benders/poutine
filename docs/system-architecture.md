@@ -34,7 +34,7 @@ flowchart TB
     sonos -- "SOAP / SSDP" --> renderers
     rest -- "catalog · users · stars" --> hubdb
     sonos --> playerdb
-    rest -- "audio bytes:<br/>preferred source" --> fed
+    rest -- "audio bytes:<br/>ranked sources, failover" --> fed
     fed -- "local source: Subsonic stream" --> navidrome
     fed -- "peer source:<br/>signed /proxy/rest/stream" --> peers
 ```
@@ -163,7 +163,7 @@ instance_tracks   ─┘              unified_release_groups
                                   track_sources           (keyed by instance_id)
 ```
 
-`track_sources` is the streaming branch point. Source selection runs at merge time, not stream time: `mergeLibraries()` flags one row per unified track `preferred = 1` (ranked format → bitrate → local tie-break). Stream routes read that row. Merge rules: [hub-internals.md#federation](hub-internals.md#federation).
+`track_sources` is the streaming branch point. Merge picks, stream fails over: `mergeLibraries()` flags one row per unified track `preferred = 1` (ranked format → bitrate → local tie-break, `library/source-ranking.ts`); `/rest/stream` tries that row first and walks the rest in the same rank order when a source is unreachable (#241). Download and scrobble attribution still read only the preferred row. Merge rules: [hub-internals.md#federation](hub-internals.md#federation).
 
 **Merge runs off the main thread (#242).** better-sqlite3 is synchronous, so folding 200k–600k tracks on the main connection would stall the event loop for the entire run. `runMergePipelineAsync()` spawns a `node:worker_threads` Worker (`hub/src/library/merge-worker.ts`) that opens its **own** connection to the same `hub.db` file and runs the pipeline there; WAL means the main thread keeps serving reads throughout. A process-wide promise-chain mutex serializes merges, and `shutdownMergeWorker()` — wired to Fastify `onClose` — terminates an in-flight worker, whose transaction simply rolls back. In-memory DBs and the unit-test path (`{ inProcess: true }`) run synchronously instead, there being no second connection to hand a worker.
 
@@ -199,11 +199,16 @@ Phase 3 (#217) migrated Player-owned rows out of `hub.db.settings` into `player.
 
 ```
 1. Client requests unified track ID
-2. Hub reads the track_sources row flagged preferred = 1 (chosen at merge time)
-3. Local source  → /proxy/rest/stream on local Navidrome (JWT auth)
-   Peer source   → signed GET /proxy/rest/stream on peer (Ed25519)
-4. Response piped to client (no hub buffering)
+2. Hub reads every track_sources row: preferred = 1 first, then the shared ranking;
+   sources that failed in the last 60 s (SourceHealth) move to the back
+3. For each source until one answers (10 s headers timeout):
+   Local source  → /rest/stream on local Navidrome (Subsonic t+s)
+   Peer source   → signed GET /federation/stream/:id on peer (Ed25519)
+   Transport error / timeout / 5xx / 404 / Subsonic error envelope → next source
+4. First good response piped to client (no hub buffering); activity records that source
 ```
+
+Failover only happens before response headers are sent; a mid-transfer failure aborts the response as before. All sources failed → 404 if every one said not-found, else 502.
 
 Transcoding happens on the Navidrome that owns the bytes.
 
@@ -235,7 +240,7 @@ Load-bearing choices and what each one costs. Read before proposing to undo one.
 | **Player → Hub over in-process `app.inject()`**                                        | HTTP-shaped call sites survive the process split unchanged                                                                    | Serialization overhead on what could be function calls, plus a trusted in-process auth path to reason about separately                                         |
 | **Reversible passwords** (AES-256-GCM, on-disk key) rather than hashed                 | Subsonic `u+t+s` is MD5(password + salt) — the server must recover the plaintext, or every third-party Subsonic client breaks | A stolen DB **plus** the key file exposes passwords; the key file becomes a backup-critical secret                                                             |
 | **Mutual trust, no quorum** — any admitted hub may evict any other                     | 4–12 socially-trusted operators; voting protocols cost more than the failure mode is worth here                               | Does not generalize to an open network. One compromised hub can evict the mesh                                                                                 |
-| **Merge-time source selection** (`preferred = 1`) rather than per-request              | Stream requests do one indexed read; no fan-out on the hot path                                                               | The preferred copy is stale between merges, and there is no per-request failover when a source is unreachable (#241)                                           |
+| **Merge-time source selection** (`preferred = 1`), stream-time failover                | Stream requests do one indexed read and contact one source in the healthy case; no fan-out on the hot path                    | The preferred copy can be stale between merges; failover costs a timeout (≤ 10 s) on the first request after a source dies (#241)                              |
 | **Denormalized dual catalog** (`instance_*` **and** `unified_*`)                       | Peer data stays re-mergeable without re-syncing; a disabled peer's rows survive re-enabling                                   | Roughly double the storage, and merge becomes a real pipeline with an id-remap step                                                                            |
 | **Readiness probes the real stream path**, not just a ping                              | The failure that motivated #277 answered `/rest/ping` normally while serving no audio; only pulling bytes distinguishes the two                                                 | One small byte-range request to Navidrome per TTL, and a health verdict that depends on the catalog having at least one local track (empty library ⇒ `skipped`, still ready)     |
 | **Navidrome driven only through Subsonic**, its native `/api/*` unused                 | Keeps it a replaceable component behind a standard protocol                                                                   | Anything Subsonic doesn't expose (e.g. `getArtistInfo2`, which Navidrome doesn't implement) has to be sourced elsewhere                                        |
