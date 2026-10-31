@@ -167,7 +167,10 @@ export interface Peer {
   publicKey: string;
   lifecycle: PeerLifecycle;
   status: string;
+  /** Most recent successful contact of any kind — health poll or sync (#154). */
   lastSeen: string | null;
+  /** Most recent library sync, successful or held (#154). */
+  lastSynced: string | null;
   lastSyncOk: boolean | null;
   lastSyncMessage: string | null;
   /** Set while the library-shrink guard holds this peer's sync (#297). */
