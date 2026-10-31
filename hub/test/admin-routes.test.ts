@@ -13,6 +13,10 @@ import { buildApp } from "../src/server.js";
 import { otherAdminCount } from "../src/routes/admin.js";
 import { setPassword } from "../src/auth/passwords.js";
 import type { Config } from "../src/config.js";
+import http from "node:http";
+import { generateKeyPairSync } from "node:crypto";
+import type { AddressInfo } from "node:net";
+import { seedPeer } from "./helpers/seed-peer.js";
 
 const testConfig: Partial<Config> = {
   databasePath: ":memory:",
@@ -848,6 +852,58 @@ describe("admin — peers", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(Array.isArray(res.json())).toBe(true);
+  });
+
+  describe("Last Seen vs Last Sync (#154)", () => {
+    const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+    function seedPeerWithTimes(url: string) {
+      const raw = generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+      seedPeer(app, { id: "peer-x", url, publicKeySpec: `ed25519:${raw.toString("base64")}` });
+      app.db
+        .prepare(
+          "UPDATE instances SET last_seen = '2026-01-02 03:04:05', last_synced_at = '2026-01-01 00:00:00' WHERE id = 'peer-x'",
+        )
+        .run();
+    }
+
+    async function getPeer() {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/admin/hub/peers",
+        headers: authHeader(token),
+      });
+      expect(res.statusCode).toBe(200);
+      return (res.json() as Array<{ id: string; lastSeen: string | null; lastSynced: string | null; status: string }>)
+        .find((p) => p.id === "peer-x")!;
+    }
+
+    it("returns both timestamps as ISO-8601 UTC, distinct", async () => {
+      // Port 9 (discard) refuses → health check fails → last_seen untouched.
+      seedPeerWithTimes("http://127.0.0.1:9");
+      const peer = await getPeer();
+      expect(peer.status).toBe("offline");
+      expect(peer.lastSeen).toBe("2026-01-02T03:04:05Z");
+      expect(peer.lastSynced).toBe("2026-01-01T00:00:00Z");
+    });
+
+    it("a successful health check counts as being seen; Last Sync is unchanged", async () => {
+      const server = http.createServer((_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", appVersion: "9.9.9", apiVersion: 7 }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+      try {
+        seedPeerWithTimes(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+        const peer = await getPeer();
+        expect(peer.status).toBe("online");
+        expect(peer.lastSeen).toMatch(ISO_UTC);
+        expect(Date.now() - Date.parse(peer.lastSeen!)).toBeLessThan(60_000);
+        expect(peer.lastSynced).toBe("2026-01-01T00:00:00Z");
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
   });
 });
 

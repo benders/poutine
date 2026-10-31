@@ -736,12 +736,26 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       WHERE ts.instance_id = ?
     `);
 
+    // Last Seen = most recent successful contact of any kind (this health
+    // check, AutoSync's poll, a sync); Last Sync = most recent library sync
+    // (#154). Both as ISO-8601 UTC — SQLite's bare `datetime('now')` text
+    // parses as *local* time in the browser.
+    const peerRowStmt = app.db.prepare<[string], { last_seen: string | null; last_synced_at: string | null; last_sync_ok: number | null; last_sync_message: string | null; shrink_held_at: string | null }>(`
+      SELECT strftime('%Y-%m-%dT%H:%M:%SZ', last_seen) AS last_seen,
+             strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_at) AS last_synced_at,
+             last_sync_ok, last_sync_message,
+             strftime('%Y-%m-%dT%H:%M:%SZ', shrink_held_at) AS shrink_held_at
+      FROM instances WHERE id = ?
+    `);
+    const markSeenStmt = app.db.prepare<[string]>(
+      "UPDATE instances SET last_seen = datetime('now') WHERE id = ?",
+    );
+
     return peers.map((peer, i) => {
-      const row = app.db
-        .prepare("SELECT last_seen, last_synced_at, last_sync_ok, last_sync_message, strftime('%Y-%m-%dT%H:%M:%SZ', shrink_held_at) AS shrink_held_at FROM instances WHERE id = ?")
-        .get(peer.id) as { last_seen: string | null; last_synced_at: string | null; last_sync_ok: number | null; last_sync_message: string | null; shrink_held_at: string | null } | undefined;
       const health = healthChecks[i].status === "fulfilled" ? healthChecks[i].value : null;
       const alive = health !== null;
+      if (alive) markSeenStmt.run(peer.id);
+      const row = peerRowStmt.get(peer.id);
       const stats = peerStatsStmt.get(peer.id) ?? { track_count: 0, artist_count: 0, album_count: 0 };
       return {
         id: peer.id,
@@ -750,6 +764,7 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
         lifecycle: peer.lifecycle,
         status: alive ? "online" : "offline",
         lastSeen: row?.last_seen ?? null,
+        lastSynced: row?.last_synced_at ?? null,
         lastSyncOk: row?.last_sync_ok != null ? row.last_sync_ok === 1 : null,
         lastSyncMessage: row?.last_sync_message ?? null,
         shrinkHeldAt: row?.shrink_held_at ?? null,

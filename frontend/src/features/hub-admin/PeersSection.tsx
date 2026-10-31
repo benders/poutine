@@ -77,8 +77,14 @@ function PeerRow({
             </p>
           )}
         </div>
-        <div className="hidden sm:block text-xs text-text-secondary shrink-0">
-          {peer.lastSeen ? `Last seen ${formatTimeAgo(peer.lastSeen)}` : "Never synced"}
+        {/* Last Seen = any successful contact; Last Sync = library sync (#154). */}
+        <div className="hidden sm:block text-xs text-text-secondary text-right shrink-0">
+          <p title={peer.lastSeen ?? undefined}>
+            Last seen {peer.lastSeen ? formatTimeAgo(peer.lastSeen) : "never"}
+          </p>
+          <p title={peer.lastSynced ?? undefined}>
+            Last sync {peer.lastSynced ? formatTimeAgo(peer.lastSynced) : "never"}
+          </p>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           {!tombstoned && peer.lifecycle === "active" && (

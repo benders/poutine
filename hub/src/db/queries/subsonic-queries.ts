@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { audioSourceFields } from "../../routes/subsonic/builders.js";
+import { SOURCE_RANK_ORDER_BY } from "../../library/source-ranking.js";
 
 // ── Source selection subquery ─────────────────────────────────────────────────
 // Returns the best source for a track (highest bitrate). Used for format,
@@ -57,6 +58,7 @@ export interface SubsonicQueries {
   searchSongs: Database.Statement;
   trackForStream: Database.Statement;
   preferredSourceForStream: Database.Statement;
+  rankedSourcesForStream: Database.Statement;
   trackExists: Database.Statement;
   sourceForScrobble: Database.Statement;
 }
@@ -349,6 +351,16 @@ export function createSubsonicQueries(db: Database.Database): SubsonicQueries {
        JOIN instance_tracks it ON it.id = ts.instance_track_id
        WHERE ts.unified_track_id = ? AND ts.preferred = 1
        LIMIT 1`,
+    ),
+
+    // Every source for a unified track, best first: merge's pick, then the
+    // shared ranking. `/rest/stream` walks this list to fail over (#241).
+    rankedSourcesForStream: db.prepare(
+      `SELECT ts.id, ts.instance_id, ts.format, ts.bitrate, it.remote_id
+       FROM track_sources ts
+       JOIN instance_tracks it ON it.id = ts.instance_track_id
+       WHERE ts.unified_track_id = ?
+       ORDER BY ts.preferred DESC, ${SOURCE_RANK_ORDER_BY}`,
     ),
 
     // ── scrobble (#197) ──────────────────────────────────────────────────────────
