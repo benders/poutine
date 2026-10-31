@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { normalizeName } from "./normalize.js";
+import { SOURCE_RANK_ORDER_BY } from "./source-ranking.js";
 import {
   generateArtistId,
   generateReleaseGroupId,
@@ -786,11 +787,8 @@ export function mergeLibraries(db: Database.Database): void {
 
     // ── Step 5: Mark preferred source per unified track ────────────────────
     //
-    // Selection rule (runs here, not at stream time):
-    //   1. Higher-quality format wins (FLAC > WAV > ALAC > Opus > AAC > MP3 > Ogg).
-    //   2. Tie → higher bitrate.
-    //   3. Tie → local instance.
-    //   4. Tie → lowest id (stable).
+    // Selection rule: see library/source-ranking.ts. `/rest/stream` walks the
+    // same ranking at request time when this row's source is unreachable.
     db.exec(`
       UPDATE track_sources SET preferred = 0;
       UPDATE track_sources SET preferred = 1 WHERE id IN (
@@ -798,20 +796,7 @@ export function mergeLibraries(db: Database.Database): void {
           SELECT ts.id,
             ROW_NUMBER() OVER (
               PARTITION BY ts.unified_track_id
-              ORDER BY
-                CASE LOWER(COALESCE(ts.format, ''))
-                  WHEN 'flac' THEN 100
-                  WHEN 'wav'  THEN 90
-                  WHEN 'alac' THEN 85
-                  WHEN 'opus' THEN 70
-                  WHEN 'aac'  THEN 60
-                  WHEN 'mp3'  THEN 50
-                  WHEN 'ogg'  THEN 45
-                  ELSE 30
-                END DESC,
-                COALESCE(ts.bitrate, 0) DESC,
-                CASE WHEN ts.instance_id = 'local' THEN 1 ELSE 0 END DESC,
-                ts.id ASC
+              ORDER BY ${SOURCE_RANK_ORDER_BY}
             ) AS rn
           FROM track_sources ts
         ) WHERE rn = 1
