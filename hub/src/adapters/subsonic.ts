@@ -4,6 +4,14 @@ import { isSubsonicEnvelopeType } from "./upstream-envelope.js";
 
 const FETCH_HEADERS = { "user-agent": USER_AGENT };
 
+/** Non-2xx answer to a raw (binary) request. `status` lets callers tell a 4xx from a 5xx. */
+export class SubsonicHttpError extends Error {
+  constructor(readonly status: number, statusText: string) {
+    super(`Subsonic HTTP error: ${status} ${statusText}`);
+    this.name = "SubsonicHttpError";
+  }
+}
+
 // ── Response types ──────────────────────────────────────────────────────────
 
 export interface SubsonicArtist {
@@ -347,9 +355,8 @@ export class SubsonicClient {
 
       // 200 OK and 206 Partial Content are both success for byte-range streams.
       if (!response.ok && response.status !== 206) {
-        throw new Error(
-          `Subsonic HTTP error: ${response.status} ${response.statusText}`,
-        );
+        await response.body?.cancel().catch(() => {});
+        throw new SubsonicHttpError(response.status, response.statusText);
       }
 
       // Navidrome reports a failed stream as 200 + an error envelope (#285).

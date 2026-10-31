@@ -11,8 +11,9 @@
  *   - Source selection: peer has higher-quality recording → peer preferred
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -904,5 +905,146 @@ describe("stream — peer has higher-quality recording → peer source preferred
     expect(res.headers["content-type"]).toMatch(/audio\/flac/);
     // Audio bytes must come from hub-b's Navidrome, not hub-a's
     expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO_PEER);
+  });
+});
+
+// ── Runtime source failover (#241) ────────────────────────────────────────────
+//
+// Peer B holds the FLAC (preferred at merge time); A's local Navidrome holds
+// the MP3 fallback. Each test breaks a source and asserts the stream still
+// resolves — or fails cleanly — without a re-merge.
+
+describe("stream — runtime failover when the preferred source is unreachable (#241)", () => {
+  let setup: Awaited<ReturnType<typeof buildSharedTrackSetup>>;
+  let trackId: string;
+  /** Query strings A's local Navidrome saw on /rest/stream. */
+  let localStreamQueries: URLSearchParams[];
+
+  beforeEach(async () => {
+    setup = await buildSharedTrackSetup({
+      bFormat: "flac",
+      bBitrate: 1000,
+      bContentType: "audio/flac",
+    });
+    trackId = (setup.appA.db.prepare("SELECT id FROM unified_tracks LIMIT 1").get() as { id: string }).id;
+    localStreamQueries = [];
+    setup.navA.on("request", (req: http.IncomingMessage) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      if (url.pathname.includes("/rest/stream")) localStreamQueries.push(url.searchParams);
+    });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await teardownSharedTrackSetup(setup);
+  });
+
+  function stream(extra = "") {
+    return setup.appA.inject({
+      method: "GET",
+      url: `/rest/stream?u=tester&p=secret&f=json&id=t${trackId}${extra}`,
+    });
+  }
+
+  it("precondition: the peer is the preferred source", () => {
+    const row = setup.appA.db
+      .prepare("SELECT instance_id FROM track_sources WHERE preferred = 1")
+      .get() as { instance_id: string };
+    expect(row.instance_id).toBe("poutine-b");
+  });
+
+  it("peer down → falls back to local and records the local source", async () => {
+    await setup.appB.close();
+
+    const res = await stream();
+
+    expect(res.statusCode).toBe(200);
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO_LOCAL);
+    const [row] = setup.appA.streamTracking.getRecent(10);
+    expect(row.sourceKind).toBe("local");
+    expect(row.sourcePeerId).toBeNull();
+    expect(row.format).toBe("mp3");
+    expect(row.error).toBeNull();
+    expect(setup.appA.sourceHealth.isSuspect("poutine-b")).toBe(true);
+  });
+
+  it("a suspect peer is not contacted again within the TTL", async () => {
+    await setup.appB.close();
+    const fetchSpy = vi.spyOn(setup.appA, "federatedFetch");
+
+    await stream();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    const res = await stream();
+    expect(res.statusCode).toBe(200);
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO_LOCAL);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("peer answers 404 for a stale id → next source wins, peer is not marked suspect", async () => {
+    // Peer B's Navidrome no longer knows the id (rescanned since our sync).
+    setup.navB.removeAllListeners("request");
+    setup.navB.on(
+      "request",
+      buildFakeNavidromeHandler({ format: "flac", bitrate: 1000, streamEnvelope: NOT_FOUND_XML_ENVELOPE }),
+    );
+
+    const res = await stream();
+
+    expect(res.statusCode).toBe(200);
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO_LOCAL);
+    expect(setup.appA.sourceHealth.isSuspect("poutine-b")).toBe(false);
+  });
+
+  it("every source down → 502 with a generic body, failure recorded", async () => {
+    await setup.appB.close();
+    await new Promise<void>((resolve) => setup.navA.close(() => resolve()));
+
+    const res = await stream();
+
+    expect(res.statusCode).toBe(502);
+    expect(res.body).not.toMatch(/ECONNREFUSED|127\.0\.0\.1/);
+    const [row] = setup.appA.streamTracking.getRecent(10);
+    expect(row.bytesTransferred).toBe(0);
+    expect(row.error).toBeTruthy();
+  });
+
+  it("transcode params are re-resolved against the fallback source (#77/#91)", async () => {
+    await setup.appB.close();
+
+    const res = await stream("&format=opus&maxBitRate=128");
+
+    expect(res.statusCode).toBe(200);
+    expect(localStreamQueries).toHaveLength(1);
+    expect(localStreamQueries[0].get("format")).toBe("opus");
+    expect(localStreamQueries[0].get("maxBitRate")).toBe("128");
+    const [row] = setup.appA.streamTracking.getRecent(10);
+    expect(row.transcoded).toBe(true);
+    expect(row.maxBitrate).toBe(128);
+  });
+
+  it("a peer that accepts but never answers is abandoned after the connect timeout", async () => {
+    // Black hole: accept the TCP connection, never write a byte.
+    const sockets: import("node:net").Socket[] = [];
+    const hole = net.createServer((s) => { sockets.push(s); });
+    await new Promise<void>((resolve) => hole.listen(0, "127.0.0.1", () => resolve()));
+    const holePort = (hole.address() as AddressInfo).port;
+    setup.appA.db
+      .prepare("UPDATE instances SET url = ? WHERE id = 'poutine-b'")
+      .run(`http://127.0.0.1:${holePort}`);
+    setup.appA.peerRegistry.reload();
+    Object.defineProperty(setup.appA.sourceHealth, "connectTimeoutMs", { value: 200 });
+
+    try {
+      const started = Date.now();
+      const res = await stream();
+      expect(res.statusCode).toBe(200);
+      expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO_LOCAL);
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(setup.appA.sourceHealth.isSuspect("poutine-b")).toBe(true);
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((resolve) => hole.close(() => resolve()));
+    }
   });
 });
