@@ -30,6 +30,7 @@ import { AutoSyncService } from "./services/auto-sync.js";
 import { checkScannerConfig, ensureRealPathPlayers } from "./services/navidrome-native.js";
 import { SyncOperationService } from "./services/sync-operations.js";
 import { StreamTrackingService } from "./services/stream-tracking.js";
+import { SourceHealth } from "./services/source-health.js";
 import { PlayEventService } from "./services/play-events.js";
 import { NowPlayingService } from "./services/now-playing.js";
 import { LastFmClient } from "./services/lastfm.js";
@@ -86,6 +87,8 @@ declare module "fastify" {
   federatedFetch: ReturnType<typeof FetcherFactory>;
   syncOpService: SyncOperationService;
   streamTracking: StreamTrackingService;
+  /** Per-instance stream circuit breaker for source failover (#241). */
+  sourceHealth: SourceHealth;
   playEvents: PlayEventService;
   nowPlaying: NowPlayingService;
   lastFmClient: LastFmClient | null;
@@ -362,6 +365,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   app.decorate("syncOpService", syncOpService);
   app.decorate("playEvents", playEvents);
   app.decorate("streamTracking", streamTracking);
+  app.decorate("sourceHealth", new SourceHealth());
   app.decorate("nowPlaying", new NowPlayingService());
 
   // Load activity history retention from settings (issue #121)
