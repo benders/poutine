@@ -104,6 +104,11 @@ proxy in development. **CORS is not needed at all.**
 
 ### H3 — `/proxy/*` has no path allowlist
 
+> **Status: fixed (#308).** `/proxy/*` is now peer-only and forwards `GET` on a
+> fixed read-only `/rest` endpoint allowlist; see `docs/authentication.md`
+> ("Proxy auth"). The text below, and other mentions of `/proxy/*` in this
+> assessment, describe the state at the assessment date.
+
 `routes/proxy.ts` mounts `app.all("/*")` under `/proxy` and forwards
 `request.url` minus the prefix **verbatim** to the internal Navidrome base URL,
 injecting the bundled Navidrome **admin** credentials (`u+t+s`) into the query.

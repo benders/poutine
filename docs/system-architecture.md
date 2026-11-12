@@ -36,7 +36,7 @@ flowchart TB
     sonos --> playerdb
     rest -- "audio bytes:<br/>ranked sources, failover" --> fed
     fed -- "local source: Subsonic stream" --> navidrome
-    fed -- "peer source:<br/>signed /proxy/rest/stream" --> peers
+    fed -- "peer source:<br/>signed /federation/stream/:id" --> peers
 ```
 
 Navidrome credentials live in env vars, not the DB. SPA + API on one port. Audio is piped, never buffered on the hub — see [Play flow](#play-flow).
@@ -56,7 +56,7 @@ Navidrome credentials live in env vars, not the DB. SPA + API on one port. Audio
 | Client API     | SPA + Subsonic `/rest/*` over unified library                                                                                                                                            |
 | Sync + merge   | `syncLocal` from local Navidrome; `/proxy/rest/*` from peers; merge into unified tables                                                                                                  |
 | Auto-sync      | `AutoSyncService`: trigger on Navidrome scan complete; fan out to peers per `SYNC_INTERVAL_MS`                                                                                           |
-| Stream/art     | Route to source's Navidrome via `/proxy/*` (local or peer)                                                                                                                               |
+| Stream/art     | Route to the source's Navidrome: local direct; peer audio via `/federation/stream/:id`, peer cover art via `/proxy/rest/getCoverArt`                                                     |
 | External art   | `/external-art/*`: fanart.tv (MBID) → Last.fm fallback → `art_cache`                                                                                                                     |
 | Admin          | `/api/admin/hub/*` and `/api/admin/player/*` (owner-only). `/admin/*` reserved for auth (refresh-cookie path). `/api/invites/*` is public — invite redemption (#272).                    |
 | Version signal | `GET /api/version` → `{ appVersion, buildId }` (#196). Unauthenticated, deliberately separate from `/api/health`, whose per-call Navidrome ping is too costly for one poll per open tab. |
@@ -146,7 +146,7 @@ Peers stored in `instances` (DB-authoritative since v0.5.0 / federation v5), aut
 | `/federation/handshake`  | Signed-invitation peer admission                                       |
 | `/federation/peers`      | Gossip — verify embedded invitation against named inviter's pubkey     |
 | `/federation/stream/:id` | Cross-peer audio stream                                                |
-| `/proxy/rest/*`          | Authenticated proxy to local Navidrome (clients and peers both use it) |
+| `/proxy/rest/*`          | Peer-only read-only proxy to local Navidrome — metadata + cover art    |
 
 Contract: [federation-api.md](federation-api.md). Share IDs resolve locally against synced `instance_*` tables — no RPC. See [hub-internals.md#share-ids](hub-internals.md#share-ids).
 
@@ -224,7 +224,7 @@ Transcoding happens on the Navidrome that owns the bytes.
 | Session tokens | JWT for `/admin/*`: 15 min access + 7 d refresh           |
 | Subsonic       | `u+p` or `u+t+s`                                          |
 | Peer           | Ed25519 signature on every `/federation/*` and `/proxy/*` |
-| Proxy          | Ed25519 (peers) → JWT (admin) → Subsonic `u+p`/`u+t+s`    |
+| Proxy          | Peers only; `GET` on a read-only `/rest` allowlist        |
 | Navidrome      | Env-var creds, internal network only                      |
 | Transport      | HTTPS required in prod                                    |
 

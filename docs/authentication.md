@@ -9,7 +9,7 @@ Poutine has three authentication mechanisms, each scoped to a different API surf
 | Admin             | `/admin/*`      | JWT (cookie + `Authorization: Bearer` header)                                         |
 | Subsonic (JSON)   | `/rest/*`       | Subsonic `u+p` (plaintext / `enc:<hex>`) **or** `u+t+s` (MD5 token+salt)              |
 | Subsonic (binary) | `/rest/stream`, `/rest/getCoverArt` | Same as Subsonic JSON, but errors use HTTP status codes, not Subsonic envelopes. `/rest/stream(.view)` also accepts a `castToken=` query param (#218) as an alternate auth for non-Subsonic clients (Sonos devices, DLNA renderers) — see "Cast tokens" below |
-| Proxy             | `/proxy/*`      | Unified: Ed25519 (peers) → JWT (SPA) → Subsonic `u+p` / `u+t+s`, tried in order     |
+| Proxy             | `/proxy/*`      | Ed25519-signed peers **only** — no JWT, no Subsonic. `GET` on a read-only allowlist   |
 | Federation        | `/federation/*` | Ed25519-signed HTTP (see [federation-api.md](federation-api.md))                      |
 | Invites           | `/api/invites/*`| None — the token in the POST body is the credential (see "User invitations")           |
 | Health            | `/api/health`, `/api/health/live`, `/api/health/ready` | None — orchestrators and Synthetic monitors carry no credentials. Keep internal identifiers and URLs out of these bodies (#277) |
@@ -195,13 +195,26 @@ Setting a different `POUTINE_OWNER_PASSWORD` in env never overwrites a non-empty
 
 ## Proxy auth (`/proxy/*`)
 
-`/proxy/*` is a transparent authenticated proxy to the local Navidrome. Three auth modes tried in order by `hub/src/proxy/auth.ts`:
+`/proxy/*` is the peer-facing, read-only window onto the local Navidrome: peer hubs read library metadata and cover art through it. Every forwarded request carries the Navidrome **admin** credentials, so the tier is deliberately narrow on both axes — who may call, and what they may call (#308).
 
-1. **Ed25519** — all four `x-poutine-*` headers present → validated against the in-memory peer registry (DB-backed, sourced from the `instances` table since federation v5; see [federation-api.md](federation-api.md)). `request.proxyAuth.kind = "peer"`. Used by peer hubs during catalog sync and streaming.
-2. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param → verified with `verifyToken`. `request.proxyAuth.kind = "jwt"`. Used internally for any admin-tree proxy calls.
-3. **Subsonic `u+p` or `u+t+s`** — same logic as `/rest/*`. `request.proxyAuth.kind = "subsonic"`.
+**Who** — `hub/src/proxy/auth.ts`, peers only:
 
-Returns `401` if all three fail. The forwarded request always uses fresh Navidrome `u+t+s` credentials — the incoming auth is consumed at the proxy tier and never forwarded.
+- All four `x-poutine-*` signing headers required; missing any → `401`. Validated against the in-memory peer registry (DB-backed, sourced from the `instances` table since federation v5; see [federation-api.md](federation-api.md)). Sets `request.proxyAuth = { kind: "peer", peerId }`.
+- **No local-user path.** A JWT (header, cookie, or `token=` query) or Subsonic `u+p` / `u+t+s` is not a credential here → `401`. Local users reach the library through `/rest/*`; nothing in the SPA calls `/proxy/*`.
+- Then, in order: version floor (`Poutine-Api-Version` ≥ `MIN_FEDERATION_API_VERSION`, else `403`) and lifecycle gate (non-`active` peer → uniform `403 {"error":"forbidden"}`), both after signature verification. Same policy as `/federation/*` (`federation/peer-auth.ts`) — keep the two in step.
+- Signed body hash is always `-`: the tier takes no bodies.
+
+**What** — `hub/src/routes/proxy.ts`, checked in `onRequest` (before auth, before body parsing):
+
+| Check  | Rule                                                                   | Refusal |
+|--------|------------------------------------------------------------------------|---------|
+| Method | `GET` only (no `HEAD`)                                                 | `405`   |
+| Path   | `/proxy/rest/<endpoint>` or `/proxy/rest/<endpoint>.view`, allowlisted | `404`   |
+| Body   | none — `content-length` > 0 or `transfer-encoding` present is refused  | `400`   |
+
+Allowlist (`PROXY_ALLOWED_ENDPOINTS`) and the peer call site that needs each entry: [hub-internals.md#proxy](hub-internals.md#proxy). A refused request never produces a Navidrome request.
+
+The forwarded request always uses fresh Navidrome `u+t+s` credentials — the incoming auth is consumed at the proxy tier and never forwarded.
 
 ## Cast tokens (`/rest/stream.view?castToken=…`)
 
