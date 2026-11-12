@@ -82,6 +82,8 @@ All errors return `{ "error": "<message>" }`. The `Poutine-Api-Version` header i
 
 Library metadata and cover art travel through `/proxy/*`, which reuses the same Ed25519 signing scheme. See `docs/hub-internals.md` for the `/proxy/*` contract (Phase 1).
 
+`/proxy/*` is peer-only and serves `GET /proxy/rest/<endpoint>[.view]` for `getArtists`, `getArtist`, `getAlbum`, `getScanStatus`, `getCoverArt` — nothing else (#308). Other method `405`, other path `404`, request body `400`. These are the only proxy calls any v5+ hub issues, so the restriction needed no protocol version bump; a new peer-side proxy call does need its endpoint added on the receiver first.
+
 ---
 
 ## Invitations & handshake (v5)

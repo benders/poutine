@@ -53,7 +53,7 @@ Sonos and DLNA are not env-gated — toggles, volume cap, `lan_url`, friendly na
 | Surface    | Prefix                                                | Auth                                                                   | Purpose |
 |------------|-------------------------------------------------------|------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Subsonic   | `/rest/*`                                             | Subsonic `u+p` or `u+t+s` (see [authentication.md](authentication.md)) | Primary client API: browse, stream, art — see [opensubsonic.md](opensubsonic.md) for compatibility |
-| Proxy      | `/proxy/*`                                            | Ed25519, JWT, or Subsonic `u+p`/`u+t+s` (unified — see below)          | Authenticated transparent proxy to Navidrome |
+| Proxy      | `/proxy/*`                                            | Ed25519-signed peers only (see below)                                  | Peer-only read-only proxy to Navidrome — `GET` on an endpoint allowlist |
 | Federation | `/federation/*`                                       | Ed25519-signed (see [federation-api.md](federation-api.md))            | Peer-to-peer only |
 | Admin      | `/admin/*`, `/api/admin/hub/*`, `/api/admin/player/*` | JWT (see [authentication.md](authentication.md))                       | Three partitioned mounts (#226). `/admin/*` is auth-only (refresh cookie path). Hub/Player admin handlers live only at their matching namespace — cross-namespace requests 404. See [system-architecture.md](system-architecture.md#admin-namespaces). |
 | Health     | `/api/health`                                         | None                                                                   | `{ status, appVersion, apiVersion, gitSha, navidrome, navidromeStream, recentNavidromeFailures, library }` — always HTTP 200, see note below |
@@ -99,26 +99,35 @@ JWT signing secret auto-generates on first boot and lives in the `settings` tabl
 
 ## /proxy/*
 
-Transparent authenticated proxy to the local Navidrome. Introduced in Phase 1 (issue #50).
+Peer-only, read-only proxy to the local Navidrome. Introduced in Phase 1 (issue #50); narrowed to peers + an endpoint allowlist in #308.
 
-**Auth** — unified preHandler in `hub/src/proxy/auth.ts`, tried in order:
+**Auth** — preHandler in `hub/src/proxy/auth.ts`: Ed25519-signed peer requests only. All four `x-poutine-*` headers → peer registry lookup → timestamp skew → signature → version floor → lifecycle gate. No JWT, no Subsonic credentials. `401` / `403` per [authentication.md](authentication.md#proxy-auth-proxy).
 
-1. **Ed25519** — all four `x-poutine-*` headers present → validated against the in-memory peer registry (DB-backed, sourced from `instances`). `request.proxyAuth.kind = "peer"`.
-2. **JWT** — `Authorization: Bearer`, `access_token` cookie, or `token` query param → verified with `verifyToken`. `request.proxyAuth.kind = "jwt"`.
-3. **Subsonic u+p / u+t+s** — `u` + `p` (plaintext or `enc:<hex>`) **or** `u` + `t` + `s` (MD5 token+salt). Verified by AES-decrypting `users.password_enc` and either constant-time comparing the plaintext or recomputing `md5(plaintext + salt)`. `request.proxyAuth.kind = "subsonic"`.
+**Surface** — `onRequest` hook in `hub/src/routes/proxy.ts`, ahead of auth and body parsing. Only `GET /proxy/rest/<endpoint>[.view]` for `PROXY_ALLOWED_ENDPOINTS`:
 
-Returns `401` if all three methods fail.
+| Endpoint        | Peer call site                                             |
+|-----------------|------------------------------------------------------------|
+| `getArtists`    | library sync — `library/sync-instance.ts` (`sync-peer.ts`) |
+| `getArtist`     | library sync                                               |
+| `getAlbum`      | library sync                                               |
+| `getScanStatus` | auto-sync peer poll — `services/auto-sync.ts`              |
+| `getCoverArt`   | peer cover art — `routes/subsonic/stream.ts`               |
+
+- Same five at every supported federation version (v5 floor → current). Peer audio is `/federation/stream/:id`; local sync talks to Navidrome directly. Neither uses the proxy.
+- Other method → `405` (`Allow: GET`). Other path → `404`. Declared body → `400`. None reaches Navidrome.
+- Path match is exact and undecoded — no normalisation, so encoded or dotted variants miss. Upstream path is rebuilt as `/rest/<endpoint>` from the matched entry; caller path text is never copied into the Navidrome URL.
+- Adding an entry: must be a read, must have a peer call site, and `hub/test/proxy.test.ts` pins the list so the change is a visible diff. Every entry runs as Navidrome admin.
 
 **Forwarding** — `hub/src/routes/proxy.ts`:
 
-- Strips incoming Subsonic auth params (`u`, `p`, `t`, `s`) then injects Navidrome credentials via fresh `u+t+s` token per request (salt = `crypto.randomBytes(8)`, token = `MD5(password + salt)`).
-- Forwarded request headers: `range`, `accept`, `if-none-match`, `if-modified-since`, `cache-control`, `content-type`, `content-length`. `accept-encoding` is intentionally excluded — the proxy does not transcode; forwarding it causes Navidrome to return compressed bytes while the proxy strips `content-encoding`, leaving callers with undecodable data.
+- Strips incoming Subsonic auth params (`u`, `p`, `t`, `s`, `jwt`) then injects Navidrome credentials via fresh `u+t+s` token per request (salt = `crypto.randomBytes(8)`, token = `MD5(password + salt)`).
+- Forwarded request headers: `range`, `accept`, `if-none-match`, `if-modified-since`, `cache-control`. No body headers — no body is ever forwarded. `accept-encoding` is intentionally excluded — the proxy does not transcode; forwarding it causes Navidrome to return compressed bytes while the proxy strips `content-encoding`, leaving callers with undecodable data.
 - All Navidrome response headers forwarded except `set-cookie` (Navidrome session cookies must not propagate to callers under the hub's domain).
 - Response streamed via `reply.hijack()` + `pipeline(upstreamResponse, reply.raw)` — no buffering.
 - HTTP agent: `keepAlive: true`, `maxSockets: Infinity` — supports ≥12 concurrent streams.
 - Client disconnects (`ERR_STREAM_PREMATURE_CLOSE`) are swallowed as non-fatal.
 
-**Ed25519 signing note:** The signing payload uses `request.url` as seen inside the Fastify plugin — this includes the `/proxy` prefix (e.g. `/proxy/rest/stream?id=...`). Callers must sign the full path, not just the suffix.
+**Ed25519 signing note:** The signing payload uses `request.url` as seen inside the Fastify plugin — this includes the `/proxy` prefix (e.g. `/proxy/rest/getAlbum?id=...`). Callers must sign the full path, not just the suffix.
 
 ## Album art
 

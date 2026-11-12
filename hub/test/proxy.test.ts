@@ -1,14 +1,19 @@
 /**
- * Tests for /proxy/* — authenticating Navidrome proxy tier.
+ * Tests for /proxy/* — peer-only, read-only Navidrome proxy tier.
  *
  * Covers:
- *   - All three auth modes accept valid credentials (Ed25519, JWT, Subsonic u+p)
- *   - All three auth modes reject invalid/missing credentials
- *   - Streaming passthrough: response body piped without buffering
- *   - 12 concurrent streams do not block (smoke test)
+ *   - Ed25519 peer auth accepts a signed, active peer at or above the floor
+ *   - Every allowlisted endpoint (with and without `.view`) is forwarded
+ *   - Surface gate: non-GET, non-allowlisted endpoint, non-/rest path and
+ *     request bodies are refused and never reach Navidrome
+ *   - Local-user credentials (JWT, Subsonic) are not accepted
+ *   - Lifecycle gate: disabled / tombstoned peers refused
+ *   - Passthrough: response bytes piped, credentials injected, headers filtered
+ *   - 12 concurrent requests do not block (smoke test)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +28,10 @@ import {
   canonicalSigningPayload,
   signRequest,
 } from "../src/federation/signing.js";
+import {
+  PROXY_ALLOWED_ENDPOINTS,
+  resolveProxyTarget,
+} from "../src/routes/proxy.js";
 import { FEDERATION_API_VERSION } from "../src/version.js";
 import { seedPeer } from "./helpers/seed-peer.js";
 import type { KeyObject } from "node:crypto";
@@ -37,27 +46,41 @@ function tmpPath(suffix = "") {
   );
 }
 
-/** Minimal MP3 header bytes */
-const FAKE_AUDIO = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0xde, 0xad, 0xbe, 0xef]);
+/** Minimal MP3 header bytes — stands in for any binary payload (cover art). */
+const FAKE_BYTES = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0xde, 0xad, 0xbe, 0xef]);
+
+interface UpstreamRequest {
+  method: string;
+  url: string;
+  headers: http.IncomingHttpHeaders;
+}
 
 /**
- * Start a fake Navidrome that returns a fixed audio buffer on any request.
- * Records all received request paths for assertion.
+ * Start a fake Navidrome that returns a fixed buffer on any request and
+ * records everything it receives. `delayMs` holds each response open so
+ * concurrent requests overlap.
  */
-function startFakeNavidrome(response = FAKE_AUDIO): Promise<{
+function startFakeNavidrome(delayMs = 0): Promise<{
   server: http.Server;
   port: number;
-  requests: string[];
+  requests: UpstreamRequest[];
 }> {
-  const requests: string[] = [];
+  const requests: UpstreamRequest[] = [];
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
-      requests.push(req.url ?? "");
-      res.writeHead(200, {
-        "content-type": "audio/mpeg",
-        "content-length": String(response.length),
+      requests.push({
+        method: req.method ?? "",
+        url: req.url ?? "",
+        headers: req.headers,
       });
-      res.end(response);
+      setTimeout(() => {
+        res.writeHead(200, {
+          "content-type": "audio/mpeg",
+          "content-length": String(FAKE_BYTES.length),
+          "set-cookie": "nd-session=abc",
+        });
+        res.end(FAKE_BYTES);
+      }, delayMs);
     });
     server.listen(0, "127.0.0.1", () => {
       resolve({ server, port: (server.address() as AddressInfo).port, requests });
@@ -84,10 +107,11 @@ function makePeerHeaders(opts: {
   privateKey: KeyObject;
   instanceId: string;
   url: string;
+  method?: string;
 }): Record<string, string> {
   const ts = String(Date.now());
   const payload = canonicalSigningPayload({
-    method: "GET",
+    method: opts.method ?? "GET",
     path: opts.url,
     bodyHash: "-",
     timestamp: ts,
@@ -109,15 +133,13 @@ function makePeerHeaders(opts: {
 interface TestSetup {
   app: FastifyInstance;
   navidrome: http.Server;
-  navidromePort: number;
-  navidromeRequests: string[];
+  navidromeRequests: UpstreamRequest[];
   keyPathA: string;   // peer A (the caller)
   keyPathApp: string; // the hub under test
   privKeyA: KeyObject;
-  pubKeyBase64A: string;
 }
 
-async function buildTestSetup(): Promise<TestSetup> {
+async function buildTestSetup(navidromeDelayMs = 0): Promise<TestSetup> {
   const keyPathA = tmpPath("key-a.pem");
   const keyPathApp = tmpPath("key-app.pem");
 
@@ -125,7 +147,7 @@ async function buildTestSetup(): Promise<TestSetup> {
     loadOrCreatePrivateKey(keyPathA);
 
   const { server: navidrome, port: navidromePort, requests: navidromeRequests } =
-    await startFakeNavidrome();
+    await startFakeNavidrome(navidromeDelayMs);
 
   const config: Partial<Config> = {
     databasePath: ":memory:",
@@ -147,16 +169,7 @@ async function buildTestSetup(): Promise<TestSetup> {
     publicKeySpec: `ed25519:${pubKeyBase64A}`,
   });
 
-  return {
-    app,
-    navidrome,
-    navidromePort,
-    navidromeRequests,
-    keyPathA,
-    keyPathApp,
-    privKeyA,
-    pubKeyBase64A,
-  };
+  return { app, navidrome, navidromeRequests, keyPathA, keyPathApp, privKeyA };
 }
 
 async function teardown(setup: TestSetup) {
@@ -167,7 +180,37 @@ async function teardown(setup: TestSetup) {
   }
 }
 
-// ── Auth accept tests ──────────────────────────────────────────────────────────
+/** Inject a request validly signed by the active peer "peer-a". */
+function signedRequest(
+  setup: TestSetup,
+  url: string,
+  opts: {
+    method?: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
+    headers?: Record<string, string>;
+    payload?: string;
+  } = {},
+) {
+  const method = opts.method ?? "GET";
+  return setup.app.inject({
+    method,
+    url,
+    headers: {
+      ...makePeerHeaders({
+        privateKey: setup.privKeyA,
+        instanceId: "peer-a",
+        url,
+        method,
+      }),
+      ...opts.headers,
+    },
+    payload: opts.payload,
+  });
+}
+
+/** The read every sync starts with — a known-allowlisted URL. */
+const ALLOWED_URL = "/proxy/rest/getArtists?f=json";
+
+// ── Peer auth ─────────────────────────────────────────────────────────────────
 
 describe("proxy — auth accept: Ed25519 peer signature", () => {
   let setup: TestSetup;
@@ -183,44 +226,41 @@ describe("proxy — auth accept: Ed25519 peer signature", () => {
   it("allows a request with valid Ed25519 signature from a known peer", async () => {
     // request.url inside a Fastify prefixed plugin retains the full path
     // including the /proxy prefix. The signing payload must use it.
-    const url = "/proxy/rest/ping?f=json";
-    const headers = makePeerHeaders({
-      privateKey: setup.privKeyA,
-      instanceId: "peer-a",
-      url, // sign the full path as the middleware sees it
-    });
+    const res = await signedRequest(setup, ALLOWED_URL);
 
-    const res = await setup.app.inject({
-      method: "GET",
-      url,
-      headers,
-    });
-
-    // Navidrome stub returns 200 regardless — we just care auth passed (not 401)
     expect(res.statusCode).toBe(200);
+    expect(setup.navidromeRequests).toHaveLength(1);
   });
 
   it("accepts a peer at the version floor, not just the current version (v5 vs v7)", async () => {
     // Regression for the #244 bump: the check must compare against
     // MIN_FEDERATION_API_VERSION (5), or every protocol bump cuts
     // older-but-supported peers off from /proxy/*.
-    const url = "/proxy/rest/ping?f=json";
-    const headers = {
-      ...makePeerHeaders({ privateKey: setup.privKeyA, instanceId: "peer-a", url }),
-      "poutine-api-version": "5",
-    };
-    const res = await setup.app.inject({ method: "GET", url, headers });
+    const res = await signedRequest(setup, ALLOWED_URL, {
+      headers: { "poutine-api-version": "5" },
+    });
     expect(res.statusCode).toBe(200);
   });
 
   it("rejects a peer below the version floor", async () => {
-    const url = "/proxy/rest/ping?f=json";
-    const headers = {
-      ...makePeerHeaders({ privateKey: setup.privKeyA, instanceId: "peer-a", url }),
-      "poutine-api-version": "4",
-    };
+    const res = await signedRequest(setup, ALLOWED_URL, {
+      headers: { "poutine-api-version": "4" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+
+  it("rejects a signed peer that sends no api version", async () => {
+    const url = ALLOWED_URL;
+    const headers = makePeerHeaders({
+      privateKey: setup.privKeyA,
+      instanceId: "peer-a",
+      url,
+    });
+    delete headers["poutine-api-version"];
     const res = await setup.app.inject({ method: "GET", url, headers });
     expect(res.statusCode).toBe(403);
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 });
 
@@ -235,25 +275,16 @@ describe("proxy — lifecycle gate on peer auth (#244)", () => {
     await teardown(setup);
   });
 
-  function signedPing() {
-    const url = "/proxy/rest/ping?f=json";
-    const headers = makePeerHeaders({
-      privateKey: setup.privKeyA,
-      instanceId: "peer-a",
-      url,
-    });
-    return setup.app.inject({ method: "GET", url, headers });
-  }
-
   it("refuses a disabled peer's validly signed request with a uniform 403", async () => {
     setup.app.db
       .prepare("UPDATE instances SET lifecycle = 'disabled' WHERE id = 'peer-a'")
       .run();
     setup.app.peerRegistry.reload();
 
-    const res = await signedPing();
+    const res = await signedRequest(setup, ALLOWED_URL);
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ error: "forbidden" });
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 
   it("refuses a tombstoned peer with the identical 403 body as disabled", async () => {
@@ -262,13 +293,189 @@ describe("proxy — lifecycle gate on peer auth (#244)", () => {
       .run();
     setup.app.peerRegistry.reload();
 
-    const res = await signedPing();
+    const res = await signedRequest(setup, ALLOWED_URL);
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ error: "forbidden" });
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 });
 
-describe("proxy — auth accept: JWT", () => {
+// ── Endpoint allowlist ────────────────────────────────────────────────────────
+
+describe("proxy — endpoint allowlist", () => {
+  let setup: TestSetup;
+
+  beforeEach(async () => {
+    setup = await buildTestSetup();
+  });
+
+  afterEach(async () => {
+    await teardown(setup);
+  });
+
+  it("is exactly the set of reads peer sync, auto-sync and cover art issue", () => {
+    // Pinned on purpose: widening the peer-facing surface must be a visible,
+    // reviewed diff here as well as in routes/proxy.ts.
+    expect([...PROXY_ALLOWED_ENDPOINTS].sort()).toEqual([
+      "getAlbum",
+      "getArtist",
+      "getArtists",
+      "getCoverArt",
+      "getScanStatus",
+    ]);
+  });
+
+  it.each(PROXY_ALLOWED_ENDPOINTS.map((e) => [e]))(
+    "forwards GET /proxy/rest/%s for a signed active peer",
+    async (endpoint) => {
+      const res = await signedRequest(setup, `/proxy/rest/${endpoint}?id=x1&f=json`);
+
+      expect(res.statusCode).toBe(200);
+      expect(setup.navidromeRequests).toHaveLength(1);
+      const upstream = new URL(setup.navidromeRequests[0].url, "http://nd");
+      expect(setup.navidromeRequests[0].method).toBe("GET");
+      expect(upstream.pathname).toBe(`/rest/${endpoint}`);
+      expect(upstream.searchParams.get("id")).toBe("x1");
+    },
+  );
+
+  it.each(PROXY_ALLOWED_ENDPOINTS.map((e) => [e]))(
+    "forwards GET /proxy/rest/%s.view to the same upstream endpoint",
+    async (endpoint) => {
+      const res = await signedRequest(setup, `/proxy/rest/${endpoint}.view?id=x1`);
+
+      expect(res.statusCode).toBe(200);
+      expect(setup.navidromeRequests).toHaveLength(1);
+      const upstream = new URL(setup.navidromeRequests[0].url, "http://nd");
+      expect(upstream.pathname).toBe(`/rest/${endpoint}`);
+    },
+  );
+
+  it.each([
+    ["HEAD"],
+    ["POST"],
+    ["PUT"],
+    ["PATCH"],
+    ["DELETE"],
+  ] as const)(
+    "rejects %s on an allowlisted endpoint with 405",
+    async (method) => {
+      const res = await signedRequest(setup, ALLOWED_URL, { method });
+
+      expect(res.statusCode).toBe(405);
+      expect(res.headers.allow).toBe("GET");
+      expect(setup.navidromeRequests).toHaveLength(0);
+    },
+  );
+
+  it("never forwards OPTIONS (answered by the CORS layer, not the proxy)", async () => {
+    await signedRequest(setup, ALLOWED_URL, { method: "OPTIONS" });
+    await signedRequest(setup, ALLOWED_URL, {
+      method: "OPTIONS",
+      headers: { origin: "http://example.test", "access-control-request-method": "POST" },
+    });
+
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+
+  it.each([
+    // Subsonic endpoints outside the allowlist — reads and writes alike.
+    ["/proxy/rest/ping?f=json"],
+    ["/proxy/rest/stream?id=trk-1"],
+    ["/proxy/rest/getAlbumList2?type=newest"],
+    ["/proxy/rest/startScan"],
+    ["/proxy/rest/startScan.view"],
+    // Near-misses of an allowlisted name: the match is exact and undecoded.
+    ["/proxy/rest/getartists"],
+    ["/proxy/rest/getArtists/"],
+    ["/proxy/rest/getArtists.view.view"],
+    ["/proxy/rest/getArtists.json"],
+    ["/proxy/rest/getArtists/../startScan"],
+    ["/proxy/rest/getArtists%2F..%2FstartScan"],
+    ["/proxy/rest/%67etArtists"],
+    ["/proxy/rest//getArtists"],
+    ["/proxy//rest/getArtists"],
+    ["/proxy/rest/getArtists;x=1"],
+  ])("rejects non-allowlisted endpoint %s with 404", async (url) => {
+    const res = await signedRequest(setup, url);
+
+    expect(res.statusCode).toBe(404);
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+
+  it.each([
+    ["/proxy/"],
+    ["/proxy/rest"],
+    ["/proxy/rest/"],
+    ["/proxy/auth/login"],
+    ["/proxy/api/song"],
+    ["/proxy/app/"],
+    ["/proxy/share/abc"],
+    ["/proxy/getArtists"],
+    ["/proxy/x/rest/getArtists"],
+  ])("rejects non-/rest path %s with 404", async (url) => {
+    const res = await signedRequest(setup, url);
+
+    expect(res.statusCode).toBe(404);
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+
+  it("rejects a GET that carries a body with 400", async () => {
+    const res = await signedRequest(setup, ALLOWED_URL, {
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ a: 1 }),
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+
+  it("rejects a GET that declares a chunked body with 400", async () => {
+    const res = await signedRequest(setup, ALLOWED_URL, {
+      headers: { "transfer-encoding": "chunked" },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+
+  it("refuses off-surface requests before auth, with no credentials at all", async () => {
+    const post = await setup.app.inject({ method: "POST", url: ALLOWED_URL });
+    const offList = await setup.app.inject({ method: "GET", url: "/proxy/rest/ping" });
+
+    expect(post.statusCode).toBe(405);
+    expect(offList.statusCode).toBe(404);
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+});
+
+describe("resolveProxyTarget", () => {
+  it("maps an allowlisted URL to its upstream path and raw query", () => {
+    expect(resolveProxyTarget("/proxy/rest/getAlbum?id=a%201&f=json")).toEqual({
+      upstreamPath: "/rest/getAlbum",
+      search: "id=a%201&f=json",
+    });
+    expect(resolveProxyTarget("/proxy/rest/getArtists.view")).toEqual({
+      upstreamPath: "/rest/getArtists",
+      search: "",
+    });
+  });
+
+  it("does not let the query string satisfy the path match", () => {
+    expect(resolveProxyTarget("/proxy/rest/ping?x=/proxy/rest/getArtists")).toBeNull();
+    expect(resolveProxyTarget("/proxy/auth/login?/proxy/rest/getArtists")).toBeNull();
+  });
+
+  it("returns null for absolute-form and prefix-less URLs", () => {
+    expect(resolveProxyTarget("http://hub/proxy/rest/getArtists")).toBeNull();
+    expect(resolveProxyTarget("/rest/getArtists")).toBeNull();
+    expect(resolveProxyTarget("")).toBeNull();
+  });
+});
+
+// ── Auth reject ───────────────────────────────────────────────────────────────
+
+describe("proxy — auth reject: local-user credentials are not accepted", () => {
   let setup: TestSetup;
   let userId: string;
 
@@ -281,93 +488,91 @@ describe("proxy — auth accept: JWT", () => {
     await teardown(setup);
   });
 
-  it("allows a request with valid JWT in Authorization header", async () => {
+  it("rejects a valid JWT in the Authorization header", async () => {
     const token = await createAccessToken(userId, setup.app.config);
     const res = await setup.app.inject({
       method: "GET",
-      url: "/proxy/rest/ping?f=json",
+      url: ALLOWED_URL,
       headers: { authorization: `Bearer ${token}` },
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 
-  it("allows a request with valid JWT in access_token cookie", async () => {
+  it("rejects a valid JWT in the access_token cookie", async () => {
     const token = await createAccessToken(userId, setup.app.config);
     const res = await setup.app.inject({
       method: "GET",
-      url: "/proxy/rest/ping?f=json",
+      url: ALLOWED_URL,
       cookies: { access_token: token },
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 
-  it("allows a request with valid JWT in token query param", async () => {
+  it("rejects a valid JWT in the token query param", async () => {
     const token = await createAccessToken(userId, setup.app.config);
     const res = await setup.app.inject({
       method: "GET",
-      url: `/proxy/rest/ping?f=json&token=${token}`,
+      url: `${ALLOWED_URL}&token=${token}`,
     });
-    expect(res.statusCode).toBe(200);
-  });
-});
-
-describe("proxy — auth accept: Subsonic u+p", () => {
-  let setup: TestSetup;
-
-  beforeEach(async () => {
-    setup = await buildTestSetup();
-    seedUser(setup.app);
+    expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 
-  afterEach(async () => {
-    await teardown(setup);
-  });
-
-  it("allows a request with valid u+p credentials", async () => {
+  it("rejects valid Subsonic u+p credentials", async () => {
     const res = await setup.app.inject({
       method: "GET",
-      url: "/proxy/rest/ping?u=tester&p=secret&f=json",
+      url: `${ALLOWED_URL}&u=tester&p=secret`,
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 
-  it("allows a request with enc:<hex> encoded password", async () => {
+  it("rejects valid Subsonic u+p with an enc:<hex> password", async () => {
     const hexPassword = Buffer.from("secret", "utf8").toString("hex");
     const res = await setup.app.inject({
       method: "GET",
-      url: `/proxy/rest/ping?u=tester&p=enc:${hexPassword}&f=json`,
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it("allows a request with valid u+t+s (#106)", async () => {
-    const { createHash } = await import("node:crypto");
-    const salt = "deadbeef";
-    const token = createHash("md5").update("secret" + salt).digest("hex");
-    const res = await setup.app.inject({
-      method: "GET",
-      url: `/proxy/rest/ping?u=tester&t=${token}&s=${salt}&f=json`,
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it("rejects u+t+s with wrong token (#106)", async () => {
-    const res = await setup.app.inject({
-      method: "GET",
-      url: `/proxy/rest/ping?u=tester&t=${"0".repeat(32)}&s=any&f=json`,
+      url: `${ALLOWED_URL}&u=tester&p=enc:${hexPassword}`,
     });
     expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+
+  it("rejects valid Subsonic u+t+s credentials", async () => {
+    const salt = "deadbeef";
+    const token = crypto.createHash("md5").update("secret" + salt).digest("hex");
+    const res = await setup.app.inject({
+      method: "GET",
+      url: `${ALLOWED_URL}&u=tester&t=${token}&s=${salt}`,
+    });
+    expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+
+  it("rejects a local user who also sends an incomplete set of peer headers", async () => {
+    const token = await createAccessToken(userId, setup.app.config);
+    const headers = makePeerHeaders({
+      privateKey: setup.privKeyA,
+      instanceId: "peer-a",
+      url: ALLOWED_URL,
+    });
+    delete headers["x-poutine-signature"];
+    const res = await setup.app.inject({
+      method: "GET",
+      url: ALLOWED_URL,
+      headers: { ...headers, authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 });
 
-// ── Auth reject tests ──────────────────────────────────────────────────────────
-
-describe("proxy — auth reject", () => {
+describe("proxy — auth reject: peer signature", () => {
   let setup: TestSetup;
 
   beforeEach(async () => {
     setup = await buildTestSetup();
-    seedUser(setup.app);
   });
 
   afterEach(async () => {
@@ -375,83 +580,55 @@ describe("proxy — auth reject", () => {
   });
 
   it("rejects with 401 when no auth provided", async () => {
-    const res = await setup.app.inject({
-      method: "GET",
-      url: "/proxy/rest/ping?f=json",
-    });
+    const res = await setup.app.inject({ method: "GET", url: ALLOWED_URL });
     expect(res.statusCode).toBe(401);
-  });
-
-  it("rejects with 401 when JWT is invalid/expired", async () => {
-    const res = await setup.app.inject({
-      method: "GET",
-      url: "/proxy/rest/ping?f=json",
-      headers: { authorization: "Bearer not-a-real-token" },
-    });
-    // Falls through to Subsonic param auth, which also fails (no u param)
-    expect(res.statusCode).toBe(401);
-  });
-
-  it("rejects with 401 when Subsonic password is wrong", async () => {
-    const res = await setup.app.inject({
-      method: "GET",
-      url: "/proxy/rest/ping?u=tester&p=wrongpassword&f=json",
-    });
-    expect(res.statusCode).toBe(401);
-  });
-
-  it("rejects with 401 when Subsonic username is unknown", async () => {
-    const res = await setup.app.inject({
-      method: "GET",
-      url: "/proxy/rest/ping?u=nobody&p=secret&f=json",
-    });
-    expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 
   it("rejects with 401 when Ed25519 signature is tampered", async () => {
-    const url = "/proxy/rest/ping?f=json";
+    const res = await signedRequest(setup, ALLOWED_URL, {
+      headers: {
+        "x-poutine-signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
+  });
+
+  it("rejects with 401 when the signature covers a different endpoint", async () => {
     const headers = makePeerHeaders({
       privateKey: setup.privKeyA,
       instanceId: "peer-a",
-      url,
+      url: "/proxy/rest/getArtist?id=1",
     });
-    // Corrupt the signature
-    headers["x-poutine-signature"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-
     const res = await setup.app.inject({
       method: "GET",
-      url,
+      url: "/proxy/rest/getAlbum?id=1",
       headers,
     });
     expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 
   it("rejects with 401 when Ed25519 instance ID is not a known peer", async () => {
-    const url = "/proxy/rest/ping?f=json";
     const headers = makePeerHeaders({
       privateKey: setup.privKeyA,
       instanceId: "unknown-peer",
-      url,
+      url: ALLOWED_URL,
     });
-
-    const res = await setup.app.inject({
-      method: "GET",
-      url,
-      headers,
-    });
+    const res = await setup.app.inject({ method: "GET", url: ALLOWED_URL, headers });
     expect(res.statusCode).toBe(401);
+    expect(setup.navidromeRequests).toHaveLength(0);
   });
 });
 
-// ── Streaming passthrough ──────────────────────────────────────────────────────
+// ── Passthrough ───────────────────────────────────────────────────────────────
 
-describe("proxy — streaming passthrough", () => {
+describe("proxy — passthrough", () => {
   let setup: TestSetup;
-  let userId: string;
 
   beforeEach(async () => {
     setup = await buildTestSetup();
-    ({ id: userId } = seedUser(setup.app));
   });
 
   afterEach(async () => {
@@ -459,122 +636,77 @@ describe("proxy — streaming passthrough", () => {
   });
 
   it("forwards exact response bytes and content-type from Navidrome", async () => {
-    const token = await createAccessToken(userId, setup.app.config);
-    const res = await setup.app.inject({
-      method: "GET",
-      url: "/proxy/rest/stream?id=trk-1",
-      headers: { authorization: `Bearer ${token}` },
-    });
+    const res = await signedRequest(setup, "/proxy/rest/getCoverArt?id=al-1&size=300");
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toMatch(/audio\/mpeg/);
-    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_AUDIO);
+    expect(res.headers["poutine-api-version"]).toBe(String(FEDERATION_API_VERSION));
+    expect(Buffer.from(res.rawPayload)).toEqual(FAKE_BYTES);
   });
 
-  it("forwards Navidrome credentials to upstream (u+t+s in query)", async () => {
-    const token = await createAccessToken(userId, setup.app.config);
-    await setup.app.inject({
-      method: "GET",
-      url: "/proxy/rest/stream?id=trk-1",
-      headers: { authorization: `Bearer ${token}` },
-    });
+  it("does not relay Navidrome's set-cookie to the caller", async () => {
+    const res = await signedRequest(setup, "/proxy/rest/getCoverArt?id=al-1");
 
-    // Navidrome should have received a request with injected proxy credentials.
-    // The path must not contain /proxy, and caller's u+p must be stripped.
-    expect(setup.navidromeRequests.length).toBeGreaterThan(0);
-    const receivedUrl = setup.navidromeRequests[0];
-    expect(receivedUrl).not.toContain("/proxy");
-    expect(receivedUrl).toContain("/rest/stream");
-    expect(receivedUrl).toContain("u=nav-admin");
-    expect(receivedUrl).toContain("t=");
-    expect(receivedUrl).toContain("s=");
-    // Caller's plaintext password must not be forwarded to Navidrome
-    expect(receivedUrl).not.toMatch(/[?&]p=/);
-  });
-
-  it("strips caller u+p params and injects proxy credentials when Subsonic auth used", async () => {
-    // Caller authenticates with u+p; those params must not reach Navidrome
-    await setup.app.inject({
-      method: "GET",
-      url: "/proxy/rest/stream?id=trk-1&u=tester&p=secret",
-    });
-
-    expect(setup.navidromeRequests.length).toBeGreaterThan(0);
-    const receivedUrl = setup.navidromeRequests[0];
-    expect(receivedUrl).not.toMatch(/[?&]p=/);
-    expect(receivedUrl).not.toContain("u=tester");
-    expect(receivedUrl).toContain("u=nav-admin");
-    expect(receivedUrl).toContain("t=");
-    expect(receivedUrl).toContain("s=");
-  });
-
-  it("passes Range header through to Navidrome", async () => {
-    const token = await createAccessToken(userId, setup.app.config);
-    const res = await setup.app.inject({
-      method: "GET",
-      url: "/proxy/rest/stream?id=trk-1",
-      headers: {
-        authorization: `Bearer ${token}`,
-        range: "bytes=0-1023",
-      },
-    });
-
-    // Fake Navidrome returns 200 regardless, but the request headers should pass
     expect(res.statusCode).toBe(200);
+    expect(res.headers["set-cookie"]).toBeUndefined();
   });
 
-  it("does not forward accept-encoding to Navidrome", async () => {
-    // If accept-encoding reaches Navidrome, it may respond with gzip. The proxy
-    // strips content-encoding from responses, leaving the caller with raw compressed
-    // bytes that fail JSON parsing.
-    const receivedHeaders: Record<string, string> = {};
-    const headerCapture = await new Promise<{ server: http.Server; port: number }>(
-      (resolve) => {
-        const server = http.createServer((req, res) => {
-          for (const [k, v] of Object.entries(req.headers)) {
-            receivedHeaders[k] = Array.isArray(v) ? v.join(", ") : (v ?? "");
-          }
-          res.writeHead(200, { "content-type": "application/json", "content-length": "2" });
-          res.end("{}");
-        });
-        server.listen(0, "127.0.0.1", () =>
-          resolve({ server, port: (server.address() as AddressInfo).port }),
-        );
-      },
+  it("injects Navidrome credentials upstream (u+t+s in query, no /proxy prefix)", async () => {
+    await signedRequest(setup, "/proxy/rest/getCoverArt?id=al-1&size=300");
+
+    expect(setup.navidromeRequests).toHaveLength(1);
+    const upstream = new URL(setup.navidromeRequests[0].url, "http://nd");
+    expect(upstream.pathname).toBe("/rest/getCoverArt");
+    expect(upstream.searchParams.get("id")).toBe("al-1");
+    expect(upstream.searchParams.get("size")).toBe("300");
+    expect(upstream.searchParams.get("u")).toBe("nav-admin");
+    expect(upstream.searchParams.get("c")).toBe("poutine-proxy");
+    const salt = upstream.searchParams.get("s") ?? "";
+    expect(upstream.searchParams.get("t")).toBe(
+      crypto.createHash("md5").update("nav-pass" + salt).digest("hex"),
+    );
+  });
+
+  it("strips caller-supplied Subsonic auth params before injecting its own", async () => {
+    await signedRequest(
+      setup,
+      "/proxy/rest/getCoverArt?id=al-1&u=someone&p=pw&t=tok&s=salt&jwt=abc&c=other",
     );
 
-    const keyPathLocal = tmpPath("key-enc.pem");
+    expect(setup.navidromeRequests).toHaveLength(1);
+    const upstream = new URL(setup.navidromeRequests[0].url, "http://nd");
+    expect(upstream.searchParams.getAll("u")).toEqual(["nav-admin"]);
+    expect(upstream.searchParams.getAll("c")).toEqual(["poutine-proxy"]);
+    expect(upstream.searchParams.has("p")).toBe(false);
+    expect(upstream.searchParams.has("jwt")).toBe(false);
+    expect(upstream.searchParams.getAll("t")).not.toContain("tok");
+    expect(upstream.searchParams.getAll("s")).not.toContain("salt");
+  });
 
-    const { buildApp: buildAppLocal } = await import("../src/server.js");
-    const appLocal = await buildAppLocal({
-      databasePath: ":memory:",
-      jwtSecret: "enc-test",
-      poutinePrivateKeyPath: keyPathLocal,
-      poutineInstanceId: "enc-test",
-      navidromeUrl: `http://127.0.0.1:${headerCapture.port}`,
-      navidromeUsername: "admin",
-      navidromePassword: "admin",
+  it("forwards only allowlisted request headers to Navidrome", async () => {
+    // accept-encoding: if it reached Navidrome it may respond with gzip, and
+    // the caller would get compressed bytes it was never told to decompress.
+    // authorization / cookie / signing headers: none of Navidrome's business.
+    const res = await signedRequest(setup, "/proxy/rest/getCoverArt?id=al-1", {
+      headers: {
+        range: "bytes=0-1023",
+        "if-none-match": '"etag-1"',
+        "accept-encoding": "gzip, deflate, br",
+        authorization: "Bearer whatever",
+        cookie: "access_token=whatever",
+      },
     });
-    await appLocal.ready();
-    const { id: uid } = seedUser(appLocal, "enc-user", "enc-pass");
-    const jwt = await createAccessToken(uid, appLocal.config);
 
-    try {
-      await appLocal.inject({
-        method: "GET",
-        url: "/proxy/rest/ping?f=json",
-        headers: {
-          authorization: `Bearer ${jwt}`,
-          "accept-encoding": "gzip, deflate, br",
-        },
-      });
-
-      expect(receivedHeaders["accept-encoding"]).toBeUndefined();
-    } finally {
-      await appLocal.close();
-      await new Promise<void>((r) => headerCapture.server.close(() => r()));
-      if (fs.existsSync(keyPathLocal)) fs.unlinkSync(keyPathLocal);
-    }
+    expect(res.statusCode).toBe(200);
+    const received = setup.navidromeRequests[0].headers;
+    expect(received.range).toBe("bytes=0-1023");
+    expect(received["if-none-match"]).toBe('"etag-1"');
+    expect(received["accept-encoding"]).toBeUndefined();
+    expect(received.authorization).toBeUndefined();
+    expect(received.cookie).toBeUndefined();
+    expect(received["content-type"]).toBeUndefined();
+    expect(received["content-length"]).toBeUndefined();
+    expect(received["x-poutine-signature"]).toBeUndefined();
   });
 });
 
@@ -582,93 +714,35 @@ describe("proxy — streaming passthrough", () => {
 
 describe("proxy — concurrency smoke test", () => {
   let setup: TestSetup;
-  let userId: string;
 
   beforeEach(async () => {
-    // Use a fake Navidrome that intentionally delays each response by 50ms
-    // so concurrent requests actually overlap in flight.
-    const requests: string[] = [];
-    const navidrome = await new Promise<{ server: http.Server; port: number; requests: string[] }>(
-      (resolve) => {
-        const server = http.createServer((_req, res) => {
-          requests.push(_req.url ?? "");
-          // Delay response to ensure overlap
-          setTimeout(() => {
-            res.writeHead(200, {
-              "content-type": "audio/mpeg",
-              "content-length": String(FAKE_AUDIO.length),
-            });
-            res.end(FAKE_AUDIO);
-          }, 50);
-        });
-        server.listen(0, "127.0.0.1", () => {
-          resolve({ server, port: (server.address() as AddressInfo).port, requests });
-        });
-      },
-    );
-
-    const keyPathApp = tmpPath("key-app-conc.pem");
-
-    const config: Partial<Config> = {
-      databasePath: ":memory:",
-      jwtSecret: "concurrency-test-secret",
-      poutinePrivateKeyPath: keyPathApp,
-      poutineInstanceId: "hub-concurrency-test",
-      navidromeUrl: `http://127.0.0.1:${navidrome.port}`,
-      navidromeUsername: "admin",
-      navidromePassword: "admin",
-    };
-
-    const app = await buildApp(config);
-    await app.ready();
-
-    // Reuse setup slot — override navidrome to the delaying one
-    setup = {
-      app,
-      navidrome: navidrome.server,
-      navidromePort: navidrome.port,
-      navidromeRequests: navidrome.requests,
-      keyPathA: "",
-      keyPathApp,
-      privKeyA: {} as KeyObject,
-      pubKeyBase64A: "",
-    };
-
-    ({ id: userId } = seedUser(app));
+    // Each upstream response is held 50ms so concurrent requests actually
+    // overlap in flight.
+    setup = await buildTestSetup(50);
   });
 
   afterEach(async () => {
-    await setup.app.close();
-    await new Promise<void>((resolve) => setup.navidrome.close(() => resolve()));
-    if (fs.existsSync(setup.keyPathApp)) fs.unlinkSync(setup.keyPathApp);
+    await teardown(setup);
   });
 
-  it("handles 12 concurrent in-flight streams without blocking", async () => {
-    const token = await createAccessToken(userId, setup.app.config);
-
+  it("handles 12 concurrent in-flight requests without blocking", async () => {
     const start = Date.now();
 
-    // Fire 12 requests in parallel
-    const promises = Array.from({ length: 12 }, (_, i) =>
-      setup.app.inject({
-        method: "GET",
-        url: `/proxy/rest/stream?id=trk-${i}`,
-        headers: { authorization: `Bearer ${token}` },
-      }),
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        signedRequest(setup, `/proxy/rest/getCoverArt?id=al-${i}`),
+      ),
     );
-
-    const results = await Promise.all(promises);
     const elapsed = Date.now() - start;
 
-    // All should succeed
     for (const res of results) {
       expect(res.statusCode).toBe(200);
     }
+    expect(setup.navidromeRequests).toHaveLength(12);
 
-    // If streams were serialized (blocking), total time would be 12 × 50ms = 600ms+.
-    // With true concurrency they all overlap and finish in ~50ms + overhead.
-    // Allow generous budget (500ms) to account for slow CI, but serialized
-    // would take much longer.
+    // If requests were serialized (blocking), total time would be 12 × 50ms =
+    // 600ms+. With true concurrency they overlap and finish in ~50ms +
+    // overhead; the budget is generous for slow CI.
     expect(elapsed).toBeLessThan(1000);
   });
 });
