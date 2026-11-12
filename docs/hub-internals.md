@@ -398,7 +398,7 @@ Tag-triggered. `.github/workflows/release.yml` fires on `v*.*.*` pushes, verifie
 
 ## Three-hub federation test
 
-- `pnpm test:federation` → `test/federation/run.sh`. Starts hub-a (3011), hub-b (3012), hub-c (3013) as separate Compose projects (`-p poutine-fed-a/b/c`) from the same `docker-compose.yml`, each with its own `--env-file`.
+- `pnpm test:federation` → `test/federation/run.sh`. Starts hub-a (3011), hub-b (3012), hub-c (3013) as separate Compose projects (`-p poutine-fed-a/b/c`) from the same `docker-compose.yml`, each with its own `--env-file`. The harness exports `POUTINE_IMAGE=poutine-federation-test:local` (compose default: `ghcr.io/benders/poutine:latest`) so its `up --build` never retags the image live hubs run (#310); `FEDERATION_TEST_IMAGE` overrides the test tag.
 - Shared external Docker network `poutine-federation-test`; containers connected with DNS aliases `hub-a`/`hub-b`/`hub-c` matching peer URLs in `test/federation/peers-{a,b,c}.yaml`.
 - Committed test keypairs (`test/federation/keys/`) are seeded into each project's `hub-data` volume via a throwaway `alpine` container before `up`. Each hub boots with a known identity.
 - All three instances are fully-connected peers. Test verifies hub-a sees albums from all three and can stream tracks federated from both b and c. Ports 3011–3013 avoid conflicting with live instances on 3001–3003.

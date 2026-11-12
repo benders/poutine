@@ -1,6 +1,8 @@
 services:
   hub:
-    image: ghcr.io/benders/poutine:latest
+    # POUTINE_IMAGE overrides the tag. The federation harness sets it so a
+    # test `up --build` never retags the image live hubs run (#310).
+    image: ${POUTINE_IMAGE:-ghcr.io/benders/poutine:latest}
     build:
       context: .
       dockerfile: hub/Dockerfile

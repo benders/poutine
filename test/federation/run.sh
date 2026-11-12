@@ -18,6 +18,13 @@ PROJECT_B="poutine-fed-b"
 PROJECT_C="poutine-fed-c"
 FED_NETWORK="poutine-federation-test"
 
+# Build and run the test stacks under a harness-only tag (#310).
+# docker-compose.yml defaults the hub image to ghcr.io/benders/poutine:latest,
+# which is what live hubs on this host run; `up --build` below would retag it
+# to the test build. Set unconditionally so a POUTINE_IMAGE inherited from the
+# operator's shell can't point the build back at a live tag.
+export POUTINE_IMAGE="${FEDERATION_TEST_IMAGE:-poutine-federation-test:local}"
+
 COMPOSE_A="docker compose -f $COMPOSE_FILE -p $PROJECT_A --env-file $SCRIPT_DIR/a.env"
 COMPOSE_B="docker compose -f $COMPOSE_FILE -p $PROJECT_B --env-file $SCRIPT_DIR/b.env"
 COMPOSE_C="docker compose -f $COMPOSE_FILE -p $PROJECT_C --env-file $SCRIPT_DIR/c.env"
