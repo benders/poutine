@@ -134,6 +134,11 @@ actually needs); reject everything else with 404. Add a regression test assertin
 
 ### H4 — Dependency vulnerabilities (43)
 
+> **Status: fixed (#313), 2026-11-12.** `pnpm audit` reports no known
+> vulnerabilities, prod and dev (the count had grown to 138, 79 in prod deps).
+> Still open: the `pnpm audit --prod` CI gate. The text below describes the
+> state at the assessment date.
+
 `pnpm audit --prod` (2026-09-13): **3 low, 18 moderate, 22 high**. Notables:
 
 | Package          | Installed | Fixed in | Issue                                                              |

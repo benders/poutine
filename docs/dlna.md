@@ -200,7 +200,7 @@ Sink is empty — we don't render.
 
 | Library                  | Role in tests                                  | Notes                                                                                                           |
 |--------------------------|------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|
-| `node-upnp` (devDep)     | Real UPnP control point: device description + SOAP Browse | Quirk: `parseSOAPResponse` walks `Array.from(argumentList.argument)`, which silently returns `[]` for single-argument actions because fast-xml-parser emits an object (not an array) for a single child. Single-output SOAP actions come back as `{}`. Worked around with raw fetch. |
+| In-file `ControlPoint`   | UPnP control point: device description → control URL → SOAP action | Lives in `test/dlna-http.integration.test.ts`, built on `fetch` + `fast-xml-parser`. Replaced the unmaintained `node-upnp` (#313), whose `got` / `ip` / `fast-xml-parser` 3 deps carried unpatched advisories. |
 | Node `dgram` (built-in)  | SSDP M-SEARCH + reply parsing                  | Direct and reliable. No library needed.                                                                          |
 | Node `fetch` (built-in)  | Raw HTTP for stream headers + LAN-gate assertions + single-output SOAP | Already in tree.                                                                                                 |
 | `better-sqlite3` (dep)   | In-memory schema seeded with fixtures          | Used by the `dlna-objects` unit tests only to *seed* `unified_*` rows; the service itself reads via `app.inject()`-driven Subsonic calls (#219). |
@@ -241,7 +241,7 @@ Run separately; require UDP multicast and a free UDP 1900 for the advertiser.
 | File                                  | Covers                                                                                                            |
 |---------------------------------------|-------------------------------------------------------------------------------------------------------------------|
 | `test/dlna-ssdp.integration.test.ts`  | Boots `SsdpAdvertiser`. Raw-dgram M-SEARCH for `MediaServer:1` (asserts USN/LOCATION/CACHE-CONTROL/SERVER on the unicast 200). M-SEARCH for `ssdp:all` (asserts all five advertised targets reply). Boots a second advertiser and listens for `NTS: ssdp:byebye` after `stop()` (asserts all five targets emit byebye before the socket closes). |
-| `test/dlna-http.integration.test.ts`  | Boots full hub via `buildApp()` on a random loopback port. `node-upnp` drives device-description fetch + Browse + ConnectionManager:GetProtocolInfo. Raw fetch covers single-output SOAP actions, confirms `/dlna/stream/<id>` returns 404 (#218 — the relay route was deleted), and LAN-gate rejecting `x-forwarded-for` / `cf-connecting-ip`. |
+| `test/dlna-http.integration.test.ts`  | Boots full hub via `buildApp()` on a random loopback port. The in-file `ControlPoint` drives device-description fetch + Browse + ConnectionManager:GetProtocolInfo. Raw fetch covers single-output SOAP actions, confirms `/dlna/stream/<id>` returns 404 (#218 — the relay route was deleted), and LAN-gate rejecting `x-forwarded-for` / `cf-connecting-ip`. |
 | `test/cast-token-stream.integration.test.ts` | #218 — end-to-end smoke that `buildStreamUrl` produces a URL whose bytes stream through Hub Subsonic; cross-track token rejection; getCoverArt refuses cast tokens. |
 
 > **Test constraint:** `dlna-http.integration.test.ts` leaves the
@@ -257,7 +257,7 @@ Run separately; require UDP multicast and a free UDP 1900 for the advertiser.
 ### Driving a real-world DLNA server (ground truth)
 
 To verify our DIDL-Lite shape matches what real servers emit, point the
-same primitives (`dgram` + `node-upnp`) at the LAN. Recipe:
+same primitives (`dgram` + the test `ControlPoint`) at the LAN. Recipe:
 
 1. Send M-SEARCH with `ST: urn:schemas-upnp-org:device:MediaServer:1`.
 2. For each responder, fetch the LOCATION and read `<manufacturer>` from
@@ -279,7 +279,7 @@ for artists / release groups.
 Probe is not committed to the tree — it's a `node` one-shot. Reproduce
 from the README of this file by combining the structure of
 `test/dlna-ssdp.integration.test.ts` (raw M-SEARCH) and
-`test/dlna-http.integration.test.ts` (node-upnp Browse).
+`test/dlna-http.integration.test.ts` (`ControlPoint` Browse).
 
 ### CI smoke (optional)
 
