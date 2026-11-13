@@ -337,6 +337,15 @@ function migrateInstancesShrinkGuard(db: Database.Database): void {
   }
 }
 
+/** Issue #315: `users.token_version` — bumped to revoke a user's session JWTs. */
+function migrateUsersTokenVersion(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "token_version")) {
+    logMigration("Adding token_version column to users table");
+    db.exec("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
 /**
  * Issue #244: peer lifecycle state (active/disabled/tombstoned), orthogonal
  * to the pre-existing liveness `status` column. Additive columns on
@@ -411,6 +420,9 @@ export function createDatabase(dbPath: string): Database.Database {
   // Issue #244: add instances.lifecycle/lifecycle_changed_at + peer_tombstones
   migrateInstancesLifecycle(db);
   migrateInstancesShrinkGuard(db);
+
+  // Issue #315: add users.token_version (session revocation)
+  migrateUsersTokenVersion(db);
 
   return db;
 }

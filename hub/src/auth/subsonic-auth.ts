@@ -3,6 +3,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { verifyPassword, getStoredPassword } from "./passwords.js";
 import { sendSubsonicError, sendBinaryError, decodeId } from "../routes/subsonic-response.js";
 import { verifyCastToken } from "../services/cast-tokens.js";
+import { clientAddress } from "./rate-limit.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -116,6 +117,33 @@ function tryInternalAuth(
   };
 }
 
+type CredsOutcome =
+  | { kind: "ok"; user: { id: string; username: string; isAdmin: boolean } }
+  | { kind: "denied" }
+  /** Too many recent failures for this (address, username) — see AuthThrottle. */
+  | { kind: "throttled"; retryAfter: number };
+
+/**
+ * Verify `u+p` / `u+t+s` under the failed-password throttle (#315). A
+ * locked-out caller is refused before the password is looked at.
+ */
+function checkCreds(request: FastifyRequest, creds: SubsonicCreds): CredsOutcome {
+  const throttle = request.server.authThrottle;
+  const address = clientAddress(request);
+  const username = creds.username!;
+  const retryAfter = throttle.blockedFor(address, username);
+  if (retryAfter > 0) return { kind: "throttled", retryAfter };
+  const user = lookupAndVerify(request, creds);
+  if (!user) {
+    throttle.recordFailure(address, username);
+    return { kind: "denied" };
+  }
+  throttle.recordSuccess(address, username);
+  return { kind: "ok", user };
+}
+
+const THROTTLED_MESSAGE = "Too many failed attempts. Try again later.";
+
 function lookupAndVerify(
   request: FastifyRequest,
   creds: SubsonicCreds,
@@ -160,12 +188,18 @@ export async function requireSubsonicAuth(
     return;
   }
 
-  const auth = lookupAndVerify(request, creds);
-  if (!auth) {
+  const auth = checkCreds(request, creds);
+  if (auth.kind === "throttled") {
+    // Generic error 0, not 40: clients treat 40 as "re-prompt for password".
+    reply.header("retry-after", auth.retryAfter);
+    sendSubsonicError(reply, 0, THROTTLED_MESSAGE, query);
+    return;
+  }
+  if (auth.kind === "denied") {
     sendSubsonicError(reply, 40, "Wrong username or password", query);
     return;
   }
-  request.subsonicUser = auth;
+  request.subsonicUser = auth.user;
 }
 
 /**
@@ -248,10 +282,15 @@ export async function requireSubsonicAuthBinary(
     return;
   }
 
-  const auth = lookupAndVerify(request, creds);
-  if (!auth) {
+  const auth = checkCreds(request, creds);
+  if (auth.kind === "throttled") {
+    reply.header("retry-after", auth.retryAfter);
+    sendBinaryError(reply, 429, THROTTLED_MESSAGE);
+    return;
+  }
+  if (auth.kind === "denied") {
     sendBinaryError(reply, 401, "Wrong username or password");
     return;
   }
-  request.subsonicUser = auth;
+  request.subsonicUser = auth.user;
 }

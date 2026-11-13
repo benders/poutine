@@ -1,6 +1,13 @@
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { verifyPassword, setPassword, getStoredPassword } from "../auth/passwords.js";
-import { createAccessToken, createRefreshToken, verifyRefreshToken, verifyToken } from "../auth/jwt.js";
+import { verifyRefreshToken } from "../auth/jwt.js";
+import {
+  issueSession,
+  clearRefreshCookie,
+  clearSessionCookies,
+  revokeUserSessions,
+} from "../auth/session.js";
+import { clientAddress } from "../auth/rate-limit.js";
 import { syncAll } from "../library/sync.js";
 import { SyncOperationService } from "../services/sync-operations.js";
 import { StreamTrackingService } from "../services/stream-tracking.js";
@@ -26,7 +33,7 @@ import {
 } from "../services/user-invites.js";
 import { randomUUID } from "node:crypto";
 import { normalizeLanUrl } from "../services/sonos-settings.js";
-import { requireAuth } from "../auth/middleware.js";
+import { requireAuth, authenticateSession } from "../auth/middleware.js";
 import { createTombstone } from "../federation/tombstones.js";
 import type { PeerLifecycle } from "../federation/peers.js";
 import { SYSTEM_USERNAME } from "../db/system-user.js";
@@ -59,35 +66,16 @@ async function requireOwner(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<void> {
-  const { config, db } = request.server;
-
-  let token: string | undefined;
-  const authHeader = request.headers.authorization;
-  if (authHeader?.startsWith("Bearer ")) token = authHeader.slice(7);
-  if (!token && request.cookies?.access_token) token = request.cookies.access_token;
-
-  if (!token) {
-    return void reply.code(401).send({ error: "Authentication required" });
+  const session = await authenticateSession(request);
+  if (!("user" in session)) {
+    return void reply.code(session.code).send({ error: session.error });
   }
-
-  try {
-    const { userId } = await verifyToken(token, config);
-    const user = db
-      .prepare("SELECT id, username, is_admin FROM users WHERE id = ?")
-      .get(userId) as
-      | { id: string; username: string; is_admin: number }
-      | undefined;
-
-    if (!user) return void reply.code(401).send({ error: "User not found" });
-    if (user.is_admin !== 1)
-      return void reply.code(403).send({ error: "Admin access required" });
-
-    request.userId = user.id;
-    request.isAdmin = true;
-    request.adminUsername = user.username;
-  } catch {
-    return void reply.code(401).send({ error: "Invalid or expired token" });
+  if (!session.user.isAdmin) {
+    return void reply.code(403).send({ error: "Admin access required" });
   }
+  request.userId = session.user.id;
+  request.isAdmin = true;
+  request.adminUsername = session.user.username;
 }
 
 /** A `users` row an admin mutation may target. */
@@ -179,56 +167,71 @@ export function otherAdminCount(request: FastifyRequest, excludeId: string): num
 // is hard-bound to path `/admin/refresh` for backward compatibility with
 // browser sessions that pre-date the namespace split (#226).
 export const authRoutes: FastifyPluginAsync = async (app) => {
+  // Decrypted for unknown usernames so "no such user" costs the same as
+  // "wrong password" (#315).
+  const decoyPasswordEnc = setPassword(crypto.randomUUID(), app.passwordKey);
+
   // POST /admin/login
   app.post<{ Body: { username?: string; password?: string } }>(
     "/login",
     async (request, reply) => {
       const { username, password } = request.body ?? {};
-      if (!username || !password) {
+      if (
+        typeof username !== "string" ||
+        typeof password !== "string" ||
+        !username ||
+        !password
+      ) {
         return reply.code(400).send({ error: "Username and password required" });
+      }
+
+      const address = clientAddress(request);
+      const retryAfter = app.authThrottle.blockedFor(address, username);
+      if (retryAfter > 0) {
+        return reply
+          .code(429)
+          .header("retry-after", retryAfter)
+          .send({ error: "Too many failed attempts. Try again later." });
       }
 
       const user = app.db
         .prepare(
-          "SELECT id, username, password_enc, is_admin FROM users WHERE username = ?",
+          "SELECT id, username, password_enc, is_admin, token_version FROM users WHERE username = ?",
         )
         .get(username) as
-        | { id: string; username: string; password_enc: string; is_admin: number }
+        | {
+            id: string;
+            username: string;
+            password_enc: string;
+            is_admin: number;
+            token_version: number;
+          }
         | undefined;
 
-      if (!user) {
+      const valid = verifyPassword(
+        user?.password_enc || decoyPasswordEnc,
+        password,
+        app.passwordKey,
+      );
+      if (!user || !valid) {
+        app.authThrottle.recordFailure(address, username);
         return reply.code(401).send({ error: "Invalid credentials" });
       }
-
-      const valid = verifyPassword(user.password_enc, password, app.passwordKey);
-      if (!valid) {
-        return reply.code(401).send({ error: "Invalid credentials" });
-      }
+      app.authThrottle.recordSuccess(address, username);
 
       // #232: non-admins can now log in to the SPA — they get a regular
       // session and the same Subsonic creds. Admin-only routes still 403
       // them via `requireOwner` on every other endpoint.
       const isAdmin = user.is_admin === 1;
 
-      const accessToken = await createAccessToken(user.id, app.config);
-      const refreshToken = await createRefreshToken(user.id, app.config);
-
-      reply.setCookie("access_token", accessToken, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 15 * 60,
-      });
-      reply.setCookie("refresh_token", refreshToken, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/admin/refresh",
-        maxAge: 7 * 24 * 60 * 60,
+      const accessToken = await issueSession(request, reply, {
+        id: user.id,
+        tokenVersion: user.token_version,
       });
 
       // Return the plaintext password to the SPA so it can authenticate
-      // /rest/* via Subsonic u+t+s. The SPA stashes these in localStorage
-      // (same threat surface as the JWT). See docs/authentication.md.
+      // /rest/* via Subsonic u+t+s. The SPA stashes these in localStorage.
+      // See docs/authentication.md.
       const plaintext = getStoredPassword(user.password_enc, app.passwordKey);
       return {
         user: { id: user.id, username: user.username, isAdmin },
@@ -247,38 +250,40 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(401).send({ error: "No refresh token" });
     }
     try {
-      const { userId } = await verifyRefreshToken(refreshToken, app.config);
+      const { userId, tokenVersion } = await verifyRefreshToken(
+        refreshToken,
+        app.config,
+      );
       const user = app.db
-        .prepare("SELECT id FROM users WHERE id = ?")
-        .get(userId) as { id: string } | undefined;
+        .prepare("SELECT id, token_version FROM users WHERE id = ?")
+        .get(userId) as { id: string; token_version: number } | undefined;
       if (!user) {
+        clearRefreshCookie(reply);
         return reply.code(401).send({ error: "User not found" });
       }
-      const accessToken = await createAccessToken(userId, app.config);
-      const newRefreshToken = await createRefreshToken(userId, app.config);
-      reply.setCookie("access_token", accessToken, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 15 * 60,
-      });
-      reply.setCookie("refresh_token", newRefreshToken, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/admin/refresh",
-        maxAge: 7 * 24 * 60 * 60,
+      // Revoked: password change, admin-status change or logout since mint.
+      if (user.token_version !== tokenVersion) {
+        throw new Error("Token version mismatch");
+      }
+      const accessToken = await issueSession(request, reply, {
+        id: user.id,
+        tokenVersion: user.token_version,
       });
       return { accessToken };
     } catch {
-      reply.clearCookie("refresh_token", { path: "/admin/refresh" });
+      clearRefreshCookie(reply);
       return reply.code(401).send({ error: "Invalid or expired refresh token" });
     }
   });
 
-  // POST /admin/logout
-  app.post("/logout", async (_request, reply) => {
-    reply.clearCookie("access_token", { path: "/" });
-    reply.clearCookie("refresh_token", { path: "/admin/refresh" });
+  // POST /admin/logout — ends this session AND every other session of the
+  // same user: there is no per-session state, so revocation is per user
+  // (#315). Without a valid access token there is nobody to revoke for; the
+  // cookies are still cleared.
+  app.post("/logout", async (request, reply) => {
+    const session = await authenticateSession(request);
+    if ("user" in session) revokeUserSessions(app.db, session.user.id);
+    clearSessionCookies(reply);
     return reply.code(204).send();
   });
 
@@ -391,9 +396,20 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const enc = setPassword(password, app.passwordKey);
-      app.db
-        .prepare("UPDATE users SET password_enc = ? WHERE id = ?")
-        .run(enc, id);
+      // The version bump revokes the target's outstanding JWTs (#315) — a
+      // password reset that left a stolen session alive would not be one.
+      const { token_version: tokenVersion } = app.db
+        .prepare(
+          "UPDATE users SET password_enc = ?, token_version = token_version + 1 WHERE id = ? RETURNING token_version",
+        )
+        .get(enc, id) as { token_version: number };
+
+      // An admin re-setting their own password keeps this browser signed in:
+      // fresh cookies under the new version. Their other sessions are gone,
+      // and the SPA's stale bearer token recovers through /admin/refresh.
+      if (id === request.userId) {
+        await issueSession(request, reply, { id, tokenVersion });
+      }
 
       return reply.code(204).send();
     },
@@ -432,7 +448,7 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
 
       app.db
         .prepare(
-          "UPDATE users SET is_admin = ?, updated_at = datetime('now') WHERE id = ?",
+          "UPDATE users SET is_admin = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?",
         )
         .run(isAdmin ? 1 : 0, id);
 

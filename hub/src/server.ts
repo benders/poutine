@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import { loadConfig } from "./config.js";
+import { AuthThrottle } from "./auth/rate-limit.js";
 import { APP_VERSION } from "./version.js";
 import { createDatabase } from "./db/client.js";
 import { SYSTEM_USERNAME } from "./db/system-user.js";
@@ -79,6 +80,8 @@ declare module "fastify" {
   privateKey: KeyObject;
   publicKeySpec: string;
   passwordKey: Buffer;
+  /** Failed-password throttle shared by admin login and Subsonic auth (#315). */
+  authThrottle: AuthThrottle;
   /**
    * HMAC key for local user invitations (#272). Deliberately NOT the Ed25519
    * federation key — that one is cluster trust. See services/user-invites.ts.
@@ -191,6 +194,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
     logger: {
       level: process.env.LOG_LEVEL || "info",
     },
+    trustProxy: config.trustProxy,
   });
 
   // Decorate with config and db
@@ -316,6 +320,7 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   // Password encryption key (AES-256-GCM, on disk beside the federation key)
   const passwordKey = loadOrCreatePasswordKey(config.poutinePasswordKeyPath);
   app.decorate("passwordKey", passwordKey);
+  app.decorate("authThrottle", new AuthThrottle());
 
   // User-invitation signing key (#272), generated on first use in `settings`.
   app.decorate("userInviteKey", ensureUserInviteKey(db));
@@ -416,9 +421,27 @@ export async function buildApp(configOverrides?: Partial<Config>) {
   process.on("SIGHUP", sighupHandler);
 
   // Plugins
+  // CORS (#315). Two postures, chosen per request:
+  //
+  // - `/rest/*`: any origin, never credentialed. Browser-based Subsonic
+  //   clients are cross-origin by nature, and Subsonic auth travels in the
+  //   query string — no cookie is read there, so `*` grants nothing a caller
+  //   holding the credentials didn't already have.
+  // - everything else (the cookie-authenticated admin API): same-origin only,
+  //   unless the operator lists origins in CORS_ALLOWED_ORIGINS. Never
+  //   reflect an arbitrary Origin alongside `Allow-Credentials`.
+  const corsAllowedOrigins = config.corsAllowedOrigins;
   await app.register(cors, {
-    origin: true,
-    credentials: true,
+    delegator: (request, callback) => {
+      const path = request.url.split("?")[0];
+      if (path.startsWith("/rest/")) {
+        callback(null, { origin: "*", credentials: false });
+      } else if (corsAllowedOrigins.length > 0) {
+        callback(null, { origin: corsAllowedOrigins, credentials: true });
+      } else {
+        callback(null, { origin: false });
+      }
+    },
   });
   await app.register(cookie);
 
