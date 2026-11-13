@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 
-const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "package.json"), "utf-8")) as { version: string };
+const pkg = JSON.parse(readFileSync(path.resolve(import.meta.dirname, "package.json"), "utf-8")) as { version: string };
 
 export default defineConfig({
   define: {
@@ -11,7 +11,7 @@ export default defineConfig({
   },
   plugins: [react()],
   resolve: {
-    alias: { "@": path.resolve(__dirname, "./src") },
+    alias: { "@": path.resolve(import.meta.dirname, "./src") },
   },
   test: {
     environment: "jsdom",
