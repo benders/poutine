@@ -6,7 +6,7 @@ Poutine has three authentication mechanisms, each scoped to a different API surf
 
 | Surface           | Prefix          | Mechanism                                                                             |
 |-------------------|-----------------|---------------------------------------------------------------------------------------|
-| Admin             | `/admin/*`      | JWT (cookie + `Authorization: Bearer` header)                                         |
+| Admin             | `/admin/*`, `/api/admin/*` | Access JWT (`Authorization: Bearer` header or `access_token` cookie)       |
 | Subsonic (JSON)   | `/rest/*`       | Subsonic `u+p` (plaintext / `enc:<hex>`) **or** `u+t+s` (MD5 token+salt)              |
 | Subsonic (binary) | `/rest/stream`, `/rest/getCoverArt` | Same as Subsonic JSON, but errors use HTTP status codes, not Subsonic envelopes. `/rest/stream(.view)` also accepts a `castToken=` query param (#218) as an alternate auth for non-Subsonic clients (Sonos devices, DLNA renderers) — see "Cast tokens" below |
 | Proxy             | `/proxy/*`      | Ed25519-signed peers **only** — no JWT, no Subsonic. `GET` on a read-only allowlist   |
@@ -22,22 +22,27 @@ The encryption key is generated on first boot, persisted at `$POUTINE_PASSWORD_K
 
 ## JWT tokens
 
-Used for `/admin/*` only. Signed with HS256. Secret: auto-generated on first boot (32 random bytes, hex-encoded) and persisted in the `settings` table under key `jwt_secret`. Resetting the DB regenerates the secret and invalidates all existing tokens. Two token types:
+Used for the admin API only. Signed with HS256 (pinned on verify). Secret: auto-generated on first boot (32 random bytes, hex-encoded) and persisted in the `settings` table under key `jwt_secret`. Resetting the DB regenerates the secret and invalidates all existing tokens. Two token types, never interchangeable (#315):
 
-| Token         | Lifetime | Cookie              | Cookie path        | Claims                    |
-|---------------|----------|---------------------|--------------------|---------------------------|
-| Access token  | 15 min   | `access_token`      | `/`                | `{ userId, sub: userId }` |
-| Refresh token | 7 days   | `refresh_token`     | `/admin/refresh`   | `{ userId, sub: userId, type: "refresh" }` |
+| Token         | Lifetime | Cookie              | Cookie path        | Claims                                               |
+|---------------|----------|---------------------|--------------------|------------------------------------------------------|
+| Access token  | 15 min   | `access_token`      | `/`                | `{ userId, sub: userId, type: "access", tv }`        |
+| Refresh token | 7 days   | `refresh_token`     | `/admin/refresh`   | `{ userId, sub: userId, type: "refresh", tv }`       |
 
-Lifetimes configurable via `JWT_ACCESS_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` env vars. Both cookies are `httpOnly`, `sameSite: lax`.
+Lifetimes configurable via `JWT_ACCESS_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` env vars.
+
+**Type check.** `verifyToken` accepts `type: "access"` only; `verifyRefreshToken` accepts `type: "refresh"` only (`hub/src/auth/jwt.ts`). A refresh token is good at `POST /admin/refresh` and nowhere else. A token with no `type` (minted before #315) is rejected — the SPA recovers through one silent refresh.
+
+**Token version.** `tv` is the user's `users.token_version` at mint time. `authenticateSession` (`hub/src/auth/middleware.ts`) and the refresh handler compare it to the current row and reject a mismatch, so bumping the column revokes every outstanding access *and* refresh token for that user. Bumped on: password change, admin-status change, logout. A token with no `tv` reads as `0`, the column default.
+
+**Cookies.** Set only by `issueSession` (`hub/src/auth/session.ts`) — login, refresh, invite redemption and the self-password-change reissue all go through it. `httpOnly`, `sameSite: lax`, and `secure` when the request arrived over HTTPS (`request.protocol`, or `X-Forwarded-Proto: https` from the TLS-terminating proxy).
 
 ### Token extraction order (admin)
 
 1. `Authorization: Bearer <token>` header
 2. `access_token` cookie
-3. `token` query parameter
 
-`verifyToken` accepts any valid JWT. `verifyRefreshToken` additionally requires the `type: "refresh"` claim — separate functions in `hub/src/auth/jwt.ts`.
+No query-string source: a JWT in a URL lands in access logs, history and Referer headers. `requireAuth` and `requireOwner` both resolve the user through `authenticateSession`; keep it the single verification path.
 
 ## Admin auth flow
 
@@ -45,9 +50,10 @@ Lifetimes configurable via `JWT_ACCESS_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` en
 
 `POST /admin/login` with `{ username, password }`.
 
-1. Looks up user, verifies password by AES-decrypting `password_enc` and constant-time comparing.
-2. Creates access + refresh JWTs, sets both httpOnly cookies.
-3. Returns `{ user, accessToken, subsonicCredentials: { username, password } | null }`.
+1. Refuses with `429` + `Retry-After` if this (client address, username) is locked out — see "Failed-password throttle".
+2. Looks up user, verifies password by AES-decrypting `password_enc` and constant-time comparing. An unknown username decrypts a decoy, so it costs the same as a wrong password.
+3. Creates access + refresh JWTs, sets both httpOnly cookies.
+4. Returns `{ user, accessToken, subsonicCredentials: { username, password } | null }`.
 
 Both admin and non-admin users can log in (#232). The returned `user.isAdmin` lets the SPA hide admin-only nav; admin-only routes (`requireOwner` preHandler) still 403 non-admin sessions. `GET /admin/me` and `POST /admin/refresh` accept any logged-in user.
 
@@ -55,15 +61,17 @@ The body's `accessToken` goes into `localStorage` for `Authorization` header use
 
 ### Token refresh
 
-`POST /admin/refresh` — no preHandler. Reads only the `refresh_token` cookie. Verifies → rotates both tokens → sets new cookies. On failure: clears the refresh cookie, returns 401.
+`POST /admin/refresh` — no preHandler. Reads only the `refresh_token` cookie. Verifies type + token version → mints both tokens under the same version → sets new cookies. On failure: clears the refresh cookie, returns 401.
+
+Rotation does not invalidate the *previous* refresh token on its own — there is no per-session state. It dies at expiry or at the next version bump.
 
 ### Logout
 
-`POST /admin/logout` — clears both cookies, returns 204. The SPA also clears `accessToken`, `subsonicUser`, and `subsonicPass` from `localStorage`.
+`POST /admin/logout` — bumps the caller's `token_version`, clears both cookies, returns 204. Revocation is per user, not per session: logging out on one device signs the user out everywhere. Without a valid access token there is nobody to revoke for; the cookies are still cleared. The SPA also clears `accessToken`, `subsonicUser`, and `subsonicPass` from `localStorage`.
 
 ### Password update
 
-`PUT /api/admin/hub/users/:id/password` (admin-only) with `{ password }`. Re-encrypts via `setPassword` and updates `users.password_enc`. Returns 204. Validates `password.length >= 8`. An admin can target their own id; when they do, the `subsonicCredentials` cached in `localStorage` are now stale — the admin must log out and back in to refresh them. JWTs remain valid until expiry (no forced revocation).
+`PUT /api/admin/hub/users/:id/password` (admin-only) with `{ password }`. Re-encrypts via `setPassword` and updates `users.password_enc`. Returns 204. Validates `password.length >= 8`. The write bumps the target's `token_version`, revoking all their sessions (#315). An admin can target their own id; the response then re-issues session cookies under the new version, so that browser stays signed in (its stale bearer token recovers through `/admin/refresh`) while the admin's other sessions end. The `subsonicCredentials` cached in `localStorage` are still stale — the admin must log out and back in to refresh them.
 
 ### Admin status and user deletion (#274)
 
@@ -80,7 +88,7 @@ Both run their target through `loadTargetUser()` (`routes/admin.ts`), which hold
 
 The self-check alone does **not** keep an admin alive. `requireOwner` reads `is_admin` in the preHandler, so two admins can both be authorized before either write lands and then demote or delete each other, leaving none — after which no `requireOwner` route is reachable and recovery is manual SQL. `otherAdminCount()` runs in the handler body, synchronously with the write, so the second request observes the first.
 
-Neither operation revokes outstanding tokens. A demoted or deleted user's access JWT stays syntactically valid until it expires (≤15 min), but `requireOwner` and `requireAuth` both re-read the `users` row per request, so a demotion 403s on the next call and a deletion 401s ("User not found"). Refresh fails the same way.
+An admin-status change bumps the target's `token_version`, so their access and refresh tokens are rejected at once and they must sign in again. Deletion needs no bump: `authenticateSession` re-reads the `users` row per request, so a deleted user's tokens 401 ("User not found") on the next call, refresh included.
 
 Deletion relies on `ON DELETE CASCADE` to drop `playlists`, `user_stars`, `play_events`, and the `user_invitations` the user issued (so their pending invites stop redeeming); `user_invitations.consumed_by_id` is `SET NULL`. `instances.owner_id` has **no** cascade, so owned instance rows are reassigned to the acting admin first — see [pitfalls.md](pitfalls.md#auth). That column is vestigial and read by nothing; #275 removes it.
 
@@ -129,7 +137,7 @@ Redeem creates the account and signs the invitee straight in, so the SPA reuses 
 
 - Both public routes are POST, so the token never appears in a URL, an access log, or a Referer header. The SPA carries it in the URL **fragment** (`/invite#<token>`) and clears the hash after reading it.
 - One uniform `400 {error:"Invitation is not valid"}` for forged, expired, consumed, revoked, and unknown tokens alike — no enumeration, same posture as Subsonic error 40. Username-taken (`409`) is the one distinguishable case, and has to be.
-- Per-IP fixed-window rate limit (20 / 10 min) in the plugin closure. This is the only unauthenticated write surface on the hub.
+- Per-address fixed-window rate limit (20 requests / 10 min, successes included) in the plugin closure. This is the only unauthenticated write surface on the hub. The address is `request.ip` — see `TRUST_PROXY` in [hub-internals.md](hub-internals.md#auth).
 - `/invite` fires no authenticated fetch on mount — see the `/login` self-redirect trap in [pitfalls.md](pitfalls.md#auth).
 
 ## Subsonic auth flow
@@ -140,6 +148,34 @@ Redeem creates the account and signs the invitee straight in, so the SPA reuses 
 2. `u`+`t`+`s` — username + `md5(password + salt)` token + per-request salt. Server decrypts the stored password, recomputes the token, constant-time compares. Tokens are 32 hex chars.
 
 Either form authenticates a user identically. Unknown user and bad credentials both surface as Subsonic error 40 (no enumeration hint).
+
+## Failed-password throttle (#315)
+
+`AuthThrottle` (`hub/src/auth/rate-limit.ts`, `app.authThrottle`) — one in-process budget shared by `POST /admin/login` and Subsonic `u+p` / `u+t+s`, since both guess the same password. Fixed 10-minute windows, **failures only**:
+
+| Limit                          | Threshold | Purpose                                                    |
+|--------------------------------|-----------|------------------------------------------------------------|
+| per (client address, username) | 10        | Guessing one account from one address                      |
+| per client address             | 100       | Spraying across usernames; bounds per-username key growth  |
+
+- A locked-out caller is refused **before** the password is checked, right password or not. Blocked attempts are not counted, so a client retrying a stale password neither extends its lockout nor spends the per-address budget.
+- A success clears the (address, username) count.
+- Refusal: `/admin/login` → `429`; Subsonic JSON → HTTP 200 envelope with **error 0** (not 40 — clients treat 40 as "re-prompt for the password"); Subsonic binary → `429`. All carry `Retry-After`.
+- Not counted: cast tokens, the trusted in-process path, requests with no credentials at all.
+- **No per-username limit across addresses, by design.** It would let anyone who knows a username lock that user out of their own music from anywhere; a variant that exempts correct passwords stops no guessing.
+- The address is `request.ip`. Behind a reverse proxy set `TRUST_PROXY`, or all clients share one bucket — [hub-internals.md](hub-internals.md#auth).
+- State is per process and resets on restart.
+
+## CORS (#315)
+
+Decided per request in `server.ts`:
+
+| Path             | Policy                                                                                              |
+|------------------|-----------------------------------------------------------------------------------------------------|
+| `/rest/*`        | `Access-Control-Allow-Origin: *`, never credentialed. Browser Subsonic clients are cross-origin; auth is in the query, no cookie is read |
+| everything else  | Same-origin only. `CORS_ALLOWED_ORIGINS` (exact origins) opts specific origins in, with credentials  |
+
+Never reflect an arbitrary `Origin` next to `Access-Control-Allow-Credentials`. The SPA is same-origin in production and behind the Vite proxy in dev; it needs no CORS.
 
 ### Binary vs JSON error handling
 
@@ -200,7 +236,7 @@ Setting a different `POUTINE_OWNER_PASSWORD` in env never overwrites a non-empty
 **Who** — `hub/src/proxy/auth.ts`, peers only:
 
 - All four `x-poutine-*` signing headers required; missing any → `401`. Validated against the in-memory peer registry (DB-backed, sourced from the `instances` table since federation v5; see [federation-api.md](federation-api.md)). Sets `request.proxyAuth = { kind: "peer", peerId }`.
-- **No local-user path.** A JWT (header, cookie, or `token=` query) or Subsonic `u+p` / `u+t+s` is not a credential here → `401`. Local users reach the library through `/rest/*`; nothing in the SPA calls `/proxy/*`.
+- **No local-user path.** A JWT (header or cookie) or Subsonic `u+p` / `u+t+s` is not a credential here → `401`. Local users reach the library through `/rest/*`; nothing in the SPA calls `/proxy/*`.
 - Then, in order: version floor (`Poutine-Api-Version` ≥ `MIN_FEDERATION_API_VERSION`, else `403`) and lifecycle gate (non-`active` peer → uniform `403 {"error":"forbidden"}`), both after signature verification. Same policy as `/federation/*` (`federation/peer-auth.ts`) — keep the two in step.
 - Signed body hash is always `-`: the tier takes no bodies.
 

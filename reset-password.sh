@@ -72,7 +72,11 @@ if (!user) {
 const keyPath = process.env.POUTINE_PASSWORD_KEY_PATH || '/app/data/poutine_password_key';
 const key = loadOrCreatePasswordKey(keyPath);
 const enc = setPassword(process.argv[2], key);
-db.prepare('UPDATE users SET password_enc = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?').run(enc, process.argv[1]);
+// Bump token_version so sessions minted under the old password are revoked
+// (#315). The column is absent on a hub that predates it.
+const hasTokenVersion = db.pragma('table_info(users)').some((c) => c.name === 'token_version');
+const bump = hasTokenVersion ? ', token_version = token_version + 1' : '';
+db.prepare('UPDATE users SET password_enc = ?' + bump + ', updated_at = CURRENT_TIMESTAMP WHERE username = ?').run(enc, process.argv[1]);
 console.log('OK');
 " -- "$USERNAME" "$PASSWORD")
 
