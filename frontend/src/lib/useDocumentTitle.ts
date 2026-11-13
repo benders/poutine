@@ -25,6 +25,21 @@ export function useDocumentTitle() {
     }))
   );
 
+  function updateTitle() {
+    const currentTrack = currentIndex >= 0 && currentIndex < queue.length
+      ? queue[currentIndex]
+      : null;
+
+    if (currentTrack && isPlaying) {
+      // When playing: just "{artist} - {song}"
+      document.title = `${currentTrack.artist} - ${currentTrack.title}`;
+    } else {
+      // Not playing: "Poutine {instanceId}" or just "Poutine" as fallback
+      const instanceId = instanceIdRef.current;
+      document.title = instanceId ? `Poutine ${instanceId}` : "Poutine";
+    }
+  }
+
   // Fetch instance info once on mount
   useEffect(() => {
     getInstanceInfo()
@@ -44,19 +59,4 @@ export function useDocumentTitle() {
     updateTitle();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue, currentIndex, isPlaying]);
-
-  function updateTitle() {
-    const currentTrack = currentIndex >= 0 && currentIndex < queue.length
-      ? queue[currentIndex]
-      : null;
-
-    if (currentTrack && isPlaying) {
-      // When playing: just "{artist} - {song}"
-      document.title = `${currentTrack.artist} - ${currentTrack.title}`;
-    } else {
-      // Not playing: "Poutine {instanceId}" or just "Poutine" as fallback
-      const instanceId = instanceIdRef.current;
-      document.title = instanceId ? `Poutine ${instanceId}` : "Poutine";
-    }
-  }
 }

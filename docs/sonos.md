@@ -252,7 +252,8 @@ Run via `pnpm --filter hub test`.
 ### Driving a Sonos zone from the test process
 
 Sonos zones speak the same UPnP profile other LAN servers do, so the same
-control-point library used for the DLNA tests (`node-upnp`) drives Sonos
+control point used for the DLNA tests (`ControlPoint` in
+`test/dlna-http.integration.test.ts`) drives Sonos
 just as well. There are no integration tests committed for this because the
 Sonos casting *direction* (hub → device) is sufficiently covered by:
 

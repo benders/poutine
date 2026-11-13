@@ -12,9 +12,8 @@
  * the search-response) but its `discover()` async iterator only yields
  * after fetching+parsing the LOCATION through its own pipeline, which
  * adds failure modes orthogonal to what we're trying to verify. Raw dgram
- * gives an unambiguous packet-level assertion. `node-upnp` is the right
- * library for the HTTP/SOAP control-point work — see the http integration
- * test file.
+ * gives an unambiguous packet-level assertion. The HTTP/SOAP control-point
+ * work lives in the http integration test file.
  */
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import dgram from "node:dgram";

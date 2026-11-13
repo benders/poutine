@@ -1,43 +1,101 @@
 /**
  * Integration test for the DLNA HTTP surface. Boots the hub on a random
- * port with `DLNA_ENABLED=true` and drives it from a real UPnP control
- * point (the `node-upnp` library) over loopback.
+ * port with `DLNA_ENABLED=true` and drives it over loopback from a minimal
+ * UPnP control point (`ControlPoint` below).
  *
  * Not run in regular `pnpm test` — exercises a live HTTP server. Run via
  * `pnpm test:integration`.
  *
- * Why node-upnp: it speaks the device-description + SOAP control flow a
- * real UPnP client uses, so the assertions are about the contract our
- * SOAP handlers expose, not about XML byte equality. Raw `fetch` is fine
- * for the stream endpoint where we only care about response headers.
+ * Why a control point rather than raw fetches: it follows the
+ * device-description + SOAP control flow a real UPnP client uses (control
+ * URLs are discovered from device.xml, never hardcoded), so the assertions
+ * are about the contract our SOAP handlers expose, not about XML byte
+ * equality. It is in-file because the `node-upnp` library it replaced is
+ * unmaintained and pulled in dependencies with unpatched advisories (#313).
  */
 import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
+import { XMLParser } from "fast-xml-parser";
 import { buildApp } from "../src/server.js";
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const UPnPClient = require("node-upnp");
 
-interface UPnPClientInstance {
-  getDeviceDescription(): Promise<{
-    deviceType: string;
-    friendlyName: string;
-    UDN: string;
-    services: Record<string, { SCPDURL: string; controlURL: string; eventSubURL: string }>;
-  }>;
-  call(
-    serviceId: string,
+interface ServiceDescription {
+  serviceType: string;
+  SCPDURL: string;
+  controlURL: string;
+  eventSubURL: string;
+}
+
+interface DeviceDescription {
+  deviceType: string;
+  friendlyName: string;
+  UDN: string;
+  services: Record<string, ServiceDescription>;
+}
+
+/** Minimal UPnP control point: device description → control URL → SOAP action. */
+class ControlPoint {
+  private readonly xml = new XMLParser({
+    removeNSPrefix: true,
+    parseTagValue: false,
+    isArray: (name) => name === "service",
+  });
+  private description: DeviceDescription | undefined;
+
+  constructor(private readonly descriptionUrl: string) {}
+
+  async getDeviceDescription(): Promise<DeviceDescription> {
+    if (this.description) return this.description;
+    const res = await fetch(this.descriptionUrl);
+    if (!res.ok) throw new Error(`device description: HTTP ${res.status}`);
+    const device = this.xml.parse(await res.text()).root.device;
+    const services: Record<string, ServiceDescription> = {};
+    for (const svc of device.serviceList.service) services[svc.serviceId] = svc;
+    this.description = {
+      deviceType: device.deviceType,
+      friendlyName: device.friendlyName,
+      UDN: device.UDN,
+      services,
+    };
+    return this.description;
+  }
+
+  /** Invoke `action` on the service whose id contains `serviceName`; returns its out-arguments. */
+  async call(
+    serviceName: string,
     action: string,
     args: Record<string, string | number>,
-  ): Promise<Record<string, unknown>>;
+  ): Promise<Record<string, unknown>> {
+    const { services } = await this.getDeviceDescription();
+    const id = Object.keys(services).find((k) => k.includes(serviceName));
+    if (!id) throw new Error(`no such service: ${serviceName}`);
+    const svc = services[id];
+    const argXml = Object.entries(args)
+      .map(([k, v]) => `<${k}>${v}</${k}>`)
+      .join("");
+    const res = await fetch(new URL(svc.controlURL, this.descriptionUrl), {
+      method: "POST",
+      headers: {
+        "content-type": 'text/xml; charset="utf-8"',
+        soapaction: `"${svc.serviceType}#${action}"`,
+      },
+      body: `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+<s:Body><u:${action} xmlns:u="${svc.serviceType}">${argXml}</u:${action}></s:Body>
+</s:Envelope>`,
+    });
+    if (!res.ok) throw new Error(`${action}: HTTP ${res.status}`);
+    const out = this.xml.parse(await res.text()).Envelope.Body[`${action}Response`];
+    return typeof out === "object" && out !== null ? out : {};
+  }
 }
 
 describe("DLNA HTTP surface (integration)", () => {
   let app: FastifyInstance;
   let baseUrl: string;
-  let client: UPnPClientInstance;
+  let client: ControlPoint;
   const tmp = mkdtempSync(join(tmpdir(), "poutine-dlna-"));
 
   beforeAll(async () => {
@@ -68,7 +126,7 @@ describe("DLNA HTTP surface (integration)", () => {
     // setting (#209) at request time — set it now to the real listening URL.
     app.sonosSettings.setLanUrl(baseUrl);
 
-    client = new UPnPClient({ url: `${baseUrl}/dlna/device.xml` });
+    client = new ControlPoint(`${baseUrl}/dlna/device.xml`);
   });
 
   afterAll(async () => {
@@ -92,7 +150,7 @@ describe("DLNA HTTP surface (integration)", () => {
     });
   });
 
-  describe("ContentDirectory SOAP (via node-upnp)", () => {
+  describe("ContentDirectory SOAP (via control point)", () => {
     it("Browse(ObjectID=0, BrowseDirectChildren) returns the Music container", async () => {
       const out = await client.call("ContentDirectory", "Browse", {
         ObjectID: "0",
@@ -102,16 +160,11 @@ describe("DLNA HTTP surface (integration)", () => {
         RequestedCount: 0,
         SortCriteria: "",
       });
-      // fast-xml-parser inside node-upnp coerces numeric-looking values.
       expect(Number(out.NumberReturned)).toBe(1);
       expect(Number(out.TotalMatches)).toBe(1);
-      // The DIDL-Lite Result is XML-escaped because it travels as a string
-      // inside the SOAP body. Decode entities before asserting shape.
-      const result = String(out.Result)
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&amp;/g, "&");
+      // The DIDL-Lite Result travels XML-escaped inside the SOAP body; the
+      // control point's parser has already decoded the entities.
+      const result = String(out.Result);
       expect(result).toContain('id="0/music"');
       expect(result).toContain("<dc:title>Music</dc:title>");
     });
@@ -137,11 +190,7 @@ describe("DLNA HTTP surface (integration)", () => {
     });
   });
 
-  // node-upnp's parseSOAPResponse builds its output map from each action's
-  // SCPD argumentList via `Array.from(argumentList.argument)` — but
-  // fast-xml-parser returns a plain object (not an array) for a single
-  // `<argument>` child, so single-output actions come back as `{}`. We
-  // assert against the raw SOAP body instead, via fetch.
+  // Asserted against the raw SOAP body: empty-element shape matters here.
   describe("ContentDirectory SOAP (raw, single-output actions)", () => {
     async function soapCall(action: string): Promise<string> {
       const res = await fetch(`${baseUrl}/dlna/control/content-directory`, {

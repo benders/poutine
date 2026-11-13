@@ -19,10 +19,15 @@ import { Disc3 } from "lucide-react";
  *    so it doesn't linger in browser history.
  */
 export function InvitePage() {
-  const [token, setToken] = useState<string | null>(null);
+  // Read once at mount: the effect below strips the token from the address bar.
+  const [token] = useState<string | null>(
+    () => window.location.hash.replace(/^#/, "").trim() || null,
+  );
   const [preview, setPreview] = useState<InvitePreview | null>(null);
-  const [checking, setChecking] = useState(true);
-  const [error, setError] = useState("");
+  const [checking, setChecking] = useState(token !== null);
+  const [error, setError] = useState(
+    token ? "" : "This invitation link is incomplete.",
+  );
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -33,18 +38,10 @@ export function InvitePage() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const raw = window.location.hash.replace(/^#/, "").trim();
-    if (raw) {
-      // Drop the token from the address bar and history entry.
-      window.history.replaceState(null, "", window.location.pathname);
-    }
-    if (!raw) {
-      setError("This invitation link is incomplete.");
-      setChecking(false);
-      return;
-    }
-    setToken(raw);
-    previewInvite(raw)
+    if (!token) return;
+    // Drop the token from the address bar and history entry.
+    window.history.replaceState(null, "", window.location.pathname);
+    previewInvite(token)
       .then((p) => {
         setPreview(p);
         setUsername(p.suggestedUsername ?? "");
@@ -53,7 +50,7 @@ export function InvitePage() {
         setError(err instanceof Error ? err.message : "Invitation is not valid"),
       )
       .finally(() => setChecking(false));
-  }, []);
+  }, [token]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
