@@ -17,7 +17,8 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { setPassword, getStoredPassword } from "../auth/passwords.js";
-import { createAccessToken, createRefreshToken } from "../auth/jwt.js";
+import { issueSession } from "../auth/session.js";
+import { WindowCounter, clientAddress } from "../auth/rate-limit.js";
 import {
   decodeUserInvite,
   verifyUserInvite,
@@ -40,33 +41,14 @@ const USERNAME_RE = /^[A-Za-z0-9._-]+$/;
 /** Thrown inside the redeem transaction to roll back a lost race. */
 class InviteUnavailable extends Error {}
 
-function clientIp(request: FastifyRequest): string {
-  return request.ip || "unknown";
-}
-
-/**
- * Fixed-window per-IP limiter. Deliberately in-process and dependency-free —
- * this guards a two-route surface on a hub serving 20–50 users, not a public
- * API. State lives in the plugin closure so each `buildApp()` starts clean.
- */
-function createRateLimiter() {
-  const hits = new Map<string, { count: number; resetAt: number }>();
-  return function allow(ip: string, now = Date.now()): boolean {
-    if (hits.size > 1000) {
-      for (const [k, v] of hits) if (v.resetAt <= now) hits.delete(k);
-    }
-    const entry = hits.get(ip);
-    if (!entry || entry.resetAt <= now) {
-      hits.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-      return true;
-    }
-    entry.count += 1;
-    return entry.count <= RATE_LIMIT_MAX;
-  };
-}
-
 export const inviteRoutes: FastifyPluginAsync = async (app) => {
-  const allow = createRateLimiter();
+  // Per-address fixed window over ALL requests (not just failures): this is
+  // the hub's only unauthenticated write surface. State lives in the plugin
+  // closure so each `buildApp()` starts clean. The address is `request.ip` —
+  // behind a reverse proxy, set TRUST_PROXY or every visitor shares the bucket.
+  const requests = new WindowCounter(RATE_LIMIT_WINDOW_MS);
+  const allow = (request: FastifyRequest): boolean =>
+    requests.increment(clientAddress(request)) <= RATE_LIMIT_MAX;
 
   /** Decode + verify signature/expiry. Returns undefined for anything invalid. */
   function openToken(token: unknown): SignedUserInvite | undefined {
@@ -83,7 +65,7 @@ export const inviteRoutes: FastifyPluginAsync = async (app) => {
   // POST /api/invites/preview — what the redeem page renders before the
   // invitee types anything. Reveals nothing an invite holder doesn't have.
   app.post<{ Body: { token?: string } }>("/preview", async (request, reply) => {
-    if (!allow(clientIp(request))) {
+    if (!allow(request)) {
       return reply.code(429).send({ error: "Too many requests" });
     }
     const token = request.body?.token;
@@ -117,7 +99,7 @@ export const inviteRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: { token?: string; username?: string; password?: string } }>(
     "/redeem",
     async (request, reply) => {
-      if (!allow(clientIp(request))) {
+      if (!allow(request)) {
         return reply.code(429).send({ error: "Too many requests" });
       }
       const { token, username, password } = request.body ?? {};
@@ -190,19 +172,9 @@ export const inviteRoutes: FastifyPluginAsync = async (app) => {
       const isAdmin = claimed.is_admin === 1;
       app.log.info({ userId, username: name, isAdmin }, "User created via invite");
 
-      const accessToken = await createAccessToken(userId, app.config);
-      const refreshToken = await createRefreshToken(userId, app.config);
-      reply.setCookie("access_token", accessToken, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 15 * 60,
-      });
-      reply.setCookie("refresh_token", refreshToken, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/admin/refresh",
-        maxAge: 7 * 24 * 60 * 60,
+      const accessToken = await issueSession(request, reply, {
+        id: userId,
+        tokenVersion: 0,
       });
 
       const plaintext = getStoredPassword(enc, app.passwordKey);

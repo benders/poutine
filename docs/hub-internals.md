@@ -42,6 +42,8 @@ Root `package.json` scripts fan out to both: `dev`, `build`, `test`, `lint`, `ty
 | `NAVIDROME_STREAM_PROBE`      | no       | `true`                              | Set to `false` to drop the byte-range stream leg from `/api/health/ready` (#277) — readiness then covers hub DB + Navidrome ping only |
 | `NAVIDROME_HEALTH_INTERVAL_MS`| no       | `60000`                             | Cadence of the background health watchdog (#277). Started only from the real entrypoint, never in tests |
 | `POUTINE_SHRINK_GUARD_PERCENT`| no       | `20`                                | Library-shrink guard (#297): hold a sync that drops more than this % of an instance's tracks. `0` disables. See "Library-shrink guard" |
+| `TRUST_PROXY`                 | no       | — (trust nothing)                   | Fastify `trustProxy` (#315): which peers may set `X-Forwarded-*`, so what `request.ip` is. `true`, or a comma-separated list of proxy addresses / CIDRs / `loopback` / `linklocal` / `uniquelocal`. A hop count is refused at boot. See "Auth" |
+| `CORS_ALLOWED_ORIGINS`        | no       | —                                   | Exact origins allowed credentialed cross-origin access to the cookie-authenticated API (#315). Unset = same-origin only. `/rest/*` is unaffected (always `*`, never credentialed) |
 | `NAVIDROME_SCAN_SCHEDULE`     | no       | `@every 1h`                         | Compose only — becomes Navidrome's `ND_SCANNER_SCHEDULE` (#296). Robfig cron (`@every 6h`, `0 3 * * *`); `0` disables. Lengthen for a large library on a slow NAS |
 | `NEW_RELIC_LICENSE_KEY`       | no       | —                                   | Enables the New Relic APM agent (#3) **and** the app-level telemetry bridge (#277). Secret — `.env` only, never committed. Consumed by the agent, `hub/docker-entrypoint.sh` and `services/telemetry.ts` |
 | `NEW_RELIC_APP_NAME`          | no       | `poutine-hub-<instance id>`         | APM entity name; default set in `hub/docker-entrypoint.sh` |
@@ -96,6 +98,14 @@ Why the stream leg exists: the #277 outage had a perfectly healthy `/rest/ping` 
 See [authentication.md](authentication.md) for the full auth reference: JWT flow, Subsonic dual-auth, token refresh, owner seeding, frontend token management.
 
 JWT signing secret auto-generates on first boot and lives in the `settings` table (key `jwt_secret`). No env override. DB reset regenerates it and invalidates every existing token.
+
+**Client address and `TRUST_PROXY` (#315).** The failed-password throttle and the invite limiter key on `request.ip` — never on a forwarding header read directly, which a direct caller could vary per request. Unset, `request.ip` is the socket peer: correct for a directly exposed hub, but behind a reverse proxy it is the proxy, so every client shares one bucket (logged once: "Request carries a forwarding header but TRUST_PROXY is unset"). Set it to the proxy's address or CIDR; `proxy-addr` then walks `X-Forwarded-For` from the right and takes the first untrusted hop, which a client cannot forge.
+
+- Proxy on the same host or Docker network: `TRUST_PROXY=loopback,uniquelocal`.
+- `true` trusts the leftmost `X-Forwarded-For` entry from anyone — only when the hub port is reachable solely through a proxy that overwrites the header.
+- No hop counts: Fastify fails closed on a number (it cannot validate the immediate peer), so `parseTrustProxy` throws at boot rather than silently trust nothing.
+- Docker Desktop NATs every inbound connection to one gateway address. Direct LAN clients there share a bucket whatever this is set to.
+- The cookie `Secure` flag needs `X-Forwarded-Proto: https` from the proxy; that header is read regardless of `TRUST_PROXY`.
 
 ## /proxy/*
 

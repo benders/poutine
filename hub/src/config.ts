@@ -90,6 +90,48 @@ export interface Config {
    * for the multicast socket.
    */
   dlnaSkipSsdp?: boolean;
+  /**
+   * Reverse-proxy trust (#315), passed to Fastify as `trustProxy`. Decides
+   * what `request.ip` is, and therefore what the auth rate limits key on.
+   * `false` behind a proxy puts every client in one bucket.
+   */
+  trustProxy: boolean | string;
+  /**
+   * Origins allowed to make **credentialed** cross-origin requests (#315).
+   * Empty by default: the SPA is same-origin. `/rest/*` is separate — it
+   * always answers credential-less CORS for browser Subsonic clients.
+   */
+  corsAllowedOrigins: string[];
+}
+
+/**
+ * `TRUST_PROXY` → Fastify's `trustProxy`. Unset / `false` = trust nothing
+ * (`request.ip` is the socket peer). `true` = trust every hop (spoofable
+ * unless the proxy overwrites `X-Forwarded-For`). Anything else = a
+ * comma-separated list of proxy addresses, CIDRs, or the `proxy-addr` names
+ * `loopback` / `linklocal` / `uniquelocal`. See docs/hub-internals.md.
+ *
+ * A bare hop count is refused: Fastify fails closed on one (it cannot
+ * validate the immediate peer), which would silently trust nothing.
+ */
+export function parseTrustProxy(raw: string | undefined): boolean | string {
+  const v = raw?.trim() ?? "";
+  if (v === "" || v.toLowerCase() === "false") return false;
+  if (v.toLowerCase() === "true") return true;
+  if (/^\d+$/.test(v)) {
+    throw new Error(
+      "TRUST_PROXY: a hop count is not supported — list the proxy's address or CIDR (e.g. `loopback,uniquelocal`), or use `true`",
+    );
+  }
+  return v;
+}
+
+/** `CORS_ALLOWED_ORIGINS` — comma-separated exact origins, e.g. `https://a.example`. */
+export function parseOrigins(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((o) => o.trim().replace(/\/+$/, ""))
+    .filter((o) => o.length > 0);
 }
 
 function requireInProd(name: string, value: string | undefined): string {
@@ -179,5 +221,7 @@ export function loadConfig(): Config {
     ),
     dlnaEnabled: process.env.DLNA_ENABLED === "true",
     dlnaFriendlyName: process.env.DLNA_FRIENDLY_NAME || "Poutine",
+    trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
+    corsAllowedOrigins: parseOrigins(process.env.CORS_ALLOWED_ORIGINS),
   };
 }

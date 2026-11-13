@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE,
   password_enc TEXT NOT NULL DEFAULT '', -- AES-256-GCM(plaintext) ‖ tag, base64
   is_admin INTEGER NOT NULL DEFAULT 0,
+  token_version INTEGER NOT NULL DEFAULT 0, -- bump to revoke the user's JWTs (#315)
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

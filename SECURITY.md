@@ -66,6 +66,10 @@ assumption should stay documented.
 
 ### H1 — No TLS, no `Secure` cookies, no HSTS
 
+> **Status: partly fixed (#315).** Session cookies are `Secure` when the
+> request arrived over HTTPS (`X-Forwarded-Proto` from the proxy). Still open:
+> no HSTS, no boot warning when TLS is absent.
+
 `server.ts` serves plain HTTP on `0.0.0.0:PORT`. TLS is documented as the operator's
 responsibility (`example.env`: "Cloudflare Tunnel, Caddy, Traefic, nginx, Tailscale
 Funnel"), but nothing enforces or detects it:
@@ -85,6 +89,10 @@ to the edge; add a boot warning when the SPA is served without a forwarding head
 indicating TLS termination.
 
 ### H2 — CORS reflects any origin with credentials
+
+> **Status: fixed (#315).** The cookie-authenticated API is same-origin unless
+> an origin is listed in `CORS_ALLOWED_ORIGINS`; `/rest/*` answers `*`, never
+> credentialed. See `docs/authentication.md` ("CORS").
 
 ```ts
 app.register(cors, { origin: true, credentials: true });
@@ -155,6 +163,11 @@ actually needs); reject everything else with 404. Add a regression test assertin
 
 ### H5 — No rate limiting or lockout
 
+> **Status: fixed (#315).** Failed-password throttle shared by `/admin/login`
+> and Subsonic auth, per (client address, username) and per address; see
+> `docs/authentication.md` ("Failed-password throttle"). Operators behind a
+> reverse proxy must set `TRUST_PROXY`.
+
 No 429, no throttle, no lockout exists anywhere in the codebase (verified by grep).
 On a public endpoint:
 
@@ -209,6 +222,11 @@ routes are JWT-gated so their exposure is bounded to authenticated users, but
 they share the same heuristic.
 
 ### M3 — JWT weaknesses
+
+> **Status: items 1, 2 and 4 fixed (#315).** Tokens are typed; a per-user
+> `token_version` revokes sessions on password change, admin-status change and
+> logout; `?token=` is gone. Still open: item 3 (secret in SQLite), and
+> revocation is per user, not per session.
 
 `auth/jwt.ts` signs `{ sub, username, role }` with HS256. Verified gaps:
 
