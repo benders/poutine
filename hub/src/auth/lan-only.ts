@@ -19,6 +19,7 @@
  * exposure; the hub doesn't second-guess the deployment.
  */
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { redactUrl } from "../util/redact-url.js";
 
 /** Headers whose presence proves the request hopped through a proxy. */
 const PROXY_HEADERS = [
@@ -50,7 +51,7 @@ export async function requireLan(
   );
   if (found !== null) {
     request.log.warn(
-      { proxyHeader: found, url: request.url },
+      { proxyHeader: found, url: redactUrl(request.url) },
       "Rejected non-LAN request to LAN-only endpoint",
     );
     // Explicit `return reply` makes the halt unambiguous. Fastify also

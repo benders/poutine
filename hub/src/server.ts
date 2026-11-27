@@ -60,6 +60,8 @@ import type { KeyObject } from "node:crypto";
 import type { PeerRegistry } from "./federation/peers.js";
 import type { SubsonicCallEvent } from "./adapters/subsonic.js";
 import type { createFederationFetcher as FetcherFactory } from "./federation/sign-request.js";
+import type { DestinationStream } from "pino";
+import { redactingLoggerOptions } from "./util/redact-url.js";
 
 // Extend Fastify instance type
 declare module "fastify" {
@@ -184,12 +186,24 @@ function uuidFromInstanceId(seed: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
-export async function buildApp(configOverrides?: Partial<Config>) {
+export interface BuildAppOptions {
+  /** Log destination override (tests capture log lines through this). */
+  logStream?: DestinationStream;
+}
+
+export async function buildApp(
+  configOverrides?: Partial<Config>,
+  options: BuildAppOptions = {},
+) {
   const config = { ...loadConfig(), ...configOverrides };
 
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL || "info",
+      // Request URLs carry Subsonic credentials (`p`, `t`+`s`) and tokens;
+      // Fastify logs them verbatim by default (#317).
+      ...redactingLoggerOptions,
+      ...(options.logStream ? { stream: options.logStream } : {}),
     },
   });
 

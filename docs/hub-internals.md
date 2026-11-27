@@ -97,6 +97,17 @@ See [authentication.md](authentication.md) for the full auth reference: JWT flow
 
 JWT signing secret auto-generates on first boot and lives in the `settings` table (key `jwt_secret`). No env override. DB reset regenerates it and invalidates every existing token.
 
+### Log redaction (#317)
+
+Subsonic auth and hub tokens ride in the query string, so every request URL is credential-bearing. `hub/src/util/redact-url.ts` is the single redaction point:
+
+- **Redacted params** (`SENSITIVE_QUERY_PARAMS`, case-insensitive, matched after percent-decoding, every repeat): `p` (plaintext and `enc:`), `t`, `s`, `castToken`, `token`, `apiKey`. Value → `[REDACTED]`; everything else in the URL stays byte-for-byte. Userinfo passwords in absolute URLs too.
+- **Wiring:** `buildApp()` spreads `redactingLoggerOptions` into the Fastify logger: `req` serializer (default shape, redacted `url`), `err` serializer (redacts `message` / `stack`), and a pino `logMethod` hook running `redactText()` over every string argument — this catches Fastify's own `Route GET:<url> not found` and "reply already sent" messages, which interpolate the raw URL and bypass the `req` serializer. Covers `app.inject()` too, so `HubSubsonicCaller`'s owner `u+p` (DLNA path, #229) never reaches a log line.
+- **Explicit `log.*({ url })` calls** must pass `redactUrl(request.url)` (e.g. `auth/lan-only.ts`). The hook only sees strings, not object fields.
+- **New Relic:** logs-in-context forwards the already-redacted pino lines. `docker-entrypoint.sh` defaults `NEW_RELIC_ATTRIBUTES_EXCLUDE=request.parameters.*` so query params never become transaction/span attributes (the hub's own Navidrome calls carry the admin `u+t+s`). An operator override must keep that entry.
+- **Tests:** `hub/test/redact-url.test.ts` (helper), `hub/test/request-log-redaction.test.ts` (real `buildApp()` with a captured `logStream` — `buildApp(config, { logStream })` is the seam).
+- Out of scope: reverse-proxy access logs upstream of the hub. Operators should rotate any password that appeared in logs retained from before #317.
+
 ## /proxy/*
 
 Peer-only, read-only proxy to the local Navidrome. Introduced in Phase 1 (issue #50); narrowed to peers + an endpoint allowlist in #308.
