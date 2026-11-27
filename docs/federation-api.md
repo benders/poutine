@@ -104,7 +104,7 @@ Peers join a cluster via signed invitations rather than shared config files. The
    { "invitation": "<base64>", "ourUrl": "https://b.example" }
    ```
 
-   Hub *B* signs the invitation nonce with **its** Ed25519 key (proof of pubkey ownership) and POSTs the bundle to *A*'s `/federation/handshake`.
+   Hub *B* checks `inviter_url` with the same public-address guard the inviter applies to the invitee (`checkPeerUrlSafe`; 400 `Inviter URL not permitted` otherwise), signs the invitation nonce with **its** Ed25519 key (proof of pubkey ownership) and POSTs the bundle to *A*'s `/federation/handshake`.
 
 3. **Admit.** *A* verifies (a) its own signature on the invitation, (b) *B*'s proof signature against *B*'s claimed public key, (c) the invitation row is unconsumed and unexpired, (d) `inviteeUrl` matches if specified, (e) *B*'s `/api/health` is reachable and reports `apiVersion >= 5`. On success, *A* inserts *B* into `instances` with full provenance (`invitation_payload`, `invitation_signature`, `inviter_*` columns) and marks the invitation consumed. *B* mirrors the same row locally for *A*.
 
@@ -249,6 +249,7 @@ Initial protocol version.
 - Ed25519 signing is exercised in `hub/test/federation-signing.test.ts` and `hub/test/proxy.test.ts`.
 - Signing helpers: `hub/src/federation/signing.ts`, `hub/src/federation/sign-request.ts`.
 - Peer auth middleware: `hub/src/federation/peer-auth.ts`.
+- **Peers must answer at their registered URL; redirects are not followed** (#317). Every outbound peer request (`/federation/*`, `/proxy/*`, `/api/health`, the handshake POST) uses `redirect: "error"`, so a 3xx counts as unreachable. A hub whose URL redirects (e.g. `http://` → `https://`) must be admitted with its final URL. Not a contract change — no endpoint in this contract answers with a 3xx, and the five `/proxy/rest/*` reads return Navidrome Subsonic bodies directly — so `FEDERATION_API_VERSION` is unchanged. Helper: `hub/src/federation/peer-fetch.ts`; tests: `hub/test/peer-redirect.test.ts`.
 - Peer registry: `hub/src/federation/peers.ts` (DB-backed, reads `instances`; SIGHUP triggers a snapshot refresh).
 - Invitations: `hub/src/federation/invitations.ts` — sign/verify/encode helpers; `hub/test/invitations.test.ts` covers signature, expiry, replay.
 - Handshake: `hub/src/routes/federation.ts` (`POST /handshake`); `hub/src/routes/admin.ts` (`POST /peers/invite`, `POST /peers/accept`); `hub/test/handshake.test.ts` covers the e2e flow.

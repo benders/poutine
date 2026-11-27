@@ -17,6 +17,7 @@ import {
 } from "../federation/invitations.js";
 import { parsePeerPublicKey } from "../federation/signing.js";
 import { checkPeerUrlSafe } from "../federation/url-safety.js";
+import { peerFetch } from "../federation/peer-fetch.js";
 import {
   ingestGossipEntry,
   type GossipPeerEntry,
@@ -200,7 +201,7 @@ export const federationRoutes: FastifyPluginAsync = async (app) => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
       try {
-        const res = await fetch(`${inviteeUrl}/api/health`, {
+        const res = await peerFetch(`${inviteeUrl}/api/health`, {
           signal: controller.signal,
           headers: { "user-agent": USER_AGENT },
         });

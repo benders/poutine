@@ -5,6 +5,7 @@ import {
   signRequest,
 } from "./signing.js";
 import type { Peer } from "./peers.js";
+import { peerFetch } from "./peer-fetch.js";
 import { USER_AGENT, FEDERATION_API_VERSION } from "../version.js";
 
 export interface FederatedFetchOptions {
@@ -60,7 +61,7 @@ export function createFederationFetcher(deps: {
       headers["content-length"] = String(opts.body.length);
     }
 
-    return fetch(peer.url + path, {
+    return peerFetch(peer.url + path, {
       method,
       headers,
       body: opts.body ? opts.body.buffer.slice(

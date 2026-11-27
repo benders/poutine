@@ -22,6 +22,10 @@ if [ -n "${NEW_RELIC_LICENSE_KEY:-}" ]; then
   # Agent's own log goes to stdout with the app's pino stream — no log file
   # accumulating inside the container.
   export NEW_RELIC_LOG="${NEW_RELIC_LOG:-stdout}"
+  # Never ship query parameters as attributes: Subsonic auth (u+t+s, p) and
+  # cast/JWT tokens travel in the query string, both inbound and on the
+  # hub's own Navidrome calls (#317). An operator override must keep this.
+  export NEW_RELIC_ATTRIBUTES_EXCLUDE="${NEW_RELIC_ATTRIBUTES_EXCLUDE:-request.parameters.*}"
   # Path-based specifiers: newrelic lives in hub/node_modules (pnpm workspace
   # layout), and both flags resolve bare names from the cwd (/app), where no
   # node_modules/newrelic exists. cwd must stay /app — default data paths

@@ -9,6 +9,8 @@ import { runFolderAudit } from "../library/folder-audit.js";
 import { getLastScannerConfig, scannerConfigProblems } from "../services/navidrome-native.js";
 import { SubsonicClient } from "../adapters/subsonic.js";
 import { APP_VERSION, FEDERATION_API_VERSION, USER_AGENT } from "../version.js";
+import { peerFetch } from "../federation/peer-fetch.js";
+import { checkPeerUrlSafe } from "../federation/url-safety.js";
 import {
   createInvitation,
   encodeInvitation,
@@ -715,7 +717,7 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
         try {
-          const res = await fetch(`${peer.url}/api/health`, { signal: controller.signal, headers: { "user-agent": USER_AGENT } });
+          const res = await peerFetch(`${peer.url}/api/health`, { signal: controller.signal, headers: { "user-agent": USER_AGENT } });
           if (!res.ok) return null;
           return (await res.json()) as HealthPayload;
         } catch {
@@ -973,6 +975,19 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
           .send({ error: "Invitation issuer is this hub" });
       }
 
+      // inviter_url is attacker-controllable (it rides in a pasted blob) and
+      // is both contacted below and stored as the peer's url. Same SSRF guard
+      // the inviter side applies to the invitee (#156, #317). Runs before any
+      // state change or network call.
+      const inviterUrlSafe = await checkPeerUrlSafe(signed.payload.inviter_url);
+      if (!inviterUrlSafe.ok) {
+        request.log.warn(
+          { inviterUrl: signed.payload.inviter_url, reason: inviterUrlSafe.reason },
+          "Rejecting accept: inviter URL failed SSRF check",
+        );
+        return reply.code(400).send({ error: "Inviter URL not permitted" });
+      }
+
       // #244 re-admission, invitee side: if WE have tombstoned the inviter,
       // accepting its invitation is only allowed when the invitation
       // postdates our tombstone — the same rule the inviter-side handshake
@@ -1012,7 +1027,7 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
 
       let res: Response;
       try {
-        res = await fetch(handshakeUrl, {
+        res = await peerFetch(handshakeUrl, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -1022,7 +1037,9 @@ export const hubAdminRoutes: FastifyPluginAsync = async (app) => {
           body: JSON.stringify(requestBody),
         });
       } catch (err) {
-        return reply.code(502).send({ error: `Inviter unreachable: ${String(err)}` });
+        // Detail (incl. a refused redirect) is logged, not echoed (#156).
+        request.log.warn({ err, handshakeUrl }, "Accept: inviter handshake request failed");
+        return reply.code(502).send({ error: "Inviter unreachable" });
       }
 
       if (!res.ok) {

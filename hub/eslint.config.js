@@ -39,6 +39,16 @@ const playerFiles = [
   "src/services/player-settings.ts",
 ];
 
+// Files that make outbound requests to federation peers (#317). Every file
+// here must use `peerFetch`; the global `fetch` is a lint error.
+const peerFacingFiles = [
+  "src/federation/**/*.ts",
+  "src/routes/federation.ts",
+  "src/routes/admin.ts",
+  "src/services/auto-sync.ts",
+  "src/library/sync-peer.ts",
+];
+
 // Files allowed to import better-sqlite3 directly. Everything else on the
 // Player side must take a Database handle by capability injection.
 const playerDbOpenerFiles = ["src/db/player-db.ts"];
@@ -127,6 +137,24 @@ export default tseslint.config(
       "no-fallthrough": "off",
       "no-undef": "off",
       "prefer-const": "off",
+    },
+  },
+  {
+    // Peer-facing files: outbound HTTP to a peer must go through
+    // `federation/peer-fetch.ts` (`redirect: "error"`, #317). The global
+    // `fetch` would follow a peer's 3xx past `checkPeerUrlSafe`.
+    files: peerFacingFiles,
+    ignores: ["src/federation/peer-fetch.ts"],
+    rules: {
+      "no-restricted-globals": [
+        "error",
+        {
+          name: "fetch",
+          message:
+            "Peer-facing code must use `peerFetch` from `federation/peer-fetch.ts` " +
+            "(refuses redirects, #317), not the global fetch.",
+        },
+      ],
     },
   },
   {
