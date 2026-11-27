@@ -11,6 +11,7 @@ import { FanartTvClient } from "./fanarttv.js";
 import type { PeerRegistry, Peer } from "../federation/peers.js";
 import type { FederationFetcher } from "../library/sync-peer.js";
 import { USER_AGENT } from "../version.js";
+import { peerFetch } from "../federation/peer-fetch.js";
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -223,7 +224,7 @@ export class AutoSyncService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
-      const res = await fetch(`${peer.url}/api/health`, {
+      const res = await peerFetch(`${peer.url}/api/health`, {
         signal: controller.signal,
         headers: { "user-agent": USER_AGENT },
       });
